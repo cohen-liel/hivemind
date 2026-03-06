@@ -371,11 +371,12 @@ class OrchestratorManager:
                     if self.multi_agent and loop_count == 1 and "TASK_COMPLETE" not in response.text:
                         # First turn, multi-agent mode, but orchestrator didn't delegate.
                         # Nudge it to actually use <delegate> blocks.
+                        # Include original request so context isn't lost.
                         orchestrator_input = (
                             "You responded without any <delegate> blocks. "
-                            "Remember: you MUST delegate work to sub-agents using <delegate> blocks. "
-                            "Do NOT just describe what to do — actually delegate NOW.\n\n"
-                            "Re-read the user's request and delegate the work to the appropriate agent(s)."
+                            "You MUST delegate work to sub-agents using <delegate> blocks.\n\n"
+                            f"Original user request:\n{user_message}\n\n"
+                            "Now delegate the work. Include <delegate> blocks in your response."
                         )
                         continue
                     # No delegations — orchestrator handled it directly, done for now
