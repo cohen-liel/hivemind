@@ -225,6 +225,25 @@ class SessionManager:
         await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
         await db.commit()
 
+    async def clear_stale_messages(self, project_id: str):
+        """Remove old error messages and messages from the previous architecture."""
+        db = await self._get_db()
+        # Delete messages from old architecture (system/update, architect role)
+        await db.execute(
+            "DELETE FROM messages WHERE project_id=? AND (agent_name='system' OR role='update' OR agent_name='architect')",
+            (project_id,),
+        )
+        # Delete error messages (stale errors clutter the log)
+        await db.execute(
+            "DELETE FROM messages WHERE project_id=? AND content LIKE 'Error:%'",
+            (project_id,),
+        )
+        await db.execute(
+            "DELETE FROM messages WHERE project_id=? AND content LIKE 'Invalid API key%'",
+            (project_id,),
+        )
+        await db.commit()
+
     async def cleanup_expired(self, max_age_hours: int = SESSION_EXPIRY_HOURS):
         """Clean up sessions older than max_age_hours."""
         db = await self._get_db()

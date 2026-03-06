@@ -337,6 +337,16 @@ class OrchestratorManager:
                 delegations = self._parse_delegations(response.text)
 
                 if not delegations:
+                    if self.multi_agent and loop_count == 1 and "TASK_COMPLETE" not in response.text:
+                        # First turn, multi-agent mode, but orchestrator didn't delegate.
+                        # Nudge it to actually use <delegate> blocks.
+                        orchestrator_input = (
+                            "You responded without any <delegate> blocks. "
+                            "Remember: you MUST delegate work to sub-agents using <delegate> blocks. "
+                            "Do NOT just describe what to do — actually delegate NOW.\n\n"
+                            "Re-read the user's request and delegate the work to the appropriate agent(s)."
+                        )
+                        continue
                     # No delegations — orchestrator handled it directly, done for now
                     finished_naturally = True
                     break

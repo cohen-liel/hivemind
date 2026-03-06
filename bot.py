@@ -289,6 +289,9 @@ async def _activate_project(
             project_dir=project_dir,
         )
 
+    # Clean stale messages from old architecture / previous errors
+    await session_mgr.clear_stale_messages(project_id)
+
     return manager
 
 
