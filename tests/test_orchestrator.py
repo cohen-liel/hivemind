@@ -21,11 +21,16 @@ from orchestrator import OrchestratorManager
 
 
 updates = []
+results = []
 query_calls = []
 
 
 async def mock_on_update(text: str):
     updates.append(text)
+
+
+async def mock_on_result(text: str):
+    results.append(text)
 
 
 async def mock_query_with_retry(prompt, system_prompt, cwd, session_id=None,
@@ -69,8 +74,9 @@ async def mock_query_with_retry(prompt, system_prompt, cwd, session_id=None,
 
 
 async def main():
-    global updates, query_calls
+    global updates, results, query_calls
     updates = []
+    results = []
     query_calls = []
 
     db_path = os.path.join(tempfile.mkdtemp(), "test.db")
@@ -88,6 +94,7 @@ async def main():
         user_id=123,
         project_id="test-proj",
         on_update=mock_on_update,
+        on_result=mock_on_result,
         multi_agent=True,
     )
 
@@ -124,8 +131,15 @@ async def main():
     # TASK_COMPLETE stopped the loop
     assert not mgr.is_running, "Manager should have stopped after TASK_COMPLETE"
 
-    # Completion notification sent to user
-    assert any("completed" in u.lower() for u in updates), "No completion notification sent"
+    # Progress updates go to on_update (status messages)
+    assert any("working" in u.lower() for u in updates), "No progress updates sent"
+
+    # Final results go to on_result (agent outputs, completion)
+    assert any("completed" in r.lower() for r in results), "No completion notification in results"
+    assert any("developer" in r.lower() for r in results), "Developer result not in results"
+
+    # Verify separation: progress updates should NOT contain final results
+    assert not any("TASK_COMPLETE" in u for u in updates), "Final output leaked into progress updates"
 
     # Sessions persisted to SQLite
     orch_session = await session_mgr.get_session(123, "test-proj", "orchestrator")

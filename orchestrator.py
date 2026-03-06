@@ -64,6 +64,7 @@ class OrchestratorManager:
         user_id: int,
         project_id: str,
         on_update: Callable[[str], Awaitable[None]] | None = None,
+        on_result: Callable[[str], Awaitable[None]] | None = None,
         multi_agent: bool = True,
     ):
         self.project_name = project_name
@@ -73,6 +74,7 @@ class OrchestratorManager:
         self.user_id = user_id
         self.project_id = project_id
         self.on_update = on_update
+        self.on_result = on_result
         self.multi_agent = multi_agent
 
         self.conversation_log: list[Message] = []
@@ -99,7 +101,22 @@ class OrchestratorManager:
         return self.multi_agent
 
     async def _notify(self, text: str):
+        """Send a progress/status update (edited in-place in Telegram)."""
         if self.on_update:
+            try:
+                await self.on_update(text)
+            except Exception as e:
+                logger.error(f"Update callback error: {e}")
+
+    async def _send_result(self, text: str):
+        """Send a final result message (new Telegram message, not edited)."""
+        if self.on_result:
+            try:
+                await self.on_result(text)
+            except Exception as e:
+                logger.error(f"Result callback error: {e}")
+        elif self.on_update:
+            # Fallback to on_update if on_result not set
             try:
                 await self.on_update(text)
             except Exception as e:
@@ -135,6 +152,12 @@ class OrchestratorManager:
         self._pause_event.set()
         self.turn_count = 0
 
+        # Clear stale sub-agent sessions from previous runs so each new session
+        # starts with fresh context per sub-agent. The orchestrator session is
+        # kept to preserve project-level memory across activations.
+        for role in SUB_AGENT_PROMPTS:
+            await self.session_mgr.invalidate_session(self.user_id, self.project_id, role)
+
         self._task = asyncio.create_task(
             self._run_orchestrator(user_message)
         )
@@ -159,7 +182,7 @@ class OrchestratorManager:
             if len(response.text) > 3000:
                 summary += "\n... (truncated)"
             cost_str = f" | ${response.cost_usd:.4f}" if response.cost_usd > 0 else ""
-            await self._notify(f"💬 *orchestrator*{cost_str}\n\n{summary}")
+            await self._send_result(f"💬 *orchestrator*{cost_str}\n\n{summary}")
         else:
             self._user_injection = (agent_name, message)
             if self.is_paused:
@@ -188,7 +211,7 @@ class OrchestratorManager:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        await self._notify(
+        await self._send_result(
             f"🛑 Project *{self.project_name}* stopped.\n"
             f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}"
         )
@@ -220,6 +243,7 @@ class OrchestratorManager:
             orchestrator_input = prompt
             loop_count = 0
             max_loops = 10  # Safety limit on orchestrator iterations
+            finished_naturally = False
 
             while self.is_running and loop_count < max_loops:
                 if self._stop_event.is_set():
@@ -263,7 +287,7 @@ class OrchestratorManager:
                     summary = display_text[:2000]
                     if len(display_text) > 2000:
                         summary += "\n... (truncated)"
-                    await self._notify(
+                    await self._send_result(
                         f"✅ *orchestrator* — Turn {self.turn_count}\n"
                         f"💰 ${response.cost_usd:.4f} (total: ${self.total_cost_usd:.4f})\n\n"
                         f"{summary}"
@@ -271,7 +295,7 @@ class OrchestratorManager:
 
                 # Check completion
                 if "TASK_COMPLETE" in response.text:
-                    await self._notify(
+                    await self._send_result(
                         f"🎉 Project *{self.project_name}* completed!\n\n"
                         f"📊 Total turns: {self.turn_count}\n"
                         f"💰 Total cost: ${self.total_cost_usd:.4f}\n"
@@ -304,10 +328,12 @@ class OrchestratorManager:
 
                 if not delegations:
                     # No delegations — orchestrator handled it directly, done for now
+                    finished_naturally = True
                     break
 
                 if not self.multi_agent:
                     # Single-agent mode — ignore delegations
+                    finished_naturally = True
                     break
 
                 # Execute sub-agents
@@ -331,16 +357,46 @@ class OrchestratorManager:
         except Exception as e:
             logger.error(f"Orchestrator loop error: {e}", exc_info=True)
             await self._notify(f"❌ Unexpected error in orchestrator: {e}")
+        else:
+            # Loop exited normally (not via exception)
+            if loop_count >= max_loops and not finished_naturally:
+                await self._notify(
+                    f"⏹ Orchestrator reached the safety loop limit ({max_loops} iterations).\n\n"
+                    f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}\n\n"
+                    f"Send another message to continue working on this project."
+                )
+            elif finished_naturally and "TASK_COMPLETE" not in (self.conversation_log[-1].content if self.conversation_log else ""):
+                # Ended naturally (no more delegations) but orchestrator didn't say TASK_COMPLETE
+                await self._notify(
+                    f"✅ *{self.project_name}* — Orchestrator finished.\n\n"
+                    f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}\n\n"
+                    f"Send another message to continue."
+                )
         finally:
             if not self.is_paused:
                 self.is_running = False
-
     async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, SDKResponse]:
         """Execute sub-agent tasks and return their responses."""
         results: dict[str, SDKResponse] = {}
 
         for delegation in delegations:
             if self._stop_event.is_set():
+                break
+
+            # Check limits before starting each sub-agent
+            if self.turn_count >= MAX_TURNS_PER_CYCLE:
+                await self._notify(
+                    f"⏰ Turn limit reached ({MAX_TURNS_PER_CYCLE}) — "
+                    f"skipping remaining sub-agents.\n"
+                    f"Use /resume to continue."
+                )
+                break
+            if self.total_cost_usd >= MAX_BUDGET_USD:
+                await self._notify(
+                    f"💰 Budget limit reached (${self.total_cost_usd:.4f}) — "
+                    f"skipping remaining sub-agents.\n"
+                    f"Use /resume to continue."
+                )
                 break
 
             agent_role = delegation.agent
@@ -373,7 +429,7 @@ class OrchestratorManager:
                 summary += "\n... (truncated)"
 
             status = "✅" if not response.is_error else "⚠️"
-            await self._notify(
+            await self._send_result(
                 f"{status} *{agent_role}* — Turn {self.turn_count}\n"
                 f"💰 ${response.cost_usd:.4f} (total: ${self.total_cost_usd:.4f})\n\n"
                 f"{summary}"
@@ -467,6 +523,13 @@ class OrchestratorManager:
             content = response.text[:3000]
             if len(response.text) > 3000:
                 content += "\n... (truncated)"
+            # Provide explicit fallback so the orchestrator knows work was attempted
+            if not content.strip():
+                content = (
+                    "[Agent produced no text output — it may have completed the task "
+                    "using tools (file writes, shell commands). Check the workspace files "
+                    "to verify what was done before deciding if more work is needed.]"
+                )
             parts.append(
                 f"--- {agent} [{status}] ---\n"
                 f"{content}\n"

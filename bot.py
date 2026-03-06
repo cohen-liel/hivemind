@@ -122,11 +122,124 @@ async def send_long_message(bot, chat_id: int, text: str, **kwargs):
         await asyncio.sleep(0.3)
 
 
-def _make_on_update(bot, chat_id: int, project_id: str):
-    """Create an on_update callback with properly captured references."""
+class ProgressMessage:
+    """Manages a single Telegram progress message that gets edited in-place.
+
+    Instead of spamming new messages, this edits one "progress" message
+    with throttling (min 2s between edits), and sends a separate final
+    response message when the agent is done. The progress message is
+    deleted after the final response is sent.
+    """
+
+    THROTTLE_SECONDS = 2.0
+
+    def __init__(self, bot, chat_id: int):
+        self._bot = bot
+        self._chat_id = chat_id
+        self._progress_msg = None  # The Telegram Message object being edited
+        self._last_edit_time: float = 0
+        self._heartbeat_task: asyncio.Task | None = None
+        self._current_text: str = ""
+
+    async def start(self):
+        """Send initial progress message and start typing heartbeat."""
+        try:
+            self._progress_msg = await self._bot.send_message(
+                chat_id=self._chat_id,
+                text="🤖 Working...",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send progress message: {e}")
+        self._heartbeat_task = asyncio.create_task(self._typing_heartbeat())
+
+    async def _typing_heartbeat(self):
+        """Send typing indicator every 2s while processing."""
+        try:
+            while True:
+                await self._bot.send_chat_action(
+                    chat_id=self._chat_id,
+                    action=constants.ChatAction.TYPING,
+                )
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    async def update(self, text: str):
+        """Update the progress message (throttled to avoid rate limits)."""
+        now = time.monotonic()
+        self._current_text = text
+
+        if not self._progress_msg:
+            # No progress message yet — fall back to sending a new one
+            await send_long_message(self._bot, self._chat_id, text)
+            return
+
+        # Throttle edits to avoid Telegram rate limits
+        if (now - self._last_edit_time) < self.THROTTLE_SECONDS:
+            return
+
+        # Telegram edit_text has a 4096 char limit
+        display = text[:4000]
+        if len(text) > 4000:
+            display += "\n... (truncated)"
+
+        try:
+            await self._progress_msg.edit_text(display)
+            self._last_edit_time = now
+        except Exception as e:
+            # "Message is not modified" is harmless
+            if "not modified" not in str(e).lower():
+                logger.error(f"Failed to edit progress message: {e}")
+
+    async def finish(self, final_text: str):
+        """Send the final response and clean up the progress message."""
+        self._stop_heartbeat()
+
+        # Delete progress message
+        if self._progress_msg:
+            try:
+                await self._progress_msg.delete()
+            except Exception:
+                pass
+            self._progress_msg = None
+
+        # Send final result as a new message
+        if final_text and final_text.strip():
+            await send_long_message(self._bot, self._chat_id, final_text)
+
+    def _stop_heartbeat(self):
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+
+
+def _make_callbacks(bot, chat_id: int):
+    """Create on_update (progress) and on_result (final) callbacks.
+
+    on_update: edits a single progress message in-place with throttling.
+    on_result: deletes the progress message and sends the final text as a new message.
+    """
+    progress = ProgressMessage(bot, chat_id)
+    started = False
+
     async def on_update(text: str):
-        await send_long_message(bot, chat_id, text)
-    return on_update
+        nonlocal started
+        if not started:
+            await progress.start()
+            started = True
+        await progress.update(text)
+
+    async def on_result(text: str):
+        nonlocal started
+        if started:
+            await progress.finish(text)
+            started = False
+        else:
+            await send_long_message(bot, chat_id, text)
+
+    return on_update, on_result
 
 
 async def _activate_project(
@@ -144,7 +257,7 @@ async def _activate_project(
     Caller MUST hold _state_lock.
     """
     os.makedirs(project_dir, exist_ok=True)
-    on_update = _make_on_update(bot, chat_id, project_id)
+    on_update, on_result = _make_callbacks(bot, chat_id)
 
     # agents_count >= 2 means multi-agent (orchestrator delegates freely)
     multi_agent = agents_count >= 2
@@ -157,6 +270,7 @@ async def _activate_project(
         user_id=user_id,
         project_id=project_id,
         on_update=on_update,
+        on_result=on_result,
         multi_agent=multi_agent,
     )
 
