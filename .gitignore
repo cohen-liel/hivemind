@@ -25,3 +25,8 @@ htmlcov/
 .vscode/
 *.swp
 .DS_Store
+
+# Debug output files
+out.json
+out.txt
+err.txt

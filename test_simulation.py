@@ -1,21 +1,22 @@
 """
-Simulate: User selects telegram-claude-bot project with 2 agents,
+Simulate: User selects telegram-claude-bot project with orchestrator,
 then sends "find improvement opportunities in this project"
 """
 import asyncio
 import sys
 import time
 
-# Make sure we use the right path
 sys.path.insert(0, ".")
 
-from agent_manager import AgentManager
-from config import DEFAULT_AGENTS
+from orchestrator import OrchestratorManager
+from sdk_client import ClaudeSDKManager
+from session_manager import SessionManager
 
 PROJECT_DIR = "/Users/lielcohen/Downloads/telegram-claude-bot"
 PROJECT_NAME = "telegram-claude-bot"
 
 messages_received = []
+
 
 async def on_update(text: str):
     """Simulate Telegram — just print to console."""
@@ -30,20 +31,24 @@ async def on_update(text: str):
 
 
 async def main():
-    # Build 2-agent config (architect + developer) — same as the bot does
-    agents_config = DEFAULT_AGENTS[:2]
+    # Initialize SDK and session manager
+    sdk = ClaudeSDKManager()
+    session_mgr = SessionManager(db_path="./data/test_sessions.db")
+    await session_mgr.initialize()
 
-    print(f"🚀 Creating AgentManager with {len(agents_config)} agents:")
-    for a in agents_config:
-        print(f"   - {a['name']} ({a['role']})")
+    print(f"🚀 Creating OrchestratorManager (multi-agent mode)")
     print(f"📁 Project dir: {PROJECT_DIR}")
     print()
 
-    manager = AgentManager(
+    manager = OrchestratorManager(
         project_name=PROJECT_NAME,
         project_dir=PROJECT_DIR,
-        agents_config=agents_config,
+        sdk=sdk,
+        session_mgr=session_mgr,
+        user_id=12345,
+        project_id="telegram-claude-bot",
         on_update=on_update,
+        multi_agent=True,
     )
 
     user_message = (
@@ -91,6 +96,8 @@ async def main():
     # Stop cleanly
     if manager.is_running or manager.is_paused:
         await manager.stop()
+
+    await session_mgr.close()
 
 
 if __name__ == "__main__":

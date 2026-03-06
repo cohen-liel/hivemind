@@ -1,104 +1,125 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 
-def _load_dotenv():
-    """Load .env file from the same directory as this script."""
-    env_path = Path(__file__).parent / ".env"
-    if not env_path.exists():
-        return
-    with open(env_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            if not os.environ.get(key):
-                os.environ[key] = value
-
-
-_load_dotenv()
+load_dotenv()
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-# Claude CLI
-CLAUDE_CLI_PATH = os.getenv("CLAUDE_CLI_PATH", "claude")
+# Access control — comma-separated Telegram user IDs (empty = allow all)
+ALLOWED_USER_IDS = [int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()]
 
 # Projects
 PROJECTS_BASE_DIR = Path(os.getenv("CLAUDE_PROJECTS_DIR", "~/claude-projects")).expanduser()
 PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Agent limits
-MAX_TURNS_PER_CYCLE = int(os.getenv("MAX_TURNS_PER_CYCLE", "50"))
-MAX_BUDGET_USD = float(os.getenv("MAX_BUDGET_USD", "10000.0"))
-AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "600"))
+MAX_TURNS_PER_CYCLE = int(os.getenv("MAX_TURNS_PER_CYCLE", "20"))
+MAX_BUDGET_USD = float(os.getenv("MAX_BUDGET_USD", "5.0"))
+AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "300"))
+
+# SDK settings
+SDK_MAX_RETRIES = 2
+SDK_MAX_TURNS_PER_QUERY = int(os.getenv("SDK_MAX_TURNS_PER_QUERY", "10"))
+SDK_MAX_BUDGET_PER_QUERY = float(os.getenv("SDK_MAX_BUDGET_PER_QUERY", "2.0"))
+
+# Session persistence
+SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "24"))
 
 # Stuck detection
 STUCK_SIMILARITY_THRESHOLD = 0.85
 STUCK_WINDOW_SIZE = 4
 
-# Default agent roles
-DEFAULT_AGENTS = [
-    {
-        "name": "architect",
-        "role": "Architect",
-        "system_prompt": (
-            "You are the **Architect** agent in a multi-agent coding team.\n\n"
-            "YOUR RESPONSIBILITIES:\n"
-            "- Analyze the user's requirements and create a detailed technical plan\n"
-            "- Break down the project into clear, actionable tasks\n"
-            "- Review code and progress reports from the Developer agent\n"
-            "- Provide feedback and course corrections when needed\n"
-            "- When the project is fully complete and tested, respond with TASK_COMPLETE\n\n"
-            "COMMUNICATION RULES:\n"
-            "- You receive messages from other agents prefixed with their name and role\n"
-            "- Your response will be forwarded to the next agent in the team\n"
-            "- Be concise and actionable — give clear instructions, not essays\n"
-            "- When giving tasks to the Developer, number them and be specific about file paths and logic\n"
-            "- After the Developer reports back, review their work and either approve or request changes\n\n"
-            "COMPLETION:\n"
-            "- Only say TASK_COMPLETE when ALL requirements are implemented and working\n"
-            "- Before completing, verify: all files created, code runs, requirements met"
-        ),
-    },
-    {
-        "name": "developer",
-        "role": "Developer",
-        "system_prompt": (
-            "You are the **Developer** agent in a multi-agent coding team.\n\n"
-            "YOUR RESPONSIBILITIES:\n"
-            "- Implement code based on the Architect's plans and instructions\n"
-            "- Write clean, working, production-quality code\n"
-            "- Create all necessary files, configs, and directory structures\n"
-            "- Report back exactly what you implemented, including file paths and key decisions\n"
-            "- Ask the Architect for clarification if instructions are unclear\n\n"
-            "COMMUNICATION RULES:\n"
-            "- You receive instructions from the Architect agent\n"
-            "- Your response will be sent back to the Architect for review\n"
-            "- Be specific in your reports: list files created/modified, key functions, any issues found\n"
-            "- If you encounter a problem, explain it clearly and suggest solutions\n\n"
-            "CODING STANDARDS:\n"
-            "- Write actual code files — don't just describe what you'd do\n"
-            "- Include error handling and input validation\n"
-            "- Use clear naming conventions and add brief comments for complex logic\n"
-            "- Follow the language/framework best practices for the project"
-        ),
-    },
-]
-
-# Conversation store
-STORE_DIR = Path(os.getenv("CONVERSATION_STORE_DIR", "~/Downloads/telegram-claude-bot/data")).expanduser()
+# Conversation store / session DB
+STORE_DIR = Path(os.getenv("CONVERSATION_STORE_DIR", "./data")).expanduser()
 STORE_DIR.mkdir(parents=True, exist_ok=True)
+SESSION_DB_PATH = str(STORE_DIR / "sessions.db")
 
 # Telegram message limits
 MAX_TELEGRAM_MESSAGE_LENGTH = 4000
 
-# Predefined projects
-PREDEFINED_PROJECTS = {
-    "family-finance": "~/Downloads/family-finance",
-    "skillup": "~/Downloads/SkillUp",
-    "telegram-claude-bot": "~/Downloads/telegram-claude-bot",
+# Predefined projects — configure via /new command in Telegram
+PREDEFINED_PROJECTS: dict = {}
+
+# Default agent roles (kept for display/reference)
+DEFAULT_AGENTS = [
+    {"name": "orchestrator", "role": "Orchestrator"},
+    {"name": "developer", "role": "Developer"},
+    {"name": "reviewer", "role": "Reviewer"},
+    {"name": "tester", "role": "Tester"},
+    {"name": "devops", "role": "DevOps"},
+]
+
+# --- Orchestrator system prompt ---
+ORCHESTRATOR_SYSTEM_PROMPT = (
+    "You are an Orchestrator agent managing a software project.\n\n"
+    "YOUR RESPONSIBILITIES:\n"
+    "- Analyze the user's requirements and create a technical plan\n"
+    "- For simple tasks, handle them directly — write code, answer questions, make changes\n"
+    "- For complex tasks, delegate work to specialized sub-agents\n"
+    "- Review results from sub-agents and provide feedback\n"
+    "- Track overall project progress\n\n"
+    "DELEGATION:\n"
+    "When you need to delegate work to a sub-agent, emit a <delegate> block:\n"
+    "<delegate>\n"
+    '{"agent": "developer", "task": "Implement the user CRUD API", "context": "Using Flask and SQLAlchemy"}\n'
+    "</delegate>\n\n"
+    "Available sub-agents:\n"
+    "- developer: Writes code, creates files, implements features\n"
+    "- reviewer: Reviews code for bugs, security issues, best practices\n"
+    "- tester: Writes and runs tests\n"
+    "- devops: Handles deployment, CI/CD, Docker, infrastructure\n\n"
+    "You can delegate to multiple agents in one response by including multiple <delegate> blocks.\n\n"
+    "COMPLETION:\n"
+    "- When ALL requirements are implemented and working, respond with TASK_COMPLETE\n"
+    "- Before completing, verify: all files created, code works, requirements met\n\n"
+    "GUIDELINES:\n"
+    "- Be concise and actionable\n"
+    "- For simple questions or small changes, handle directly without delegation\n"
+    "- Only delegate when the task genuinely benefits from specialization\n"
+    "- After reviewing sub-agent results, either approve (TASK_COMPLETE) or delegate more work"
+)
+
+# --- Sub-agent system prompts ---
+SUB_AGENT_PROMPTS = {
+    "developer": (
+        "You are a Developer agent in a multi-agent coding team.\n\n"
+        "YOUR RESPONSIBILITIES:\n"
+        "- Implement code based on the task description\n"
+        "- Write clean, working, production-quality code\n"
+        "- Create all necessary files, configs, and directory structures\n"
+        "- Report back exactly what you implemented, including file paths and key decisions\n\n"
+        "CODING STANDARDS:\n"
+        "- Write actual code files — don't just describe what you'd do\n"
+        "- Include error handling and input validation\n"
+        "- Use clear naming conventions and add brief comments for complex logic\n"
+        "- Follow the language/framework best practices for the project"
+    ),
+    "reviewer": (
+        "You are a Reviewer agent in a multi-agent coding team.\n\n"
+        "YOUR RESPONSIBILITIES:\n"
+        "- Review code for bugs, security issues, and best practices\n"
+        "- Suggest improvements and optimizations\n"
+        "- Verify the implementation matches the task requirements\n"
+        "- Be thorough but constructive in your reviews\n"
+        "- List specific issues with file paths and line numbers"
+    ),
+    "tester": (
+        "You are a Tester agent in a multi-agent coding team.\n\n"
+        "YOUR RESPONSIBILITIES:\n"
+        "- Write comprehensive tests for the code\n"
+        "- Run tests and report results\n"
+        "- Cover edge cases and error scenarios\n"
+        "- Report test results and any failures clearly"
+    ),
+    "devops": (
+        "You are a DevOps agent in a multi-agent coding team.\n\n"
+        "YOUR RESPONSIBILITIES:\n"
+        "- Handle deployment configs, CI/CD pipelines\n"
+        "- Set up Docker, infrastructure, and build systems\n"
+        "- Configure environment variables and secrets management\n"
+        "- Write clear documentation for deployment procedures"
+    ),
 }
