@@ -529,17 +529,16 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
         keyboard = [
             [
-                InlineKeyboardButton("1 (Solo)", callback_data="set_agents:1"),
-                InlineKeyboardButton("2 (+ Dev)", callback_data="set_agents:2"),
+                InlineKeyboardButton("2 agents (Recommended)", callback_data="set_agents:2"),
             ],
             [
+                InlineKeyboardButton("1 (Solo)", callback_data="set_agents:1"),
                 InlineKeyboardButton("3 (+ Reviewer)", callback_data="set_agents:3"),
-                InlineKeyboardButton("4 (+ Tester)", callback_data="set_agents:4"),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"Selected: *{proj_id}*\n\nHow many agents should work on this project?",
+            f"Selected: *{proj_id}*\n\nHow many agents?",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )

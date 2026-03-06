@@ -18,6 +18,7 @@ from config import (
     ORCHESTRATOR_SYSTEM_PROMPT,
     SDK_MAX_TURNS_PER_QUERY,
     SDK_MAX_BUDGET_PER_QUERY,
+    SOLO_AGENT_PROMPT,
     STUCK_SIMILARITY_THRESHOLD,
     STUCK_WINDOW_SIZE,
     SUB_AGENT_PROMPTS,
@@ -503,15 +504,20 @@ class OrchestratorManager:
 
     async def _query_agent(self, agent_role: str, prompt: str) -> SDKResponse:
         """Query a specific agent (orchestrator or sub-agent) using the SDK."""
-        # Get system prompt
-        if agent_role == "orchestrator":
+        # Get system prompt and resource limits based on role and mode
+        if agent_role == "orchestrator" and self.multi_agent:
+            # Multi-agent: orchestrator is a coordinator only (no tools)
             system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
-            # Orchestrator only plans & delegates — limit to 1 turn (no tool use)
             max_turns = 1
             max_budget = 0.5
+        elif agent_role == "orchestrator" and not self.multi_agent:
+            # Solo mode: orchestrator IS the worker — full access to tools
+            system_prompt = SOLO_AGENT_PROMPT
+            max_turns = SDK_MAX_TURNS_PER_QUERY
+            max_budget = SDK_MAX_BUDGET_PER_QUERY
         else:
-            system_prompt = SUB_AGENT_PROMPTS.get(agent_role, "You are a helpful coding assistant.")
             # Sub-agents do real work — full turns and budget
+            system_prompt = SUB_AGENT_PROMPTS.get(agent_role, "You are a helpful coding assistant.")
             max_turns = SDK_MAX_TURNS_PER_QUERY
             max_budget = SDK_MAX_BUDGET_PER_QUERY
 

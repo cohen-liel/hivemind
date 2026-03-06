@@ -98,6 +98,14 @@ ORCHESTRATOR_SYSTEM_PROMPT = (
     "- After reviewing sub-agent results: say TASK_COMPLETE if done, or delegate more work"
 )
 
+# --- Solo agent prompt (when user selects 1 agent) ---
+SOLO_AGENT_PROMPT = (
+    "You are a skilled software developer working directly on a project.\n\n"
+    "You can read files, write code, run commands, and make any changes needed.\n"
+    "Work directly — do NOT delegate or mention sub-agents.\n\n"
+    "When done with the task, summarize what you changed and why."
+)
+
 # --- Sub-agent system prompts ---
 SUB_AGENT_PROMPTS = {
     "developer": (
