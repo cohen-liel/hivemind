@@ -358,17 +358,22 @@ class OrchestratorManager:
             logger.error(f"Orchestrator loop error: {e}", exc_info=True)
             await self._notify(f"❌ Unexpected error in orchestrator: {e}")
         else:
-            # Loop exited normally (not via exception)
+            # Loop exited normally (not via exception).
+            # IMPORTANT: always use _send_result here (not _notify) — after the
+            # orchestrator sent its last result, the ProgressMessage was already
+            # closed (started=False). Calling _notify at this point would open a
+            # NEW progress message that never gets closed and stays stuck in Telegram.
             if loop_count >= max_loops and not finished_naturally:
-                await self._notify(
-                    f"⏹ Orchestrator reached the safety loop limit ({max_loops} iterations).\n\n"
+                await self._send_result(
+                    f"⏹ Reached the orchestrator safety limit ({max_loops} iterations).\n\n"
                     f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}\n\n"
                     f"Send another message to continue working on this project."
                 )
-            elif finished_naturally and "TASK_COMPLETE" not in (self.conversation_log[-1].content if self.conversation_log else ""):
-                # Ended naturally (no more delegations) but orchestrator didn't say TASK_COMPLETE
-                await self._notify(
-                    f"✅ *{self.project_name}* — Orchestrator finished.\n\n"
+            elif finished_naturally:
+                # Ended naturally (no more delegations, no TASK_COMPLETE).
+                # Send a brief "done" signal so the user knows the session ended.
+                await self._send_result(
+                    f"✅ *{self.project_name}* — Done for now.\n\n"
                     f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}\n\n"
                     f"Send another message to continue."
                 )

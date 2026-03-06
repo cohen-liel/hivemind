@@ -124,8 +124,19 @@ class ClaudeSDKManager:
                 if message.result and message.result not in text_parts:
                     text_parts.append(message.result)
 
+                combined = "\n\n".join(text_parts).strip()
+
+                # If agent did work via tools but produced no text output,
+                # provide a meaningful fallback so the orchestrator knows work was done.
+                if not combined and not message.is_error:
+                    combined = (
+                        f"✅ Task completed via tool use ({num_turns} turn(s)). "
+                        "No text output — work was done directly. "
+                        "Verify results in the workspace files."
+                    )
+
                 return SDKResponse(
-                    text="\n\n".join(text_parts).strip(),
+                    text=combined,
                     session_id=result_session_id,
                     cost_usd=cost_usd,
                     duration_ms=duration_ms,
@@ -134,15 +145,16 @@ class ClaudeSDKManager:
                     error_message="" if not message.is_error else (message.result or "Unknown error"),
                 )
 
-        # Stream ended without ResultMessage
+        # Stream ended without ResultMessage — treat as success if we got any text,
+        # otherwise flag as a real error (SDK failed to complete the stream).
         combined = "\n\n".join(text_parts).strip()
         return SDKResponse(
-            text=combined or "No response received",
+            text=combined or "⚠️ Agent produced no text output (stream ended unexpectedly).",
             session_id=result_session_id,
             cost_usd=cost_usd,
             duration_ms=duration_ms,
             num_turns=num_turns,
-            is_error=not combined,
+            is_error=True,  # No ResultMessage = definitely an SDK-level error
         )
 
     async def query_with_retry(

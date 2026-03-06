@@ -540,6 +540,16 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
             parse_mode="Markdown"
         )
 
+    elif data == "new_project":
+        # User tapped "➕ New project" — prompt them to use /new
+        await query.edit_message_text(
+            "📝 *New Project*\n\n"
+            "Use the /new command to create a project.\n"
+            "It will ask you for a name, description, directory, and how many agents.",
+            parse_mode="Markdown",
+        )
+        return
+
     elif data.startswith("set_agents:"):
         agents_count = int(data.split(":", 1)[1])
         target = context.user_data.get('pending_switch')
@@ -880,10 +890,32 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         manager = get_current_manager(user_id)
 
     if not manager:
-        await update.message.reply_text(
-            "No active project selected.\n\n"
-            "Use /projects to see available projects, or /new to create one.",
-        )
+        # No active project — show project list automatically
+        saved = await session_mgr.list_projects()
+        if saved or PREDEFINED_PROJECTS:
+            keyboard = []
+            for p in saved:
+                keyboard.append([InlineKeyboardButton(
+                    f"💾 {p['name']}", callback_data=f"sel_proj:{p['project_id']}"
+                )])
+            for name in PREDEFINED_PROJECTS:
+                if not any(p['project_id'] == name for p in saved):
+                    keyboard.append([InlineKeyboardButton(
+                        f"📁 {name}", callback_data=f"sel_proj:{name}"
+                    )])
+            keyboard.append([InlineKeyboardButton(
+                "➕ New project", callback_data="new_project"
+            )])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                "👇 *Select a project to work on:*",
+                reply_markup=reply_markup,
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text(
+                "No projects yet. Use /new to create one.",
+            )
         return
 
     message = update.message.text.strip()

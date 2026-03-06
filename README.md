@@ -23,6 +23,8 @@ A Telegram bot that acts as an orchestration layer for multiple Claude Code agen
    # Edit .env and paste your TELEGRAM_BOT_TOKEN
    ```
 
+   > **Security:** The `.env` file contains your bot token and must **never** be committed to git. If your token was ever exposed in version control, revoke it immediately via [@BotFather](https://t.me/BotFather) and generate a new one. Additionally, set `ALLOWED_USER_IDS` to restrict access to trusted Telegram accounts.
+
 3. **Running Locally (Virtual Environment):**
    ```bash
    python3 -m venv venv
