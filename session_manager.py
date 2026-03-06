@@ -244,6 +244,24 @@ class SessionManager:
         )
         await db.commit()
 
+    async def delete_project(self, project_id: str):
+        """Delete a project and all its associated sessions and messages."""
+        db = await self._get_db()
+        await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
+        await db.execute("DELETE FROM sessions WHERE project_id=?", (project_id,))
+        await db.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
+        await db.commit()
+
+    async def get_project_total_cost(self, project_id: str) -> float:
+        """Return the total cost_usd spent across all sessions for a project."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions WHERE project_id=?",
+            (project_id,),
+        )
+        row = await cursor.fetchone()
+        return float(row[0]) if row else 0.0
+
     async def cleanup_expired(self, max_age_hours: int = SESSION_EXPIRY_HOURS):
         """Clean up sessions older than max_age_hours."""
         db = await self._get_db()

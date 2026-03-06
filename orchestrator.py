@@ -8,10 +8,12 @@ import re
 import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Callable, Awaitable
 
 from config import (
     MAX_BUDGET_USD,
+    MAX_ORCHESTRATOR_LOOPS,
     MAX_TURNS_PER_CYCLE,
     ORCHESTRATOR_SYSTEM_PROMPT,
     SDK_MAX_TURNS_PER_QUERY,
@@ -123,23 +125,34 @@ class OrchestratorManager:
                 logger.error(f"Update callback error: {e}")
 
     def _get_workspace_context(self) -> str:
-        """Scan project directory and return a short file listing."""
+        """Scan project directory and return a short file listing (2 levels deep)."""
+        entries = []
         try:
-            entries = []
-            for item in sorted(os.listdir(self.project_dir)):
-                if item.startswith("."):
+            for item in sorted(Path(self.project_dir).iterdir()):
+                if item.name.startswith('.') or item.name in ('__pycache__', 'node_modules', '.git', 'venv', '.venv'):
                     continue
-                full = os.path.join(self.project_dir, item)
-                if os.path.isdir(full):
-                    entries.append(f"  {item}/")
+                if item.is_dir():
+                    entries.append(f"  {item.name}/")
+                    try:
+                        for sub in sorted(item.iterdir()):
+                            if sub.name.startswith('.') or sub.name == '__pycache__':
+                                continue
+                            entries.append(f"    {sub.name}{'/' if sub.is_dir() else ''}")
+                            if len(entries) >= 50:
+                                break
+                    except PermissionError:
+                        pass
                 else:
-                    size = os.path.getsize(full)
-                    entries.append(f"  {item} ({size} bytes)")
-            if not entries:
-                return ""
-            return "Current workspace files:\n" + "\n".join(entries[:30])
+                    entries.append(f"  {item.name}")
+                if len(entries) >= 50:
+                    entries.append("  ... (truncated)")
+                    break
         except Exception:
+            entries = ["  (unable to list files)"]
+
+        if not entries:
             return ""
+        return "Current workspace files:\n" + "\n".join(entries)
 
     async def start_session(self, user_message: str):
         """Start processing a user message."""
@@ -152,9 +165,12 @@ class OrchestratorManager:
         self._pause_event.set()
         self.turn_count = 0
 
-        # Clear stale sub-agent sessions from previous runs so each new session
-        # starts with fresh context per sub-agent. The orchestrator session is
-        # kept to preserve project-level memory across activations.
+        # Invalidate ALL sessions (orchestrator + sub-agents) so the new
+        # system prompt takes full effect. Without this, the resumed
+        # orchestrator session carries old context/instructions and ignores
+        # the current system prompt — causing it to answer directly instead
+        # of delegating to sub-agents.
+        await self.session_mgr.invalidate_session(self.user_id, self.project_id, "orchestrator")
         for role in SUB_AGENT_PROMPTS:
             await self.session_mgr.invalidate_session(self.user_id, self.project_id, role)
 
@@ -228,21 +244,36 @@ class OrchestratorManager:
             self.project_id, "user", "User", user_message
         )
 
-        # Build initial prompt
+        # Build initial prompt with conversation history for context
         workspace = self._get_workspace_context()
+
+        # Include recent conversation history so the orchestrator has context
+        # even without session resume
+        recent_msgs = await self.session_mgr.get_recent_messages(self.project_id, count=10)
+        history = ""
+        if recent_msgs:
+            history_lines = []
+            for msg in recent_msgs:
+                role = msg.get("agent_name", "unknown")
+                content = msg.get("content", "")[:500]
+                history_lines.append(f"[{role}]: {content}")
+            history = "Recent conversation history:\n" + "\n".join(history_lines) + "\n\n"
+
         prompt = (
             f"Project: {self.project_name}\n"
             f"Working directory: {self.project_dir}\n\n"
         )
         if workspace:
             prompt += f"{workspace}\n\n"
+        if history:
+            prompt += history
         prompt += f"User request:\n{user_message}"
 
         try:
             # Main loop: orchestrator responds, optionally delegates, then loops
             orchestrator_input = prompt
             loop_count = 0
-            max_loops = 10  # Safety limit on orchestrator iterations
+            max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
             finished_naturally = False
 
             while self.is_running and loop_count < max_loops:
@@ -467,8 +498,14 @@ class OrchestratorManager:
         # Get system prompt
         if agent_role == "orchestrator":
             system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
+            # Orchestrator only plans & delegates — limit to 1 turn (no tool use)
+            max_turns = 1
+            max_budget = 0.5
         else:
             system_prompt = SUB_AGENT_PROMPTS.get(agent_role, "You are a helpful coding assistant.")
+            # Sub-agents do real work — full turns and budget
+            max_turns = SDK_MAX_TURNS_PER_QUERY
+            max_budget = SDK_MAX_BUDGET_PER_QUERY
 
         # Try to resume session
         session_id = await self.session_mgr.get_session(
@@ -486,8 +523,8 @@ class OrchestratorManager:
             system_prompt=system_prompt,
             cwd=self.project_dir,
             session_id=session_id,
-            max_turns=SDK_MAX_TURNS_PER_QUERY,
-            max_budget_usd=SDK_MAX_BUDGET_PER_QUERY,
+            max_turns=max_turns,
+            max_budget_usd=max_budget,
             on_stream=on_stream,
         )
 
