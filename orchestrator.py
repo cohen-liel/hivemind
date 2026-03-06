@@ -481,14 +481,21 @@ class OrchestratorManager:
             results[agent_role] = response
 
             # Show sub-agent response
-            summary = response.text[:1500]
-            if len(response.text) > 1500:
+            summary = response.text[:2500]
+            if len(response.text) > 2500:
                 summary += "\n... (truncated)"
 
+            # If agent did tool-only work with no text, show what files changed
+            if "tool use" in summary.lower() and "no text output" in summary.lower():
+                changed = self._detect_file_changes()
+                if changed:
+                    summary += f"\n\nFiles changed:\n{changed}"
+
             status = "✅" if not response.is_error else "⚠️"
+            duration = f" ({response.duration_ms // 1000}s)" if response.duration_ms > 0 else ""
             await self._send_result(
-                f"{status} *{agent_role}* — Turn {self.turn_count}\n"
-                f"💰 ${response.cost_usd:.4f} (total: ${self.total_cost_usd:.4f})\n\n"
+                f"{status} *{agent_role}* finished{duration}\n"
+                f"💰 ${response.cost_usd:.4f} | Turns: {response.num_turns}\n\n"
                 f"{summary}"
             )
 
@@ -609,6 +616,27 @@ class OrchestratorManager:
         return "\n".join(parts)
 
     # --- Stuck detection ---
+
+    def _detect_file_changes(self) -> str:
+        """Run git status in the project dir to show what files the agent changed."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--stat", "HEAD"],
+                cwd=self.project_dir,
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.stdout.strip():
+                return result.stdout.strip()
+            # Also check untracked files
+            result2 = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=self.project_dir,
+                capture_output=True, text=True, timeout=5,
+            )
+            return result2.stdout.strip() or "(no file changes detected)"
+        except Exception:
+            return "(unable to detect changes)"
 
     def _detect_stuck(self) -> bool:
         if len(self.conversation_log) < STUCK_WINDOW_SIZE:
