@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
+
+# Unset CLAUDECODE so the SDK can spawn claude subprocesses
+# (otherwise it refuses with "cannot launch inside another Claude Code session")
+os.environ.pop("CLAUDECODE", None)
 
 from claude_agent_sdk import query, ClaudeAgentOptions
 from claude_agent_sdk.types import (
@@ -60,7 +65,11 @@ class ClaudeSDKManager:
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
             cwd=cwd,
-            permission_mode="bypassPermissions",
+            sandbox={
+                "enabled": True,
+                "autoAllowBashIfSandboxed": True,
+            },
+            setting_sources=["project"],
         )
 
         if session_id:
