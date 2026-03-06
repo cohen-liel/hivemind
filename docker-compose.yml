@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: claude-bot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      # Map the user's claude-projects directory inside the container
+      - ~/claude-projects:/root/claude-projects
+      # Map the predefined projects so the bot can access them
+      - ~/Downloads/SkillUp:/root/Downloads/SkillUp
+      - ~/Downloads/telegram-claude-bot:/root/Downloads/telegram-claude-bot
+      - ~/Downloads/family-finance:/root/Downloads/family-finance
+    env_file:
+      - .env
