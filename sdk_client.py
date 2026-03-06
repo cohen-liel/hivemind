@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from claude_code_sdk import query, ClaudeCodeOptions
-from claude_code_sdk.types import (
+from claude_agent_sdk import query, ClaudeAgentOptions
+from claude_agent_sdk.types import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
@@ -29,7 +29,7 @@ class SDKResponse:
 
 
 class ClaudeSDKManager:
-    """Thin wrapper over claude-code-sdk's query() with retry and error handling."""
+    """Thin wrapper over claude-agent-sdk's query() with retry and error handling."""
 
     async def query(
         self,
@@ -41,7 +41,7 @@ class ClaudeSDKManager:
         max_budget_usd: float = 2.0,
         on_stream=None,
     ) -> SDKResponse:
-        """Send a query to Claude Code SDK.
+        """Send a query to Claude Agent SDK.
 
         Args:
             prompt: The user/agent prompt.
@@ -55,9 +55,10 @@ class ClaudeSDKManager:
         Returns:
             SDKResponse with text, session_id, cost, etc.
         """
-        options = ClaudeCodeOptions(
+        options = ClaudeAgentOptions(
             system_prompt=system_prompt,
             max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
             cwd=cwd,
             permission_mode="bypassPermissions",
         )
@@ -65,25 +66,18 @@ class ClaudeSDKManager:
         if session_id:
             options.resume = session_id
 
-        accumulated_text = ""
-        result_session_id = session_id or ""
-        cost_usd = 0.0
-        duration_ms = 0
-        num_turns = 0
-        start_time = time.monotonic()
-
         try:
-            async for message in asyncio.wait_for(
+            # Run the stream consumption as a task so we can apply a timeout
+            result = await asyncio.wait_for(
                 self._consume_stream(prompt, options, on_stream),
                 timeout=AGENT_TIMEOUT_SECONDS,
-            ):
-                if isinstance(message, SDKResponse):
-                    return message
+            )
+            return result
         except asyncio.TimeoutError:
             logger.warning(f"SDK query timed out after {AGENT_TIMEOUT_SECONDS}s")
             return SDKResponse(
-                text=accumulated_text or f"Error: Agent timed out after {AGENT_TIMEOUT_SECONDS} seconds",
-                session_id=result_session_id,
+                text=f"Error: Agent timed out after {AGENT_TIMEOUT_SECONDS} seconds",
+                session_id=session_id or "",
                 is_error=True,
                 error_message=f"Timeout after {AGENT_TIMEOUT_SECONDS}s",
             )
@@ -91,23 +85,14 @@ class ClaudeSDKManager:
             logger.error(f"SDK query error: {e}", exc_info=True)
             return SDKResponse(
                 text=f"Error: {e}",
-                session_id=result_session_id,
+                session_id=session_id or "",
                 is_error=True,
                 error_message=str(e),
             )
 
-        # Should not reach here, but just in case
-        return SDKResponse(
-            text=accumulated_text or "No response received",
-            session_id=result_session_id,
-            cost_usd=cost_usd,
-            duration_ms=duration_ms,
-            is_error=not accumulated_text,
-        )
-
-    async def _consume_stream(self, prompt, options, on_stream=None):
-        """Async generator that consumes the SDK stream and yields the final SDKResponse."""
-        accumulated_text = ""
+    async def _consume_stream(self, prompt, options, on_stream=None) -> SDKResponse:
+        """Consume the SDK async stream and return the final SDKResponse."""
+        text_parts: list[str] = []
         result_session_id = ""
         cost_usd = 0.0
         duration_ms = 0
@@ -115,48 +100,49 @@ class ClaudeSDKManager:
 
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
+                # Each AssistantMessage is a complete assistant turn.
+                # Extract text from its content blocks.
+                turn_text = ""
                 for block in message.content:
                     if isinstance(block, TextBlock):
-                        new_text = block.text
-                        if len(new_text) > len(accumulated_text):
-                            delta = new_text[len(accumulated_text):]
-                            accumulated_text = new_text
-                            if on_stream and delta:
-                                try:
-                                    await on_stream(delta)
-                                except Exception as e:
-                                    logger.error(f"Stream callback error: {e}")
-                        elif new_text and new_text not in accumulated_text:
-                            accumulated_text += "\n" + new_text
-                            if on_stream:
-                                try:
-                                    await on_stream("\n" + new_text)
-                                except Exception as e:
-                                    logger.error(f"Stream callback error: {e}")
+                        turn_text += block.text
+                if turn_text:
+                    text_parts.append(turn_text)
+                    if on_stream:
+                        try:
+                            await on_stream(turn_text)
+                        except Exception as e:
+                            logger.error(f"Stream callback error: {e}")
 
             elif isinstance(message, ResultMessage):
-                result_session_id = getattr(message, "session_id", "") or ""
-                cost_usd = getattr(message, "total_cost_usd", 0.0) or 0.0
-                duration_ms = getattr(message, "duration_ms", 0) or 0
-                num_turns = getattr(message, "num_turns", 0) or 0
+                result_session_id = message.session_id or ""
+                cost_usd = message.total_cost_usd or 0.0
+                duration_ms = message.duration_ms or 0
+                num_turns = message.num_turns or 0
 
-                yield SDKResponse(
-                    text=accumulated_text.strip(),
+                # ResultMessage may also carry a result text
+                if message.result and message.result not in text_parts:
+                    text_parts.append(message.result)
+
+                return SDKResponse(
+                    text="\n\n".join(text_parts).strip(),
                     session_id=result_session_id,
                     cost_usd=cost_usd,
                     duration_ms=duration_ms,
                     num_turns=num_turns,
+                    is_error=message.is_error,
+                    error_message="" if not message.is_error else (message.result or "Unknown error"),
                 )
-                return
 
         # Stream ended without ResultMessage
-        yield SDKResponse(
-            text=accumulated_text.strip() or "No response received",
+        combined = "\n\n".join(text_parts).strip()
+        return SDKResponse(
+            text=combined or "No response received",
             session_id=result_session_id,
             cost_usd=cost_usd,
             duration_ms=duration_ms,
             num_turns=num_turns,
-            is_error=not accumulated_text.strip(),
+            is_error=not combined,
         )
 
     async def query_with_retry(

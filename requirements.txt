@@ -1,4 +1,4 @@
 python-telegram-bot>=21.0
 python-dotenv>=1.0
-claude-code-sdk>=0.1.47
+claude-agent-sdk>=0.0.10
 aiosqlite>=0.20
