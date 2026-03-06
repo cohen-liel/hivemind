@@ -513,11 +513,9 @@ class OrchestratorManager:
             self.user_id, self.project_id, agent_role
         )
 
-        # Stream callback: show live agent output in the progress message
+        # Stream callback: show live agent activity in the progress message
         async def on_stream(text: str):
-            # Truncate for progress display — show last 300 chars of agent output
-            preview = text[-300:] if len(text) > 300 else text
-            await self._notify(f"🔧 *{agent_role}*:\n{preview}")
+            await self._notify(f"🔧 *{agent_role}*\n{text[-500:]}")
 
         response = await self.sdk.query_with_retry(
             prompt=prompt,

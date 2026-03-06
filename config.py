@@ -1,9 +1,17 @@
+"""Configuration for the Telegram Claude Bot.
+
+Reads settings from environment variables (via .env) and exposes them
+as module-level constants to be imported across the project.
+"""
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -42,8 +50,14 @@ SESSION_DB_PATH = str(STORE_DIR / "sessions.db")
 # Telegram message limits
 MAX_TELEGRAM_MESSAGE_LENGTH = 4000
 
-# Predefined projects — configure via /new command in Telegram
-PREDEFINED_PROJECTS: dict = {}
+# User input validation
+MAX_USER_MESSAGE_LENGTH = int(os.getenv("MAX_USER_MESSAGE_LENGTH", "4000"))
+
+# Predefined projects
+PREDEFINED_PROJECTS: dict = {
+    "telegram-claude-bot": "~/Downloads/telegram-claude-bot",
+    "family-finance": "~/claude-projects/family-finance",
+}
 
 # Default agent roles (kept for display/reference)
 DEFAULT_AGENTS = [

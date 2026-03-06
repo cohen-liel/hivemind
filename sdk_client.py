@@ -15,6 +15,8 @@ from claude_agent_sdk.types import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
 )
 
 from config import AGENT_TIMEOUT_SECONDS, SDK_MAX_RETRIES
@@ -70,6 +72,7 @@ class ClaudeSDKManager:
                 "autoAllowBashIfSandboxed": True,
             },
             setting_sources=["project"],
+            include_partial_messages=on_stream is not None,
         )
 
         if session_id:
@@ -100,28 +103,79 @@ class ClaudeSDKManager:
             )
 
     async def _consume_stream(self, prompt, options, on_stream=None) -> SDKResponse:
-        """Consume the SDK async stream and return the final SDKResponse."""
+        """Consume the SDK async stream and return the final SDKResponse.
+
+        With include_partial_messages=True, we get intermediate AssistantMessage
+        objects showing tool use and partial text in real time.
+        """
         text_parts: list[str] = []
         result_session_id = ""
         cost_usd = 0.0
         duration_ms = 0
         num_turns = 0
+        last_seen_text = ""  # Track to avoid duplicate stream callbacks
 
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
-                # Each AssistantMessage is a complete assistant turn.
-                # Extract text from its content blocks.
+                # Extract content from this message (may be partial or complete)
                 turn_text = ""
+                tool_info = ""
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         turn_text += block.text
-                if turn_text:
-                    text_parts.append(turn_text)
-                    if on_stream:
-                        try:
-                            await on_stream(turn_text)
-                        except Exception as e:
-                            logger.error(f"Stream callback error: {e}")
+                    elif isinstance(block, ToolUseBlock):
+                        # Show which tool the agent is using
+                        tool_name = block.name
+                        tool_input = block.input
+                        # Format tool use for display
+                        if tool_name in ("Read", "read_file"):
+                            path = tool_input.get("file_path") or tool_input.get("path", "")
+                            tool_info = f"📄 Reading: {path}"
+                        elif tool_name in ("Write", "write_file", "create_file"):
+                            path = tool_input.get("file_path") or tool_input.get("path", "")
+                            tool_info = f"✏️ Writing: {path}"
+                        elif tool_name in ("Edit", "edit_file"):
+                            path = tool_input.get("file_path") or tool_input.get("path", "")
+                            tool_info = f"🔧 Editing: {path}"
+                        elif tool_name in ("Bash", "execute_bash", "bash"):
+                            cmd = str(tool_input.get("command", ""))[:100]
+                            tool_info = f"💻 Running: `{cmd}`"
+                        elif tool_name in ("Glob", "glob", "ListFiles"):
+                            pattern = tool_input.get("pattern", "")
+                            tool_info = f"🔍 Searching: {pattern}"
+                        elif tool_name in ("Grep", "grep", "SearchFiles"):
+                            pattern = tool_input.get("pattern", "")
+                            tool_info = f"🔎 Grep: {pattern}"
+                        else:
+                            tool_info = f"🔧 {tool_name}"
+
+                # Call stream callback with meaningful updates
+                if on_stream and (turn_text != last_seen_text or tool_info):
+                    try:
+                        update = ""
+                        if tool_info:
+                            update = tool_info
+                        if turn_text and turn_text != last_seen_text:
+                            # Show last 300 chars of new text
+                            new_text = turn_text[len(last_seen_text):]
+                            preview = new_text[-300:] if len(new_text) > 300 else new_text
+                            if update:
+                                update += f"\n\n{preview}"
+                            else:
+                                update = preview
+                        if update:
+                            await on_stream(update)
+                    except Exception as e:
+                        logger.error(f"Stream callback error: {e}")
+                    last_seen_text = turn_text
+
+                # Only add to final text_parts when we get substantive text
+                if turn_text and turn_text not in text_parts:
+                    # Replace last partial with this more complete version
+                    if text_parts and turn_text.startswith(text_parts[-1]):
+                        text_parts[-1] = turn_text
+                    elif turn_text not in "".join(text_parts):
+                        text_parts.append(turn_text)
 
             elif isinstance(message, ResultMessage):
                 result_session_id = message.session_id or ""
