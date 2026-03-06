@@ -310,6 +310,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/pause — Pause current project\n"
         "/resume — Resume current project\n"
         "/stop — Stop current project\n"
+        "/clear — Clear conversation log\n"
         "/log — Recent conversation log\n"
         "/cancel — Cancel current operation\n"
         "/help — Show this help"
@@ -819,6 +820,24 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 current_project.pop(user_id, None)
 
 
+# --- /clear ---
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _check_auth(update):
+        return
+
+    user_id = update.effective_user.id
+
+    async with _state_lock:
+        proj_id = current_project.get(user_id)
+
+    if not proj_id:
+        await update.message.reply_text("No active project. Use /projects to select one.")
+        return
+
+    await session_mgr.clear_messages(proj_id)
+    await update.message.reply_text(f"🗑 Cleared message history for project *{proj_id}*.", parse_mode="Markdown")
+
+
 # --- /log ---
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
@@ -970,6 +989,7 @@ def main():
             BotCommand("pause", "Pause the current project"),
             BotCommand("resume", "Resume the current project"),
             BotCommand("stop", "Stop the current project"),
+            BotCommand("clear", "Clear conversation history"),
             BotCommand("new", "Create a completely new project"),
             BotCommand("help", "Show help"),
         ]
@@ -1009,6 +1029,7 @@ def main():
     app.add_handler(CommandHandler("pause", pause_command))
     app.add_handler(CommandHandler("resume", resume_command))
     app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("log", log_command))
 
     # Callback query handler

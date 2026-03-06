@@ -219,6 +219,12 @@ class SessionManager:
 
     # --- Cleanup ---
 
+    async def clear_messages(self, project_id: str):
+        """Delete all messages for a project."""
+        db = await self._get_db()
+        await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
+        await db.commit()
+
     async def cleanup_expired(self, max_age_hours: int = SESSION_EXPIRY_HOURS):
         """Clean up sessions older than max_age_hours."""
         db = await self._get_db()

@@ -273,10 +273,20 @@ class OrchestratorManager:
                 self._record_response("orchestrator", "Orchestrator", response)
 
                 if response.is_error:
-                    await self._notify(
-                        f"⚠️ Orchestrator error: {response.error_message}\n"
-                        f"Use /resume to retry or /stop to end."
-                    )
+                    error_msg = response.error_message.lower()
+                    # Provide actionable messages for common errors
+                    if "api key" in error_msg or "invalid api" in error_msg or "authentication" in error_msg:
+                        await self._send_result(
+                            "🔑 *API Key Error*\n\n"
+                            "The Claude agent can't authenticate.\n"
+                            "Make sure `ANTHROPIC_API_KEY` is set in your `.env` file.\n\n"
+                            "Get your key at: https://console.anthropic.com/"
+                        )
+                    else:
+                        await self._send_result(
+                            f"⚠️ Orchestrator error: {response.error_message}\n\n"
+                            f"Use /resume to retry or /stop to end."
+                        )
                     self.is_paused = True
                     self._pause_event.clear()
                     continue
@@ -455,6 +465,12 @@ class OrchestratorManager:
             self.user_id, self.project_id, agent_role
         )
 
+        # Stream callback: show live agent output in the progress message
+        async def on_stream(text: str):
+            # Truncate for progress display — show last 300 chars of agent output
+            preview = text[-300:] if len(text) > 300 else text
+            await self._notify(f"🔧 *{agent_role}*:\n{preview}")
+
         response = await self.sdk.query_with_retry(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -462,6 +478,7 @@ class OrchestratorManager:
             session_id=session_id,
             max_turns=SDK_MAX_TURNS_PER_QUERY,
             max_budget_usd=SDK_MAX_BUDGET_PER_QUERY,
+            on_stream=on_stream,
         )
 
         # Save session for future resume
