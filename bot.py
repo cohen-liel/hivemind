@@ -25,6 +25,7 @@ from config import (
     ALLOWED_USER_IDS,
     DEFAULT_AGENTS,
     MAX_TELEGRAM_MESSAGE_LENGTH,
+    MAX_USER_MESSAGE_LENGTH,
     PROJECTS_BASE_DIR,
     TELEGRAM_BOT_TOKEN,
     PREDEFINED_PROJECTS,
@@ -940,6 +941,14 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     message = update.message.text.strip()
+
+    # Reject messages that are too long to prevent abuse
+    if len(message) > MAX_USER_MESSAGE_LENGTH:
+        await update.message.reply_text(
+            f"❌ Message too long ({len(message):,} chars). "
+            f"Maximum is {MAX_USER_MESSAGE_LENGTH:,} characters."
+        )
+        return
 
     # Show typing indicator
     await update.effective_chat.send_action(constants.ChatAction.TYPING)

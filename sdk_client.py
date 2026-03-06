@@ -67,11 +67,7 @@ class ClaudeSDKManager:
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
             cwd=cwd,
-            sandbox={
-                "enabled": True,
-                "autoAllowBashIfSandboxed": True,
-            },
-            setting_sources=["project"],
+            permission_mode="bypassPermissions",
             include_partial_messages=on_stream is not None,
         )
 

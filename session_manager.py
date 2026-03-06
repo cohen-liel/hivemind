@@ -191,22 +191,18 @@ class SessionManager:
     async def list_projects(self) -> list[dict]:
         """List all projects, sorted by most recently updated."""
         db = await self._get_db()
+        # Use a single LEFT JOIN to count messages instead of N+1 queries
         cursor = await db.execute(
-            "SELECT project_id, user_id, name, description, project_dir, status, created_at, updated_at FROM projects ORDER BY updated_at DESC"
+            """SELECT p.project_id, p.user_id, p.name, p.description, p.project_dir,
+                      p.status, p.created_at, p.updated_at,
+                      COUNT(m.id) as message_count
+               FROM projects p
+               LEFT JOIN messages m ON p.project_id = m.project_id
+               GROUP BY p.project_id
+               ORDER BY p.updated_at DESC"""
         )
         rows = await cursor.fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            # Add message count
-            count_cursor = await db.execute(
-                "SELECT COUNT(*) as cnt FROM messages WHERE project_id=?",
-                (d["project_id"],),
-            )
-            count_row = await count_cursor.fetchone()
-            d["message_count"] = count_row["cnt"] if count_row else 0
-            result.append(d)
-        return result
+        return [dict(row) for row in rows]
 
     async def update_status(self, project_id: str, status: str):
         """Update a project's status."""

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -625,7 +626,6 @@ class OrchestratorManager:
 
     def _detect_file_changes(self) -> str:
         """Run git status in the project dir to show what files the agent changed."""
-        import subprocess
         try:
             result = subprocess.run(
                 ["git", "diff", "--stat", "HEAD"],
