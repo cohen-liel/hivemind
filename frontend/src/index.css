@@ -31,3 +31,9 @@
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+/* Dynamic viewport height for mobile browsers */
+.h-dvh {
+  height: 100vh;
+  height: 100dvh;
+}

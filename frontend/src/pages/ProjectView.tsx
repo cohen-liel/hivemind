@@ -39,6 +39,7 @@ export default function ProjectView() {
   const [files, setFiles] = useState<FileChanges | null>(null);
   const [mobileView, setMobileView] = useState<MobileView>('orchestra');
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [message, setMessage] = useState('');
 
   const loadProject = useCallback(async () => {
     if (!id) return;
@@ -258,9 +259,9 @@ export default function ProjectView() {
     <div className="min-h-screen bg-gray-950 flex flex-col">
 
       {/* ===== MOBILE LAYOUT ===== */}
-      <div className="lg:hidden flex flex-col h-screen">
+      <div className="lg:hidden flex flex-col h-dvh">
 
-        {/* Conductor (top) */}
+        {/* Conductor (top, compact) */}
         <ConductorBar
           projectName={project.project_name}
           status={project.status}
@@ -271,8 +272,8 @@ export default function ProjectView() {
           agentSummary={subAgentStates}
         />
 
-        {/* Content (middle, scrollable) */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Content (middle, flex-1 takes remaining space) */}
+        <div className="flex-1 overflow-y-auto min-h-0">
           {mobileView === 'orchestra' && (
             allIdle ? (
               <div className="flex flex-col items-center justify-center h-full px-6 text-center">
@@ -291,7 +292,7 @@ export default function ProjectView() {
                   agents={agentStateList}
                   onSelectAgent={setSelectedAgent}
                   selectedAgent={selectedAgent}
-                  layout="grid"
+                  layout="bubbles"
                 />
               </div>
             )
@@ -314,31 +315,85 @@ export default function ProjectView() {
           )}
         </div>
 
-        {/* Tab nav + Controls (bottom) */}
-        <div>
-          <div className="flex items-center border-t border-gray-800/50 bg-gray-900/60">
+        {/* Bottom: tab nav + input in compact area */}
+        <div className="flex-shrink-0 border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-md safe-area-bottom">
+          {/* Tab nav (icon-only, tight) */}
+          <div className="flex items-center px-1">
             {mobileNavItems.map(item => (
               <button
                 key={item.id}
                 onClick={() => setMobileView(item.id)}
-                className={`flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors
+                className={`flex-1 flex items-center justify-center py-1.5 transition-colors
                   ${mobileView === item.id ? 'text-blue-400' : 'text-gray-600'}`}
               >
                 {item.icon}
-                <span className="text-[9px] font-medium">{item.label}</span>
               </button>
             ))}
+
+            {/* Inline action buttons */}
+            {(status === 'running' || status === 'paused') && (
+              <div className="flex items-center gap-0.5 pl-1 border-l border-gray-800/50 ml-1">
+                {status === 'running' && (
+                  <button onClick={handlePause} className="p-1.5 text-yellow-500">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                      <rect x="4" y="3" width="3" height="10" rx="0.5"/>
+                      <rect x="9" y="3" width="3" height="10" rx="0.5"/>
+                    </svg>
+                  </button>
+                )}
+                {status === 'paused' && (
+                  <button onClick={handleResume} className="p-1.5 text-green-500">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M4 3l9 5-9 5V3z"/>
+                    </svg>
+                  </button>
+                )}
+                <button onClick={handleStop} className="p-1.5 text-red-500">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <rect x="3" y="3" width="10" height="10" rx="1"/>
+                  </svg>
+                </button>
+              </div>
+            )}
           </div>
 
-          <Controls
-            projectId={id}
-            status={project.status}
-            agents={project.agents}
-            onPause={handlePause}
-            onResume={handleResume}
-            onStop={handleStop}
-            onSend={handleSend}
-          />
+          {/* Input row (compact) */}
+          <div className="flex items-center gap-1.5 px-2 pb-2 pt-1">
+            <input
+              type="text"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (message.trim()) {
+                    handleSend(message.trim());
+                    setMessage('');
+                  }
+                }
+              }}
+              placeholder={status === 'idle' ? 'Send a task...' : 'Message...'}
+              className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-sm rounded-full px-4 py-2
+                         focus:border-blue-500/50 focus:outline-none min-w-0 placeholder-gray-600"
+            />
+            <button
+              onClick={() => {
+                if (message.trim()) {
+                  handleSend(message.trim());
+                  setMessage('');
+                }
+              }}
+              disabled={!message.trim()}
+              className={`p-2 rounded-full transition-all flex-shrink-0
+                ${message.trim()
+                  ? 'bg-blue-600 text-white shadow-[0_0_12px_rgba(59,130,246,0.3)]'
+                  : 'bg-gray-800/50 text-gray-600'}`}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M14 2L7 9M14 2l-5 12-2-5-5-2 12-5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 
