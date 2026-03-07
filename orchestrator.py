@@ -27,6 +27,7 @@ from config import (
 )
 from sdk_client import ClaudeSDKManager, SDKResponse
 from session_manager import SessionManager
+from skills_registry import get_skill_content, get_skills_for_agent, build_skill_prompt, scan_skills
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ class Delegation:
     agent: str
     task: str
     context: str = ""
+    skills: list[str] = field(default_factory=list)
 
 
 class OrchestratorManager:
@@ -145,7 +147,21 @@ class OrchestratorManager:
         self._pause_event.set()
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task | None = None
-        self._user_injection: tuple[str, str] | None = None
+
+        # Message queue — replaces single-slot _user_injection to prevent lost messages
+        # when multiple agents or the user send messages concurrently.
+        self._message_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+
+        # HITL approval mechanism
+        self._approval_event = asyncio.Event()
+        self._approval_result: bool = True  # True = approved, False = rejected
+        self._pending_approval: str | None = None
+
+        # Shared context accumulator — passes summary of previous rounds to sub-agents
+        self.shared_context: list[str] = []
+
+        # Track fire-and-forget tasks to prevent GC and log errors
+        self._background_tasks: set[asyncio.Task] = set()
 
     @property
     def agent_names(self) -> list[str]:
@@ -157,6 +173,27 @@ class OrchestratorManager:
     @property
     def is_multi_agent(self) -> bool:
         return self.multi_agent
+
+    def _create_background_task(self, coro) -> asyncio.Task:
+        """Create a background task with proper lifecycle management.
+
+        - Prevents GC from collecting the task (strong reference in self._background_tasks)
+        - Logs errors instead of silently swallowing them
+        - Auto-removes from the set when done
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _on_done(t: asyncio.Task):
+            self._background_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                logger.error(f"[{self.project_id}] Background task failed: {exc}", exc_info=exc)
+
+        task.add_done_callback(_on_done)
+        return task
 
     async def _notify(self, text: str):
         """Send a progress/status update (edited in-place in Telegram)."""
@@ -275,27 +312,31 @@ class OrchestratorManager:
         self._pause_event.set()
         self.turn_count = 0
 
-        # Invalidate ALL sessions (orchestrator + sub-agents) so the new
-        # system prompt takes full effect. Without this, the resumed
-        # orchestrator session carries old context/instructions and ignores
-        # the current system prompt — causing it to answer directly instead
-        # of delegating to sub-agents.
+        # Emit running status immediately so frontend updates
+        await self._emit_event("project_status", status="running")
+
+        # Invalidate the orchestrator session so the new system prompt takes
+        # full effect. Sub-agent sessions are preserved so they accumulate
+        # context across delegation rounds.
         await self.session_mgr.invalidate_session(self.user_id, self.project_id, "orchestrator")
-        for role in SUB_AGENT_PROMPTS:
-            await self.session_mgr.invalidate_session(self.user_id, self.project_id, role)
 
         self._task = asyncio.create_task(
             self._run_orchestrator(user_message)
         )
 
     async def inject_user_message(self, agent_name: str, message: str):
-        """Inject a user message into the orchestrator or a sub-agent."""
+        """Inject a user message into the orchestrator or a sub-agent.
+
+        Uses an asyncio.Queue so multiple concurrent messages are never lost.
+        """
         # Log user message
         self.conversation_log.append(
             Message(agent_name="user", role="User", content=f"[to {agent_name}] {message}")
         )
-        await self.session_mgr.add_message(
-            self.project_id, "user", "User", f"[to {agent_name}] {message}"
+        self._create_background_task(
+            self.session_mgr.add_message(
+                self.project_id, "user", "User", f"[to {agent_name}] {message}"
+            )
         )
 
         if not self.is_running:
@@ -310,7 +351,9 @@ class OrchestratorManager:
             cost_str = f" | ${response.cost_usd:.4f}" if response.cost_usd > 0 else ""
             await self._send_final(f"💬 *orchestrator*{cost_str}\n\n{summary}")
         else:
-            self._user_injection = (agent_name, message)
+            # Enqueue — the orchestrator loop will drain all pending messages
+            await self._message_queue.put((agent_name, message))
+            logger.info(f"[{self.project_id}] Queued message for {agent_name} (queue size: {self._message_queue.qsize()})")
             if self.is_paused:
                 self.resume()
 
@@ -331,16 +374,72 @@ class OrchestratorManager:
         self.is_running = False
         self.is_paused = False
         self._pause_event.set()
+        self._approval_event.set()  # Unblock any pending approval
+
+        # Cancel main orchestrator task
         if self._task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+        # Wait for background tasks to finish (with timeout)
+        if self._background_tasks:
+            logger.info(f"[{self.project_id}] Waiting for {len(self._background_tasks)} background tasks...")
+            pending = list(self._background_tasks)
+            done, still_pending = await asyncio.wait(pending, timeout=5.0)
+            for t in still_pending:
+                t.cancel()
+            if still_pending:
+                logger.warning(f"[{self.project_id}] Cancelled {len(still_pending)} stuck background tasks")
+
+        # Drain any remaining queued messages
+        drained = 0
+        while not self._message_queue.empty():
+            try:
+                self._message_queue.get_nowait()
+                drained += 1
+            except asyncio.QueueEmpty:
+                break
+        if drained:
+            logger.info(f"[{self.project_id}] Drained {drained} queued messages on stop")
+
         await self._send_final(
             f"🛑 Project *{self.project_name}* stopped.\n"
             f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}"
         )
+
+    async def request_approval(self, description: str) -> bool:
+        """Request human approval before proceeding. Blocks until approved/rejected."""
+        self._pending_approval = description
+        self._approval_event.clear()
+        self._approval_result = True
+
+        await self._emit_event(
+            "approval_request",
+            description=description,
+        )
+        await self._notify(f"⏸️ Approval needed: {description}")
+
+        # Wait for approval or stop
+        await self._approval_event.wait()
+        self._pending_approval = None
+        return self._approval_result
+
+    def approve(self):
+        """Approve the pending request."""
+        self._approval_result = True
+        self._approval_event.set()
+
+    def reject(self):
+        """Reject the pending request."""
+        self._approval_result = False
+        self._approval_event.set()
+
+    @property
+    def pending_approval(self) -> str | None:
+        return self._pending_approval
 
     # --- Core orchestration loop ---
 
@@ -382,6 +481,14 @@ class OrchestratorManager:
         prompt += f"User request:\n{user_message}"
 
         try:
+            # Record task history
+            task_history_id = await self.session_mgr.add_task_history(
+                project_id=self.project_id,
+                user_id=self.user_id,
+                task_description=user_message[:500],
+                status="running",
+            )
+
             # Main loop: orchestrator responds, optionally delegates, then loops
             orchestrator_input = prompt
             loop_count = 0
@@ -408,14 +515,18 @@ class OrchestratorManager:
                     )
                     break
 
-                # Check for user injection
-                if self._user_injection:
-                    target_name, injected_msg = self._user_injection
-                    self._user_injection = None
-                    orchestrator_input = (
-                        f"[User message to {target_name}]:\n{injected_msg}"
-                    )
-                    await self._notify(f"📨 User message injected")
+                # Drain all pending messages from the queue (no message is lost)
+                injected_parts = []
+                while not self._message_queue.empty():
+                    try:
+                        target_name, injected_msg = self._message_queue.get_nowait()
+                        injected_parts.append(f"[User message to {target_name}]:\n{injected_msg}")
+                        logger.info(f"[{self.project_id}] Drained queued message for {target_name}")
+                    except asyncio.QueueEmpty:
+                        break
+                if injected_parts:
+                    orchestrator_input = "\n\n---\n\n".join(injected_parts)
+                    await self._notify(f"📨 {len(injected_parts)} message(s) injected")
 
                 self.turn_count += 1
                 loop_count += 1
@@ -506,15 +617,29 @@ class OrchestratorManager:
 
                 # Check completion
                 if "TASK_COMPLETE" in response.text:
+                    await self.session_mgr.update_task_history(
+                        task_history_id, "completed",
+                        cost_usd=self.total_cost_usd,
+                        turns_used=self.turn_count,
+                        summary=display_text[:500] if display_text.strip() else "Task completed",
+                    )
                     await self._send_final(
                         self._build_final_summary(user_message, start_time)
                     )
                     break
 
-                # Check budget
-                if self.total_cost_usd >= MAX_BUDGET_USD:
+                # Check budget (global + per-project)
+                effective_budget = MAX_BUDGET_USD
+                try:
+                    project_budget = await self.session_mgr.get_project_budget(self.project_id)
+                    if project_budget > 0:
+                        effective_budget = min(effective_budget, project_budget)
+                except Exception:
+                    pass
+
+                if self.total_cost_usd >= effective_budget:
                     await self._notify(
-                        f"💰 Budget limit reached (${self.total_cost_usd:.4f} / ${MAX_BUDGET_USD:.2f}).\n"
+                        f"💰 Budget limit reached (${self.total_cost_usd:.4f} / ${effective_budget:.2f}).\n"
                         f"Use /resume to continue or /stop to end."
                     )
                     self.is_paused = True
@@ -582,7 +707,7 @@ class OrchestratorManager:
                 sub_results = await self._run_sub_agents(delegations)
                 logger.info(
                     f"[{self.project_id}] Sub-agents finished: "
-                    f"{', '.join(f'{k}(${v.cost_usd:.3f}, err={v.is_error})' for k, v in sub_results.items())}"
+                    f"{', '.join(f'{k}({len(v)} tasks)' for k, v in sub_results.items())}"
                 )
 
                 # Check stuck detection
@@ -600,25 +725,71 @@ class OrchestratorManager:
 
         except asyncio.CancelledError:
             logger.info(f"Orchestrator loop cancelled for {self.project_name}")
+            try:
+                await self.session_mgr.update_task_history(
+                    task_history_id, "cancelled",
+                    cost_usd=self.total_cost_usd, turns_used=self.turn_count,
+                    summary="Task was cancelled",
+                )
+            except Exception:
+                pass
+            await self._send_final(
+                f"🛑 *{self.project_name}* — Task cancelled.\n"
+                f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
+            )
         except Exception as e:
             logger.error(f"Orchestrator loop error: {e}", exc_info=True)
-            await self._notify(f"❌ Unexpected error in orchestrator: {e}")
+            # Use _send_final (not _notify) so the frontend receives an agent_final event
+            await self._send_final(
+                f"❌ *{self.project_name}* — Error in orchestrator:\n{e}\n\n"
+                f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}\n"
+                f"Send another message to retry."
+            )
+            try:
+                await self.session_mgr.update_task_history(
+                    task_history_id, "error",
+                    cost_usd=self.total_cost_usd, turns_used=self.turn_count,
+                    summary=f"Error: {e}",
+                )
+            except Exception:
+                pass
         else:
             # Loop exited normally (not via exception).
             # If we hit the safety limit without a clean exit, send a final summary.
             if loop_count >= max_loops:
+                try:
+                    await self.session_mgr.update_task_history(
+                        task_history_id, "completed",
+                        cost_usd=self.total_cost_usd, turns_used=self.turn_count,
+                        summary="Stopped (loop limit reached)",
+                    )
+                except Exception:
+                    pass
                 await self._send_final(
                     self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
         finally:
             if not self.is_paused:
                 self.is_running = False
-    async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, SDKResponse]:
+            # Always emit project_status so frontend knows the state changed
+            await self._emit_event("project_status", status="paused" if self.is_paused else "idle")
+            # Reset all agent states to idle
+            for agent_name in list(self.agent_states.keys()):
+                self.agent_states[agent_name] = {
+                    **self.agent_states.get(agent_name, {}),
+                    "state": "idle",
+                    "current_tool": None,
+                }
+
+    async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, list[SDKResponse]]:
         """Execute sub-agent tasks, running different agent roles in parallel.
 
         Agents with different roles run concurrently via asyncio.gather().
         If the orchestrator delegates multiple tasks to the same role,
         those run sequentially (they share a session).
+
+        Failed agents are automatically retried once with extra context.
+        Exceptions from parallel execution are caught and reported properly.
         """
         # Group delegations by agent role
         by_role: dict[str, list[Delegation]] = {}
@@ -628,8 +799,10 @@ class OrchestratorManager:
                 continue
             by_role.setdefault(d.agent, []).append(d)
 
-        results: dict[str, SDKResponse] = {}
+        results: dict[str, list[SDKResponse]] = {}
         lock = asyncio.Lock()  # Protect shared state updates
+        # Track files touched by each agent for conflict detection
+        files_touched: dict[str, set[str]] = {}  # agent_role -> set of file paths
 
         async def run_role(agent_role: str, role_delegations: list[Delegation]):
             """Run all delegations for a single role (sequentially)."""
@@ -677,15 +850,47 @@ class OrchestratorManager:
                 if delegation.context:
                     sub_prompt += f"\n\nContext: {delegation.context}"
 
+                # Include smart context from previous rounds (read under lock)
+                async with lock:
+                    agent_context = self._get_context_for_agent(agent_role)
+                    if agent_context:
+                        sub_prompt += f"\n\n{agent_context}"
+
                 workspace = self._get_workspace_context()
                 if workspace:
                     sub_prompt += f"\n\n{workspace}"
 
-                response = await self._query_agent(agent_role, sub_prompt)
+                response = await self._query_agent(agent_role, sub_prompt, skill_names=delegation.skills)
+
+                # Auto-retry once on failure with enriched context
+                if response.is_error and not self._stop_event.is_set():
+                    error_msg = response.error_message
+                    logger.warning(
+                        f"[{self.project_id}] Agent '{agent_role}' failed: {error_msg}. "
+                        f"Retrying with enriched context..."
+                    )
+                    await self._notify(
+                        f"🔄 *{agent_role}* failed, retrying with more context..."
+                    )
+                    # Invalidate stale session and retry with error context
+                    await self.session_mgr.invalidate_session(
+                        self.user_id, self.project_id, agent_role
+                    )
+                    retry_prompt = (
+                        f"[RETRY — previous attempt failed with: {error_msg}]\n\n"
+                        f"{sub_prompt}\n\n"
+                        f"Please try a different approach if the previous one didn't work."
+                    )
+                    response = await self._query_agent(agent_role, retry_prompt, skill_names=delegation.skills)
 
                 async with lock:
                     self._record_response(agent_role, agent_role.capitalize(), response)
-                    results[agent_role] = response
+                    results.setdefault(agent_role, []).append(response)
+                    # Accumulate richer shared context under the same lock
+                    self._accumulate_context(agent_role, delegation.task, response)
+                    # Track files this agent touched (for conflict detection)
+                    touched = self._extract_touched_files(response.text)
+                    files_touched.setdefault(agent_role, set()).update(touched)
 
                 # Emit agent_finished event
                 agent_duration = time.monotonic() - agent_start
@@ -725,31 +930,249 @@ class OrchestratorManager:
                     f"{summary}"
                 )
 
-        # Run different roles in parallel
-        if len(by_role) > 1:
-            await asyncio.gather(
-                *(run_role(role, dels) for role, dels in by_role.items()),
-                return_exceptions=True,
-            )
-        elif by_role:
-            # Single role — run directly (no overhead)
-            role, dels = next(iter(by_role.items()))
-            await run_role(role, dels)
+        # Run different roles in parallel, with proper exception handling
+        # Also run a heartbeat task that emits periodic status events
+        async def _heartbeat():
+            """Emit periodic status events so the frontend knows agents are alive."""
+            elapsed = 0
+            while True:
+                await asyncio.sleep(5)
+                elapsed += 5
+                # Build status of currently working agents
+                working = [
+                    name for name, info in self.agent_states.items()
+                    if info.get("state") == "working"
+                ]
+                if working:
+                    agents_str = ", ".join(working)
+                    await self._emit_event(
+                        "agent_update",
+                        agent=working[0],
+                        text=f"Agents working ({elapsed}s): {agents_str}",
+                    )
+                    # Also emit loop_progress to keep the progress bar alive
+                    await self._emit_event(
+                        "loop_progress",
+                        loop=0, max_loops=MAX_ORCHESTRATOR_LOOPS,
+                        turn=self.turn_count, max_turns=MAX_TURNS_PER_CYCLE,
+                        cost=self.total_cost_usd, max_budget=MAX_BUDGET_USD,
+                    )
+
+        heartbeat_task = asyncio.create_task(_heartbeat())
+        try:
+            if len(by_role) > 1:
+                gather_results = await asyncio.gather(
+                    *(run_role(role, dels) for role, dels in by_role.items()),
+                    return_exceptions=True,
+                )
+                # Log any unexpected exceptions from parallel execution
+                for role_name, result in zip(by_role.keys(), gather_results):
+                    if isinstance(result, Exception):
+                        logger.error(
+                            f"[{self.project_id}] Agent role '{role_name}' raised exception: {result}",
+                            exc_info=result,
+                        )
+                        await self._send_result(
+                            f"⚠️ *{role_name}* crashed unexpectedly: {result}\n"
+                            f"The orchestrator will be notified to handle this."
+                        )
+                        # Create a synthetic error response so the orchestrator knows
+                        async with lock:
+                            results.setdefault(role_name, []).append(SDKResponse(
+                                text=f"Agent crashed with exception: {result}",
+                                is_error=True,
+                                error_message=str(result),
+                            ))
+            elif by_role:
+                # Single role — run directly (no overhead)
+                role, dels = next(iter(by_role.items()))
+                await run_role(role, dels)
+        finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
         # Reset current_agent after all sub-agents finish
         self.current_agent = None
         self.current_tool = None
 
+        # Detect file conflicts between parallel agents
+        if len(files_touched) > 1:
+            conflicts = self._detect_file_conflicts(files_touched)
+            if conflicts:
+                conflict_msg = "⚠️ FILE CONFLICTS DETECTED:\n"
+                for file_path, agents in conflicts.items():
+                    conflict_msg += f"  • {file_path} — modified by: {', '.join(agents)}\n"
+                conflict_msg += (
+                    "\nThe orchestrator will be informed to resolve these conflicts."
+                )
+                await self._notify(conflict_msg)
+                logger.warning(f"[{self.project_id}] File conflicts: {conflicts}")
+                # Inject conflict info into results so orchestrator can resolve
+                results.setdefault("_conflicts", []).append(SDKResponse(
+                    text=conflict_msg,
+                    is_error=True,
+                    error_message=f"File conflicts in: {', '.join(conflicts.keys())}",
+                ))
+
         return results
 
-    async def _query_agent(self, agent_role: str, prompt: str) -> SDKResponse:
+    def _extract_touched_files(self, text: str) -> set[str]:
+        """Extract file paths that an agent likely modified from its output."""
+        touched = set()
+        for line in text.split('\n'):
+            lower = line.lower().strip()
+            # Match common patterns from tool use output
+            if any(w in lower for w in (
+                'writing:', 'editing:', 'created:', 'modified:', 'wrote to',
+                '✏️', '🔧 editing', 'updated file', 'created file',
+            )):
+                for token in line.split():
+                    cleaned = token.strip('`"\',;:()[]{}')
+                    if ('/' in cleaned or '.' in cleaned) and len(cleaned) > 3:
+                        # Filter out URLs, log lines, etc.
+                        if not cleaned.startswith('http') and not cleaned.startswith('//'):
+                            touched.add(cleaned)
+        return touched
+
+    def _detect_file_conflicts(self, files_touched: dict[str, set[str]]) -> dict[str, list[str]]:
+        """Detect files modified by multiple agents (potential conflicts)."""
+        file_to_agents: dict[str, list[str]] = {}
+        for agent, files in files_touched.items():
+            for f in files:
+                file_to_agents.setdefault(f, []).append(agent)
+        # Only return files touched by 2+ agents
+        return {f: agents for f, agents in file_to_agents.items() if len(agents) > 1}
+
+    def _accumulate_context(self, agent_role: str, task: str, response: SDKResponse):
+        """Build rich shared context from an agent's response.
+
+        Called under lock. Creates structured context entries that help
+        other agents and the orchestrator understand what was done.
+        """
+        text = response.text
+
+        # Detect file operations
+        files_created = []
+        files_modified = []
+        files_read = []
+        commands_run = []
+        for line in text.split('\n'):
+            lower = line.lower().strip()
+            if any(w in lower for w in ('created file', 'wrote to', 'writing:', '✏️ writing', 'created:')):
+                for token in line.split():
+                    if '/' in token or ('.' in token and len(token) > 3):
+                        cleaned = token.strip('`"\',;:()[]')
+                        if cleaned:
+                            files_created.append(cleaned)
+            elif any(w in lower for w in ('edited', 'modified', 'updated', '🔧 editing')):
+                for token in line.split():
+                    if '/' in token or ('.' in token and len(token) > 3):
+                        cleaned = token.strip('`"\',;:()[]')
+                        if cleaned:
+                            files_modified.append(cleaned)
+            elif any(w in lower for w in ('reading:', '📄 reading', 'read file')):
+                for token in line.split():
+                    if '/' in token or ('.' in token and len(token) > 3):
+                        cleaned = token.strip('`"\',;:()[]')
+                        if cleaned:
+                            files_read.append(cleaned)
+            elif any(w in lower for w in ('running:', '💻 running', 'executed:')):
+                cmd = line.strip()[:80]
+                if cmd:
+                    commands_run.append(cmd)
+
+        # Build structured context entry
+        ctx_parts = [f"[{agent_role}] Task: {task[:150]}"]
+        if response.is_error:
+            ctx_parts.append(f"  Status: FAILED — {response.error_message[:150]}")
+        else:
+            ctx_parts.append(f"  Status: SUCCESS ({response.num_turns} turns, ${response.cost_usd:.4f})")
+
+        if files_created:
+            ctx_parts.append(f"  Created: {', '.join(files_created[:8])}")
+        if files_modified:
+            ctx_parts.append(f"  Modified: {', '.join(files_modified[:8])}")
+        if files_read:
+            ctx_parts.append(f"  Read: {', '.join(files_read[:8])}")
+        if commands_run:
+            ctx_parts.append(f"  Commands: {'; '.join(commands_run[:3])}")
+
+        # Include a more detailed summary of the output
+        summary = text[:500].strip()
+        if summary:
+            ctx_parts.append(f"  Output: {summary}")
+
+        self.shared_context.append("\n".join(ctx_parts))
+
+        # Keep shared_context from growing too large (max 20 entries)
+        if len(self.shared_context) > 20:
+            self.shared_context = self.shared_context[-15:]
+
+    def _get_context_for_agent(self, agent_role: str) -> str:
+        """Build a smart context summary for a sub-agent.
+
+        Instead of dumping all shared_context, prioritize:
+        1. Most recent entries (last 3)
+        2. Entries from agents with related roles
+        3. Error entries (always include so agents don't repeat mistakes)
+        """
+        if not self.shared_context:
+            return ""
+
+        priority_entries = []
+        recent_entries = []
+        error_entries = []
+
+        for ctx in self.shared_context:
+            if "FAILED" in ctx or "ERROR" in ctx:
+                error_entries.append(ctx)
+            elif f"[{agent_role}]" in ctx:
+                # Same agent's previous work — always relevant
+                priority_entries.append(ctx)
+            else:
+                recent_entries.append(ctx)
+
+        # Build context: errors first, then own history, then recent others
+        selected = []
+        selected.extend(error_entries[-3:])
+        selected.extend(priority_entries[-3:])
+        remaining_slots = max(0, 8 - len(selected))
+        selected.extend(recent_entries[-remaining_slots:])
+
+        if not selected:
+            return ""
+
+        # Compress each entry to essential info only
+        compressed = []
+        for entry in selected:
+            lines = entry.split('\n')
+            # Keep first 3 lines (role/status/files) and skip long output
+            essential = []
+            for line in lines[:4]:
+                if line.strip().startswith('Output:'):
+                    # Truncate output to 100 chars
+                    essential.append(line[:110])
+                else:
+                    essential.append(line)
+            compressed.append('\n'.join(essential))
+
+        return "Context from previous rounds:\n" + "\n---\n".join(compressed)
+
+    async def _query_agent(self, agent_role: str, prompt: str, skill_names: list[str] | None = None) -> SDKResponse:
         """Query a specific agent (orchestrator or sub-agent) using the SDK."""
         # Get system prompt and resource limits based on role and mode
         allowed_tools = None  # None = all tools available (default)
         tools = None  # None = default tool set; [] = disable ALL tools
 
         if agent_role == "orchestrator" and self.multi_agent:
+            # Build orchestrator prompt with available skills info
             system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
+            available_skills = self._get_available_skills_summary()
+            if available_skills:
+                system_prompt += f"\n\n{available_skills}"
             max_turns = 1
             max_budget = 0.5
             permission_mode = "bypassPermissions"
@@ -763,10 +1186,16 @@ class OrchestratorManager:
             logger.info(f"[{self.project_id}] Querying orchestrator (solo mode, full tools)")
         else:
             system_prompt = SUB_AGENT_PROMPTS.get(agent_role, "You are a helpful coding assistant.")
+            # Append skill content if requested or auto-mapped
+            all_skills = list(skill_names or []) + get_skills_for_agent(agent_role)
+            if all_skills:
+                skill_suffix = build_skill_prompt(list(dict.fromkeys(all_skills)))  # deduplicate
+                if skill_suffix:
+                    system_prompt += skill_suffix
             max_turns = SDK_MAX_TURNS_PER_QUERY
             max_budget = SDK_MAX_BUDGET_PER_QUERY
             permission_mode = "bypassPermissions"
-            logger.info(f"[{self.project_id}] Querying sub-agent '{agent_role}' (max_turns={max_turns}, budget=${max_budget})")
+            logger.info(f"[{self.project_id}] Querying sub-agent '{agent_role}' (max_turns={max_turns}, budget=${max_budget}, skills={all_skills or 'none'})")
 
         # Try to resume session
         session_id = await self.session_mgr.get_session(
@@ -832,14 +1261,37 @@ class OrchestratorManager:
                 cost_usd=response.cost_usd,
             )
         )
-        # Fire-and-forget persist to SQLite
-        asyncio.create_task(
+        # Persist to SQLite in background (safe: tracked reference, errors logged)
+        self._create_background_task(
             self.session_mgr.add_message(
                 self.project_id, agent_name, role, response.text, response.cost_usd,
             )
         )
 
     # --- Delegation parsing ---
+
+    def _get_available_skills_summary(self) -> str:
+        """Build a summary of available skills for the orchestrator to reference.
+
+        This lets the orchestrator know which skills exist and which agent to
+        assign them to, enabling smarter delegation.
+        """
+        from skills_registry import list_skills, SKILL_AGENT_MAP
+        skills = list_skills()
+        if not skills:
+            return ""
+
+        lines = ["AVAILABLE SKILLS — you can request these via the 'skills' field in delegation:"]
+        for skill_name in skills:
+            mapped_agent = SKILL_AGENT_MAP.get(skill_name, "developer")
+            lines.append(f"  - {skill_name} (best suited for: {mapped_agent})")
+        lines.append(
+            "\nTo use a skill, add a 'skills' array to your delegation JSON:\n"
+            '<delegate>\n'
+            '{"agent": "developer", "task": "...", "skills": ["frontend-design"]}\n'
+            '</delegate>'
+        )
+        return "\n".join(lines)
 
     def _parse_delegations(self, text: str) -> list[Delegation]:
         """Parse <delegate> blocks from orchestrator output."""
@@ -856,10 +1308,14 @@ class OrchestratorManager:
                 agent = data.get("agent", "developer")
                 task = data.get("task", "")
                 if task:  # Only add if there's an actual task
+                    skills_list = data.get("skills", [])
+                    if isinstance(skills_list, str):
+                        skills_list = [skills_list]
                     delegations.append(Delegation(
                         agent=agent,
                         task=task,
                         context=data.get("context", ""),
+                        skills=skills_list,
                     ))
                     logger.info(f"Parsed delegation: {agent} -> {task[:80]}")
                 else:
@@ -880,30 +1336,93 @@ class OrchestratorManager:
         # Use a broader regex that catches everything between the tags
         return re.sub(r"<delegate>.*?</delegate>", "", text, flags=re.DOTALL).strip()
 
-    def _build_review_prompt(self, sub_results: dict[str, SDKResponse]) -> str:
-        """Build a prompt for the orchestrator to review sub-agent results."""
-        parts = ["Sub-agent results:\n"]
-        for agent, response in sub_results.items():
-            status = "SUCCESS" if not response.is_error else "ERROR"
-            # Include a reasonable chunk of the response
-            content = response.text[:3000]
-            if len(response.text) > 3000:
-                content += "\n... (truncated)"
-            # Provide explicit fallback so the orchestrator knows work was attempted
-            if not content.strip():
-                content = (
-                    "[Agent produced no text output — it may have completed the task "
-                    "using tools (file writes, shell commands). Check the workspace files "
-                    "to verify what was done before deciding if more work is needed.]"
+    def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]]) -> str:
+        """Build a structured prompt for the orchestrator to review sub-agent results.
+
+        Includes clear status, cost, shared context, and actionable guidance.
+        """
+        parts = ["═══ SUB-AGENT RESULTS ═══\n"]
+        has_errors = False
+        total_sub_cost = 0.0
+        total_sub_turns = 0
+        successful_agents = []
+        failed_agents = []
+
+        for agent, responses in sub_results.items():
+            for idx, response in enumerate(responses):
+                status = "SUCCESS" if not response.is_error else "ERROR"
+                if response.is_error:
+                    has_errors = True
+                    failed_agents.append(agent)
+                else:
+                    successful_agents.append(agent)
+                total_sub_cost += response.cost_usd
+                total_sub_turns += response.num_turns
+
+                # Include a reasonable chunk of the response
+                content = response.text[:4000]
+                if len(response.text) > 4000:
+                    content += "\n... (truncated)"
+
+                # Provide explicit fallback so the orchestrator knows work was attempted
+                if not content.strip():
+                    if response.is_error:
+                        content = (
+                            f"[Agent FAILED with error: {response.error_message}. "
+                            f"Consider retrying the task or using a different approach.]"
+                        )
+                    else:
+                        content = (
+                            "[Agent produced no text output — it may have completed the task "
+                            "using tools (file writes, shell commands). Check the workspace files "
+                            "to verify what was done before deciding if more work is needed.]"
+                        )
+
+                label = f"{agent}" if len(responses) == 1 else f"{agent} (task {idx + 1}/{len(responses)})"
+                cost_str = f"${response.cost_usd:.4f}" if response.cost_usd > 0 else "—"
+                parts.append(
+                    f"─── {label} [{status}] (cost: {cost_str}, turns: {response.num_turns}) ───\n"
+                    f"{content}\n"
                 )
-            parts.append(
-                f"--- {agent} [{status}] ---\n"
-                f"{content}\n"
-            )
+
+        # File changes summary
+        file_changes = self._detect_file_changes()
+        if file_changes and "(no file" not in file_changes:
+            parts.append(f"─── WORKSPACE CHANGES ───\n{file_changes}\n")
+
+        # Cost summary
         parts.append(
-            "\nReview the results above. If all tasks are complete and correct, "
-            "respond with TASK_COMPLETE. If more work is needed, delegate again."
+            f"─── SESSION TOTALS ───\n"
+            f"This round: ${total_sub_cost:.4f} ({total_sub_turns} turns) | "
+            f"Overall: ${self.total_cost_usd:.4f} ({self.turn_count} turns)\n"
+            f"Successful: {', '.join(successful_agents) or 'none'} | "
+            f"Failed: {', '.join(failed_agents) or 'none'}\n"
         )
+
+        # Include accumulated shared context so orchestrator sees the full picture
+        if self.shared_context:
+            parts.append("─── ACCUMULATED CONTEXT (all rounds) ───")
+            for ctx in self.shared_context[-8:]:
+                parts.append(ctx)
+            parts.append("")
+
+        if has_errors:
+            parts.append(
+                "\nSome agents encountered errors. You MUST:\n"
+                "1. Analyze each error carefully\n"
+                "2. Retry failed tasks with the error details in 'context'\n"
+                "3. If a different agent is better suited, delegate to them\n"
+                "4. ONLY say TASK_COMPLETE if ALL critical work is done despite errors\n"
+                "\nDo NOT give up after one failed attempt — retry with a different approach."
+            )
+        else:
+            parts.append(
+                "\nAll agents completed successfully. Now:\n"
+                "- If ALL tasks are done and verified → respond with TASK_COMPLETE\n"
+                "- If you need verification → delegate to reviewer or tester\n"
+                "- If more work is needed → delegate with specific instructions\n"
+                "- Pass relevant results from this round as 'context' to the next agent\n"
+            )
         return "\n".join(parts)
 
     # --- Stuck detection ---

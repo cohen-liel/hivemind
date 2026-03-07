@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS projects (
     project_dir TEXT NOT NULL,
     status TEXT DEFAULT 'active',
     away_mode INTEGER DEFAULT 0,
+    budget_usd REAL DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -121,6 +122,8 @@ class SessionManager:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        # Enable WAL mode for better concurrent read/write performance
+        await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
         # Add away_mode column to existing projects table if missing
@@ -312,6 +315,25 @@ class SessionManager:
         )
         row = await cursor.fetchone()
         return float(row[0]) if row else 0.0
+
+    async def get_project_budget(self, project_id: str) -> float:
+        """Return the per-project budget (0 = unlimited)."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT budget_usd FROM projects WHERE project_id=?",
+            (project_id,),
+        )
+        row = await cursor.fetchone()
+        return float(row[0]) if row and row[0] else 0.0
+
+    async def set_project_budget(self, project_id: str, budget_usd: float):
+        """Set the per-project budget."""
+        db = await self._get_db()
+        await db.execute(
+            "UPDATE projects SET budget_usd=?, updated_at=? WHERE project_id=?",
+            (budget_usd, time.time(), project_id),
+        )
+        await db.commit()
 
     # --- Notification Preferences ---
 
@@ -541,6 +563,11 @@ class SessionManager:
             await db.execute("SELECT away_mode FROM projects LIMIT 1")
         except Exception:
             await db.execute("ALTER TABLE projects ADD COLUMN away_mode INTEGER DEFAULT 0")
+            await db.commit()
+        try:
+            await db.execute("SELECT budget_usd FROM projects LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE projects ADD COLUMN budget_usd REAL DEFAULT 0")
             await db.commit()
 
     # --- Migration from JSON ConversationStore ---

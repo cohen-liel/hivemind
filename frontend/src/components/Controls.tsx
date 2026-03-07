@@ -14,7 +14,6 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
   const [message, setMessage] = useState('');
   const [targetAgent, setTargetAgent] = useState('orchestrator');
   const [sending, setSending] = useState(false);
-  const [showConsole, setShowConsole] = useState(false);
 
   const handleSend = async () => {
     if (!message.trim() || sending) return;
@@ -75,18 +74,6 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
               Stop
             </button>
           </div>
-
-          {/* Console toggle */}
-          <button
-            onClick={() => setShowConsole(!showConsole)}
-            className={`p-1.5 rounded-lg transition-colors text-xs ${showConsole ? 'bg-gray-800 text-gray-300' : 'text-gray-600 hover:text-gray-400'}`}
-            title="Toggle activity log"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <polyline points="4 17 10 11 4 5"/>
-              <line x1="12" y1="19" x2="20" y2="19"/>
-            </svg>
-          </button>
         </div>
       )}
 

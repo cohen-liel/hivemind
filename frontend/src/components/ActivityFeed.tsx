@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ActivityEntry } from '../types';
 
+type ViewMode = 'detail' | 'summary';
+
 interface Props {
   activities: ActivityEntry[];
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 // --- Agent icon mapping (same as AgentStatusPanel) ---
@@ -337,14 +341,25 @@ function DelegationBubble({ entry }: { entry: ActivityEntry }) {
 // MAIN COMPONENT
 // ============================================================
 
-export default function ActivityFeed({ activities }: Props) {
+export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('detail');
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activities.length]);
+
+  // Filter activities based on view mode
+  const filtered = viewMode === 'summary'
+    ? activities.filter(a =>
+        a.type === 'user_message' ||
+        a.type === 'delegation' ||
+        a.type === 'agent_text' ||
+        a.type === 'agent_finished'
+      )
+    : activities;
 
   // Empty state
   if (activities.length === 0) {
@@ -359,7 +374,7 @@ export default function ActivityFeed({ activities }: Props) {
     );
   }
 
-  const groups = groupBySender(activities);
+  const groups = groupBySender(filtered);
 
   return (
     <div
@@ -367,6 +382,36 @@ export default function ActivityFeed({ activities }: Props) {
       className="flex flex-col h-full overflow-y-auto p-4 scroll-smooth"
       style={{ scrollBehavior: 'smooth' }}
     >
+      {/* View mode toggle */}
+      <div className="flex justify-end mb-2 sticky top-0 z-10">
+        <div className="bg-gray-900/90 backdrop-blur-sm rounded-full p-0.5 flex gap-0.5 border border-gray-800/50">
+          <button
+            onClick={() => setViewMode('summary')}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors
+              ${viewMode === 'summary' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+          >
+            Summary
+          </button>
+          <button
+            onClick={() => setViewMode('detail')}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors
+              ${viewMode === 'detail' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+          >
+            Detail
+          </button>
+        </div>
+      </div>
+      {/* Load earlier messages */}
+      {hasMore && onLoadMore && (
+        <div className="flex justify-center mb-3">
+          <button
+            onClick={onLoadMore}
+            className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 bg-gray-900 border border-gray-800 rounded-lg transition-colors"
+          >
+            Load earlier messages
+          </button>
+        </div>
+      )}
       {groups.map((group, gi) => {
         // Build sub-items for the group
         const items: JSX.Element[] = [];

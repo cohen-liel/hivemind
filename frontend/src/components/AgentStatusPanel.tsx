@@ -24,6 +24,14 @@ const AGENT_LABELS: Record<string, string> = {
   orchestrator: 'Orchestrator',
 };
 
+const AGENT_COLORS: Record<string, { border: string; bg: string; text: string }> = {
+  developer: { border: 'border-l-blue-500', bg: 'bg-blue-500', text: 'text-blue-400' },
+  reviewer: { border: 'border-l-purple-500', bg: 'bg-purple-500', text: 'text-purple-400' },
+  tester: { border: 'border-l-amber-500', bg: 'bg-amber-500', text: 'text-amber-400' },
+  devops: { border: 'border-l-cyan-500', bg: 'bg-cyan-500', text: 'text-cyan-400' },
+  orchestrator: { border: 'border-l-gray-500', bg: 'bg-gray-500', text: 'text-gray-400' },
+};
+
 function stateConfig(state: string) {
   switch (state) {
     case 'working':
@@ -263,11 +271,13 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
         const isExpanded = expandedAgent === agent.name;
         const isSelected = selectedAgent === agent.name;
         const recentDelegation = isRecentDelegation(agent);
+        const agentColor = AGENT_COLORS[agent.name];
 
         return (
           <div
             key={agent.name}
             className={`relative bg-gray-900/80 border rounded-2xl transition-all duration-500 cursor-pointer
+              ${agentColor ? `border-l-[3px] ${agentColor.border}` : ''}
               ${recentDelegation ? 'animate-[delegationPulse_1.5s_ease-out]' : ''}
               ${cfg.glow} ${cfg.opacity} ${isSelected ? 'ring-1 ring-blue-500/40' : ''}
               hover:border-gray-700/80`}

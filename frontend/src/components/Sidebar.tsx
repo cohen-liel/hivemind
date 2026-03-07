@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { getProjects } from '../api';
-import { useWebSocket } from '../useWebSocket';
+import { useWSSubscribe } from '../WebSocketContext';
 import type { Project, WSEvent } from '../types';
 
 interface Props {
@@ -43,7 +43,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
     }
   }, [loadProjects]);
 
-  useWebSocket(handleWSEvent);
+  useWSSubscribe(handleWSEvent);
 
   const currentProjectId = location.pathname.startsWith('/project/')
     ? location.pathname.split('/project/')[1]
@@ -100,6 +100,20 @@ export default function Sidebar({ onProjectsChange }: Props) {
             <path d="M2 8l6-5 6 5M3 7.5V13a1 1 0 001 1h8a1 1 0 001-1V7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
           {!collapsed && <span>Dashboard</span>}
+        </button>
+        <button
+          onClick={() => navigate('/schedules')}
+          className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors
+                     ${location.pathname === '/schedules'
+                       ? 'bg-gray-800 text-white'
+                       : 'text-gray-400 hover:text-white hover:bg-gray-800/50'}
+                     ${collapsed ? 'justify-center' : ''}`}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M8 5v3l2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          {!collapsed && <span>Schedules</span>}
         </button>
       </nav>
 

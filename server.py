@@ -102,8 +102,26 @@ async def run():
                     agents_count=2,
                 )
                 if manager:
-                    state.register_manager(0, project_id, manager)
+                    await state.register_manager(0, project_id, manager)
                     logger.info(f"Registered manager for predefined project: {proj_name}")
+
+    # Start periodic cleanup task
+    async def _cleanup_loop():
+        """Run session cleanup every hour."""
+        while True:
+            await asyncio.sleep(3600)  # 1 hour
+            try:
+                if state.session_mgr:
+                    await state.session_mgr.cleanup_expired()
+                    logger.info("Periodic cleanup: expired sessions cleaned up")
+            except Exception as e:
+                logger.warning(f"Periodic cleanup error: {e}")
+
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+
+    # Start task scheduler
+    from scheduler import scheduler_loop
+    scheduler_task = asyncio.create_task(scheduler_loop(check_interval=60))
 
     # Start FastAPI dashboard
     dash = create_app()
@@ -117,6 +135,8 @@ async def run():
     try:
         await server.serve()
     finally:
+        cleanup_task.cancel()
+        scheduler_task.cancel()
         logger.info("Shutting down...")
         if bot_app:
             await bot_app.updater.stop()

@@ -1,13 +1,17 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject } from '../api';
-import { useWebSocket } from '../useWebSocket';
+import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState } from '../api';
+import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
 import ActivityFeed from '../components/ActivityFeed';
 import ActivityDrawer from '../components/ActivityDrawer';
 import AgentStatusPanel from '../components/AgentStatusPanel';
 import ConductorBar from '../components/ConductorBar';
 import FileDiff from '../components/FileDiff';
+import FlowGraph from '../components/FlowGraph';
+import PlanView from '../components/PlanView';
+import NetworkTrace from '../components/NetworkTrace';
+import ApprovalModal from '../components/ApprovalModal';
 import Controls from '../components/Controls';
 import CodeBrowser from '../components/CodeBrowser';
 import type { Project, ProjectMessage, FileChanges, WSEvent, ActivityEntry, AgentState as AgentStateType, LoopProgress } from '../types';
@@ -28,7 +32,7 @@ function messagesToActivities(messages: ProjectMessage[]): ActivityEntry[] {
   }));
 }
 
-type MobileView = 'orchestra' | 'activity' | 'code' | 'changes';
+type MobileView = 'orchestra' | 'activity' | 'code' | 'changes' | 'plan' | 'trace';
 
 export default function ProjectView() {
   const { id } = useParams<{ id: string }>();
@@ -37,15 +41,52 @@ export default function ProjectView() {
   const [agentStates, setAgentStates] = useState<Record<string, AgentStateType>>({});
   const [loopProgress, setLoopProgress] = useState<LoopProgress | null>(null);
   const [files, setFiles] = useState<FileChanges | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [mobileView, setMobileView] = useState<MobileView>('orchestra');
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [lastTicker, setLastTicker] = useState('');
+  const [sending, setSending] = useState(false);
+  const [desktopAgentView, setDesktopAgentView] = useState<'cards' | 'flow'>('cards');
+  const [sdkCalls, setSdkCalls] = useState<Array<{
+    agent: string; startTime: number; endTime?: number; cost?: number; status: string;
+  }>>([]);
+  const [messageOffset, setMessageOffset] = useState(0);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
 
   const loadProject = useCallback(async () => {
     if (!id) return;
     const p = await getProject(id);
     setProject(p);
+
+    // Restore live agent states from server (survives browser refresh)
+    if (p.agent_states && Object.keys(p.agent_states).length > 0) {
+      setAgentStates(prev => {
+        // Only restore if we don't already have live data (i.e., fresh load)
+        const hasLiveData = Object.values(prev).some(a => a.state === 'working');
+        if (hasLiveData) return prev;
+
+        const restored: Record<string, AgentStateType> = {};
+        for (const [name, s] of Object.entries(p.agent_states!)) {
+          restored[name] = {
+            name,
+            state: (s.state as AgentStateType['state']) ?? 'idle',
+            task: s.task,
+            current_tool: s.current_tool,
+            cost: s.cost ?? 0,
+            turns: s.turns ?? 0,
+            duration: s.duration ?? 0,
+          };
+        }
+        return { ...prev, ...restored };
+      });
+    }
+
+    // Restore pending approval
+    if (p.pending_approval) {
+      setApprovalRequest(p.pending_approval);
+    }
   }, [id]);
 
   const loadFiles = useCallback(async () => {
@@ -54,19 +95,63 @@ export default function ProjectView() {
     setFiles(f);
   }, [id]);
 
+  const loadEarlierMessages = useCallback(async () => {
+    if (!id || !hasMoreMessages) return;
+    try {
+      const data = await getMessages(id, 50, messageOffset);
+      if (data.messages.length > 0) {
+        const earlier = messagesToActivities(data.messages);
+        setActivities(prev => [...earlier, ...prev]);
+        setMessageOffset(prev => prev + 50);
+        setHasMoreMessages(data.total > messageOffset + 50);
+      } else {
+        setHasMoreMessages(false);
+      }
+    } catch { /* ignore */ }
+  }, [id, messageOffset, hasMoreMessages]);
+
   useEffect(() => {
     if (!id) return;
-    loadProject();
+    setLoadError(null);
+    loadProject().catch((e) => setLoadError(e.message || 'Failed to load project'));
     getMessages(id, 100).then((data) => {
       setActivities(messagesToActivities(data.messages));
-    });
-    loadFiles();
+      setHasMoreMessages(data.total > 100);
+      setMessageOffset(100);
+    }).catch(() => {});
+    loadFiles().catch(() => {});
+
+    // Periodic status poll — catches missed WS events and stuck states
+    const statusPoll = setInterval(() => {
+      loadProject().catch(() => {});
+    }, 10000); // every 10s
+    return () => clearInterval(statusPoll);
   }, [id, loadProject, loadFiles]);
 
   const handleWSEvent = useCallback((event: WSEvent) => {
     if (event.project_id !== id) return;
 
     switch (event.type) {
+      case 'agent_update': {
+        // Live progress from agents — show in ticker and update agent state
+        const updateAgent = event.agent || (event.text?.match(/\*(\w+)\*/)?.[1]);
+        if (updateAgent) {
+          setAgentStates(prev => ({
+            ...prev,
+            [updateAgent]: {
+              ...prev[updateAgent],
+              name: updateAgent,
+              state: 'working',
+              current_tool: event.text?.slice(0, 100),
+            },
+          }));
+          setLastTicker(event.text?.slice(0, 120) || `${updateAgent} is working...`);
+        }
+        // Refresh project status to keep it alive
+        loadProject();
+        break;
+      }
+
       case 'tool_use':
         setActivities(prev => [...prev, {
           id: nextId(), type: 'tool_use', timestamp: event.timestamp,
@@ -97,6 +182,9 @@ export default function ProjectView() {
             },
           }));
           setLastTicker(`${event.agent} started${event.task ? ': ' + event.task.slice(0, 60) : ''}`);
+          setSdkCalls(prev => [...prev, {
+            agent: event.agent!, startTime: event.timestamp, status: 'running',
+          }]);
         }
         break;
 
@@ -116,10 +204,29 @@ export default function ProjectView() {
               turns: (prev[event.agent!]?.turns ?? 0) + (event.turns ?? 0),
               duration: event.duration ?? 0,
               delegated_from: undefined, delegated_at: undefined,
-              // Preserve last_result from working phase
               last_result: prev[event.agent!]?.last_result,
             },
           }));
+          setSdkCalls(prev => {
+            const updated = [...prev];
+            // Find the last running entry for this agent
+            let idx = -1;
+            for (let i = updated.length - 1; i >= 0; i--) {
+              if (updated[i].agent === event.agent && updated[i].status === 'running') {
+                idx = i;
+                break;
+              }
+            }
+            if (idx >= 0) {
+              updated[idx] = {
+                ...updated[idx],
+                endTime: event.timestamp,
+                cost: event.cost,
+                status: event.is_error ? 'error' : 'done',
+              };
+            }
+            return updated;
+          });
         }
         break;
 
@@ -183,6 +290,13 @@ export default function ProjectView() {
             agent: 'system', content: event.text,
           }]);
         }
+        // Browser notification when task completes
+        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+          new Notification('Task Complete', {
+            body: event.text?.slice(0, 100) || 'Agent finished working',
+            icon: '/favicon.ico',
+          });
+        }
         setAgentStates(prev => {
           const reset: Record<string, AgentStateType> = {};
           for (const [k, v] of Object.entries(prev)) {
@@ -197,11 +311,40 @@ export default function ProjectView() {
       case 'project_status':
         loadProject();
         break;
+
+      default:
+        // Handle approval_request events
+        if ((event as { type: string }).type === 'approval_request' && event.description) {
+          setApprovalRequest(event.description);
+        }
+        break;
     }
   }, [id, loadProject, loadFiles]);
 
-  const { connected } = useWebSocket(handleWSEvent);
+  const { connected } = useWSSubscribe(handleWSEvent);
   useIOSViewport();
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="text-center px-4">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-6 py-5 max-w-sm mx-auto">
+            <div className="text-red-400 text-sm font-medium mb-2">Failed to load project</div>
+            <div className="text-red-400/70 text-xs mb-4">{loadError}</div>
+            <button
+              onClick={() => {
+                setLoadError(null);
+                loadProject().catch((e) => setLoadError(e.message || 'Failed to load project'));
+              }}
+              className="px-4 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-medium rounded-lg transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!project || !id) {
     return (
@@ -249,6 +392,11 @@ export default function ProjectView() {
       icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>,
     },
     {
+      id: 'plan',
+      label: 'Plan',
+      icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>,
+    },
+    {
       id: 'code',
       label: 'Code',
       icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
@@ -257,6 +405,11 @@ export default function ProjectView() {
       id: 'changes',
       label: 'Diff',
       icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3v18M3 12h18"/></svg>,
+    },
+    {
+      id: 'trace',
+      label: 'Trace',
+      icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
     },
   ];
 
@@ -297,7 +450,7 @@ export default function ProjectView() {
           )}
 
           {mobileView === 'activity' && (
-            <ActivityFeed activities={activities} />
+            <ActivityFeed activities={activities} hasMore={hasMoreMessages} onLoadMore={loadEarlierMessages} />
           )}
 
           {mobileView === 'code' && (
@@ -310,6 +463,12 @@ export default function ProjectView() {
                 <FileDiff files={files} />
               </div>
             </div>
+          )}
+          {mobileView === 'plan' && (
+            <PlanView activities={activities} />
+          )}
+          {mobileView === 'trace' && (
+            <NetworkTrace calls={sdkCalls} />
           )}
         </div>
 
@@ -330,10 +489,11 @@ export default function ProjectView() {
               <button
                 key={item.id}
                 onClick={() => setMobileView(item.id)}
-                className={`flex-1 flex items-center justify-center py-1.5 transition-colors
+                className={`flex-1 flex flex-col items-center justify-center py-1.5 transition-colors
                   ${mobileView === item.id ? 'text-blue-400' : 'text-gray-600'}`}
               >
                 {item.icon}
+                <span className="text-[9px] mt-0.5">{item.label}</span>
               </button>
             ))}
 
@@ -373,32 +533,44 @@ export default function ProjectView() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
-                  if (message.trim()) {
-                    handleSend(message.trim());
+                  if (message.trim() && !sending) {
+                    const msg = message.trim();
                     setMessage('');
+                    setSending(true);
+                    handleSend(msg).finally(() => setSending(false));
                   }
                 }
               }}
+              disabled={sending}
               placeholder={project.status === 'idle' ? 'Send a task...' : 'Message...'}
               className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-base rounded-full px-4 py-2
-                         focus:border-blue-500/50 focus:outline-none min-w-0 placeholder-gray-600"
+                         focus:border-blue-500/50 focus:outline-none min-w-0 placeholder-gray-600
+                         disabled:opacity-50"
             />
             <button
               onClick={() => {
-                if (message.trim()) {
-                  handleSend(message.trim());
+                if (message.trim() && !sending) {
+                  const msg = message.trim();
                   setMessage('');
+                  setSending(true);
+                  handleSend(msg).finally(() => setSending(false));
                 }
               }}
-              disabled={!message.trim()}
+              disabled={!message.trim() || sending}
               className={`p-2 rounded-full transition-all flex-shrink-0
-                ${message.trim()
+                ${message.trim() && !sending
                   ? 'bg-blue-600 text-white shadow-[0_0_12px_rgba(59,130,246,0.3)]'
                   : 'bg-gray-800/50 text-gray-600'}`}
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M14 2L7 9M14 2l-5 12-2-5-5-2 12-5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              {sending ? (
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 16 16" fill="none">
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round"/>
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M14 2L7 9M14 2l-5 12-2-5-5-2 12-5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              )}
             </button>
           </div>
         </div>
@@ -432,12 +604,59 @@ export default function ProjectView() {
             </div>
           ) : (
             <div className="max-w-5xl mx-auto w-full px-6 py-6">
-              <AgentStatusPanel
-                agents={agentStateList}
-                onSelectAgent={setSelectedAgent}
-                selectedAgent={selectedAgent}
-                layout="grid"
-              />
+              {/* Cards / Flow toggle */}
+              <div className="flex items-center gap-2 mb-4">
+                <div className="bg-gray-900/80 rounded-full p-0.5 flex gap-0.5 border border-gray-800/50">
+                  <button
+                    onClick={() => setDesktopAgentView('cards')}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
+                      ${desktopAgentView === 'cards' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+                  >
+                    Cards
+                  </button>
+                  <button
+                    onClick={() => setDesktopAgentView('flow')}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
+                      ${desktopAgentView === 'flow' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+                  >
+                    Flow
+                  </button>
+                </div>
+              </div>
+
+              {desktopAgentView === 'cards' ? (
+                <AgentStatusPanel
+                  agents={agentStateList}
+                  onSelectAgent={setSelectedAgent}
+                  selectedAgent={selectedAgent}
+                  layout="grid"
+                />
+              ) : (
+                <FlowGraph
+                  agents={agentStateList}
+                  onSelectAgent={setSelectedAgent}
+                />
+              )}
+
+              {/* Plan + Network side-by-side */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
+                <div className="bg-gray-900/60 border border-gray-800/50 rounded-xl overflow-hidden">
+                  <div className="px-4 py-2 border-b border-gray-800/30">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Plan</h3>
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto">
+                    <PlanView activities={activities} />
+                  </div>
+                </div>
+                <div className="bg-gray-900/60 border border-gray-800/50 rounded-xl overflow-hidden">
+                  <div className="px-4 py-2 border-b border-gray-800/30">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Network Trace</h3>
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto">
+                    <NetworkTrace calls={sdkCalls} />
+                  </div>
+                </div>
+              </div>
 
               {files && (files.stat || files.status || files.diff) && (
                 <div className="mt-6 bg-gray-900/60 border border-gray-800/50 rounded-xl p-4">
@@ -462,6 +681,15 @@ export default function ProjectView() {
           onSend={handleSend}
         />
       </div>
+
+      {/* Approval Modal */}
+      {approvalRequest && id && (
+        <ApprovalModal
+          description={approvalRequest}
+          projectId={id}
+          onClose={() => setApprovalRequest(null)}
+        />
+      )}
     </div>
   );
 }

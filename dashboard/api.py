@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -96,6 +96,13 @@ def _manager_to_dict(manager, project_id: str) -> dict:
         "agents": manager.agent_names,
         "multi_agent": manager.is_multi_agent,
         "last_message": last_message,
+        # Live agent states — survives browser refresh
+        "agent_states": manager.agent_states,
+        "current_agent": manager.current_agent,
+        "current_tool": manager.current_tool,
+        # Queue status — so frontend knows about pending messages
+        "pending_messages": manager._message_queue.qsize(),
+        "pending_approval": manager.pending_approval,
     }
 
 
@@ -206,14 +213,26 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Agent Dashboard", docs_url="/api/docs")
 
-    # CORS for Vite dev server
+    # CORS — configurable via CORS_ORIGINS env var
+    from config import CORS_ORIGINS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # --- Health check ---
+
+    @app.get("/api/health")
+    async def health_check():
+        """Health check endpoint."""
+        return {
+            "status": "ok",
+            "db_connected": state.session_mgr is not None,
+            "sdk_ready": state.sdk_client is not None,
+        }
 
     # --- REST Endpoints ---
 
@@ -314,6 +333,54 @@ def create_app() -> FastAPI:
             }
 
         return data
+
+    @app.get("/api/projects/{project_id}/live")
+    async def get_live_state(project_id: str):
+        """Full live state snapshot — designed for recovery after browser refresh.
+
+        Returns everything the frontend needs to restore its UI:
+        - Agent states (who's working on what)
+        - Loop progress (current turn, cost, budget)
+        - Shared context summary
+        - Pending messages in queue
+        - Pending approval
+        """
+        manager, user_id = _find_manager(project_id)
+        if not manager:
+            return {
+                "status": "idle",
+                "agent_states": {},
+                "loop_progress": None,
+                "shared_context_count": 0,
+                "pending_messages": 0,
+                "pending_approval": None,
+            }
+
+        loop_progress = None
+        if manager.is_running:
+            from config import MAX_TURNS_PER_CYCLE, MAX_BUDGET_USD, MAX_ORCHESTRATOR_LOOPS
+            loop_progress = {
+                "turn": manager.turn_count,
+                "max_turns": MAX_TURNS_PER_CYCLE,
+                "cost": manager.total_cost_usd,
+                "max_budget": MAX_BUDGET_USD,
+                "max_loops": MAX_ORCHESTRATOR_LOOPS,
+            }
+
+        return {
+            "status": "running" if manager.is_running else ("paused" if manager.is_paused else "idle"),
+            "agent_states": manager.agent_states,
+            "current_agent": manager.current_agent,
+            "current_tool": manager.current_tool,
+            "loop_progress": loop_progress,
+            "shared_context_count": len(manager.shared_context),
+            "shared_context_preview": [c[:200] for c in manager.shared_context[-5:]],
+            "pending_messages": manager._message_queue.qsize(),
+            "pending_approval": manager.pending_approval,
+            "background_tasks": len(manager._background_tasks),
+            "turn_count": manager.turn_count,
+            "total_cost_usd": manager.total_cost_usd,
+        }
 
     @app.put("/api/projects/{project_id}")
     async def update_project(project_id: str, req: UpdateProjectRequest):
@@ -500,7 +567,7 @@ def create_app() -> FastAPI:
             agents_count=req.agents_count,
         )
         if manager:
-            state.register_manager(user_id, project_id, manager)
+            await state.register_manager(user_id, project_id, manager)
 
         await event_bus.publish({
             "type": "project_status",
@@ -518,7 +585,7 @@ def create_app() -> FastAPI:
             if manager.is_running:
                 await manager.stop()
             if user_id is not None:
-                state.unregister_manager(user_id, project_id)
+                await state.unregister_manager(user_id, project_id)
 
         if state.session_mgr:
             await state.session_mgr.delete_project(project_id)
@@ -560,7 +627,7 @@ def create_app() -> FastAPI:
             agents_count=2,
         )
         if manager:
-            state.register_manager(user_id, project_id, manager)
+            await state.register_manager(user_id, project_id, manager)
 
         await event_bus.publish({
             "type": "project_status",
@@ -615,6 +682,24 @@ def create_app() -> FastAPI:
 
         return {"ok": True, "updated": updated}
 
+    @app.post("/api/settings/persist")
+    async def persist_settings(request: Request):
+        """Persist settings overrides to data/settings_overrides.json."""
+        import json as json_mod
+        data = await request.json()
+        overrides_path = Path("data/settings_overrides.json")
+        overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        # Merge with existing overrides
+        existing = {}
+        if overrides_path.exists():
+            try:
+                existing = json_mod.loads(overrides_path.read_text())
+            except Exception:
+                pass
+        existing.update(data)
+        overrides_path.write_text(json_mod.dumps(existing, indent=2))
+        return {"ok": True}
+
     @app.get("/api/browse-dirs")
     async def browse_dirs(path: str = "~"):
         """Browse filesystem directories for project creation."""
@@ -667,7 +752,7 @@ def create_app() -> FastAPI:
                         agents_count=2,
                     )
                     if manager:
-                        state.register_manager(user_id, project_id, manager)
+                        await state.register_manager(user_id, project_id, manager)
                         logger.info(f"[{project_id}] Manager created from DB")
 
         if not manager:
@@ -743,6 +828,74 @@ def create_app() -> FastAPI:
             "status": "stopped",
         })
         return {"ok": True}
+
+    @app.post("/api/projects/{project_id}/approve")
+    async def approve_project(project_id: str):
+        """Approve a pending HITL checkpoint."""
+        manager, _ = _find_manager(project_id)
+        if not manager:
+            return JSONResponse({"error": "Project not active"}, status_code=404)
+        if not manager.pending_approval:
+            return JSONResponse({"error": "No pending approval"}, status_code=400)
+        manager.approve()
+        return {"ok": True}
+
+    @app.post("/api/projects/{project_id}/reject")
+    async def reject_project(project_id: str):
+        """Reject a pending HITL checkpoint."""
+        manager, _ = _find_manager(project_id)
+        if not manager:
+            return JSONResponse({"error": "Project not active"}, status_code=404)
+        if not manager.pending_approval:
+            return JSONResponse({"error": "No pending approval"}, status_code=400)
+        manager.reject()
+        return {"ok": True}
+
+    # --- Schedules CRUD ---
+
+    @app.get("/api/schedules")
+    async def list_schedules(user_id: int = 0):
+        """List all schedules for a user."""
+        if not state.session_mgr:
+            return {"schedules": []}
+        schedules = await state.session_mgr.get_schedules(user_id)
+        return {"schedules": schedules}
+
+    @app.post("/api/schedules")
+    async def create_schedule(request: Request):
+        """Create a new schedule."""
+        data = await request.json()
+        if not state.session_mgr:
+            return JSONResponse({"error": "DB not ready"}, status_code=500)
+        schedule_id = await state.session_mgr.add_schedule(
+            user_id=data.get("user_id", 0),
+            chat_id=data.get("chat_id", 0),
+            project_id=data["project_id"],
+            schedule_time=data["schedule_time"],
+            task_description=data["task_description"],
+            repeat=data.get("repeat", "once"),
+        )
+        return {"ok": True, "schedule_id": schedule_id}
+
+    @app.delete("/api/schedules/{schedule_id}")
+    async def delete_schedule(schedule_id: int, user_id: int = 0):
+        """Delete a schedule."""
+        if not state.session_mgr:
+            return JSONResponse({"error": "DB not ready"}, status_code=500)
+        deleted = await state.session_mgr.delete_schedule(schedule_id, user_id)
+        if not deleted:
+            return JSONResponse({"error": "Schedule not found"}, status_code=404)
+        return {"ok": True}
+
+    @app.put("/api/projects/{project_id}/budget")
+    async def set_project_budget(project_id: str, request: Request):
+        """Set per-project budget."""
+        data = await request.json()
+        budget = float(data.get("budget_usd", 0))
+        if not state.session_mgr:
+            return JSONResponse({"error": "DB not ready"}, status_code=500)
+        await state.session_mgr.set_project_budget(project_id, budget)
+        return {"ok": True, "budget_usd": budget}
 
     @app.get("/api/stats")
     async def get_stats():
@@ -843,13 +996,40 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
-        """WebSocket for real-time event stream."""
+        """WebSocket for real-time event stream with ping/pong heartbeat."""
         await ws.accept()
         queue = event_bus.subscribe()
-        try:
+
+        async def _sender():
+            """Forward events from bus to WebSocket client."""
             while True:
                 event = await queue.get()
                 await ws.send_json(event)
+
+        async def _heartbeat():
+            """Send periodic pings to detect stale connections."""
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    await ws.send_json({"type": "ping"})
+                except Exception:
+                    break
+
+        async def _receiver():
+            """Listen for client messages (pong, future commands)."""
+            while True:
+                try:
+                    data = await ws.receive_json()
+                    # Client can send pong or other commands
+                    if data.get("type") == "pong":
+                        pass  # Connection is alive
+                except Exception:
+                    break
+
+        try:
+            # Run sender, heartbeat, and receiver concurrently
+            # When any one fails (disconnect), all are cancelled
+            await asyncio.gather(_sender(), _heartbeat(), _receiver())
         except WebSocketDisconnect:
             pass
         except Exception as e:

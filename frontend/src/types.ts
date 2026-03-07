@@ -24,6 +24,19 @@ export interface Project {
   updated_at?: number;
   message_count?: number;
   conversation_log?: ProjectMessage[];
+  // Live agent states (survives browser refresh)
+  agent_states?: Record<string, {
+    state?: string;
+    task?: string;
+    current_tool?: string;
+    cost?: number;
+    turns?: number;
+    duration?: number;
+  }>;
+  current_agent?: string;
+  current_tool?: string;
+  pending_messages?: number;
+  pending_approval?: string;
 }
 
 export interface FileChanges {
@@ -56,7 +69,8 @@ export interface Stats {
 
 export interface WSEvent {
   type: 'agent_update' | 'agent_result' | 'agent_final' | 'project_status'
-    | 'tool_use' | 'agent_started' | 'agent_finished' | 'delegation' | 'loop_progress';
+    | 'tool_use' | 'agent_started' | 'agent_finished' | 'delegation' | 'loop_progress'
+    | 'approval_request';
   project_id: string;
   project_name?: string;
   text?: string;
@@ -175,4 +189,16 @@ export interface BrowseDirsResponse {
   parent: string | null;
   entries: DirEntry[];
   error?: string;
+}
+
+export interface Schedule {
+  id: number;
+  project_id: string;
+  project_name?: string;
+  schedule_time: string;
+  task_description: string;
+  repeat: string;
+  enabled: number;
+  last_run: number | null;
+  created_at: number;
 }

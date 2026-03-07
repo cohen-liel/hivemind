@@ -1,4 +1,4 @@
-import type { Project, ProjectMessage, FileChanges, TaskHistoryItem, Stats, FileTreeEntry, FileContent, Settings, BrowseDirsResponse } from './types';
+import type { Project, ProjectMessage, FileChanges, TaskHistoryItem, Stats, FileTreeEntry, FileContent, Settings, BrowseDirsResponse, Schedule } from './types';
 
 const BASE = '/api';
 
@@ -101,4 +101,57 @@ export async function getFileTree(id: string): Promise<FileTreeEntry[]> {
 
 export async function readFile(id: string, path: string): Promise<FileContent> {
   return fetchJSON<FileContent>(`/projects/${id}/file?path=${encodeURIComponent(path)}`);
+}
+
+export interface LiveState {
+  status: string;
+  agent_states: Record<string, {
+    state?: string;
+    task?: string;
+    current_tool?: string;
+    cost?: number;
+    turns?: number;
+    duration?: number;
+  }>;
+  current_agent?: string;
+  current_tool?: string;
+  loop_progress?: {
+    turn: number;
+    max_turns: number;
+    cost: number;
+    max_budget: number;
+    max_loops: number;
+  } | null;
+  shared_context_count: number;
+  shared_context_preview: string[];
+  pending_messages: number;
+  pending_approval?: string | null;
+  background_tasks: number;
+  turn_count: number;
+  total_cost_usd: number;
+}
+
+export async function getLiveState(id: string): Promise<LiveState> {
+  return fetchJSON<LiveState>(`/projects/${id}/live`);
+}
+
+export async function getSchedules(): Promise<Schedule[]> {
+  const data = await fetchJSON<{ schedules: Schedule[] }>('/schedules');
+  return data.schedules;
+}
+
+export async function createSchedule(data: {
+  project_id: string;
+  schedule_time: string;
+  task_description: string;
+  repeat?: string;
+}): Promise<{ ok: boolean; schedule_id: number }> {
+  return fetchJSON('/schedules', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteSchedule(id: number): Promise<void> {
+  await fetchJSON(`/schedules/${id}`, { method: 'DELETE' });
 }

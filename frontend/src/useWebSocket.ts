@@ -6,18 +6,27 @@ export function useWebSocket(onEvent: (event: WSEvent) => void) {
   const [connected, setConnected] = useState(false);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const reconnectAttempt = useRef(0);
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
     const ws = new WebSocket(`${protocol}//${host}/ws`);
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+      reconnectAttempt.current = 0;
+    };
 
     ws.onmessage = (e) => {
       try {
-        const event = JSON.parse(e.data) as WSEvent;
-        onEventRef.current(event);
+        const event = JSON.parse(e.data);
+        // Respond to server pings with pong (keepalive)
+        if (event.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong' }));
+          return;
+        }
+        onEventRef.current(event as WSEvent);
       } catch {
         // ignore malformed messages
       }
@@ -25,8 +34,10 @@ export function useWebSocket(onEvent: (event: WSEvent) => void) {
 
     ws.onclose = () => {
       setConnected(false);
-      // Auto-reconnect after 2 seconds
-      setTimeout(connect, 2000);
+      // Exponential backoff: 1s, 2s, 4s, 8s, max 15s
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt.current), 15000);
+      reconnectAttempt.current += 1;
+      setTimeout(connect, delay);
     };
 
     ws.onerror = () => {

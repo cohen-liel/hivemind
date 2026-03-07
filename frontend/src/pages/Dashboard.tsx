@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getProjects } from '../api';
-import { useWebSocket } from '../useWebSocket';
+import { useWSSubscribe } from '../WebSocketContext';
 import type { Project, WSEvent } from '../types';
 
 const AGENT_ICONS: Record<string, string> = {
@@ -21,6 +21,8 @@ interface LiveState {
 export default function Dashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [liveStates, setLiveStates] = useState<Record<string, LiveState>>({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
   const navigate = useNavigate();
 
   const loadData = useCallback(async () => {
@@ -90,7 +92,18 @@ export default function Dashboard() {
     }
   }, [loadData]);
 
-  const { connected } = useWebSocket(handleWSEvent);
+  const { connected } = useWSSubscribe(handleWSEvent);
+
+  // Filter projects
+  const filteredProjects = projects.filter(p => {
+    if (statusFilter !== 'all' && p.status !== statusFilter) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return p.project_name.toLowerCase().includes(q) ||
+        (p.description || '').toLowerCase().includes(q);
+    }
+    return true;
+  });
 
   const statusConfig = (status: string) => {
     switch (status) {
@@ -143,6 +156,18 @@ export default function Dashboard() {
             <p className="text-xs text-gray-600 mt-0.5">Manage your agent orchestra</p>
           </div>
           <div className="flex items-center gap-3">
+            {'Notification' in window && Notification.permission === 'default' && (
+              <button
+                onClick={() => Notification.requestPermission()}
+                className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 bg-gray-900 border border-gray-800 rounded-lg transition-colors"
+                title="Enable browser notifications"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="inline mr-1">
+                  <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/>
+                </svg>
+                Notify
+              </button>
+            )}
             <button
               onClick={() => navigate('/new')}
               className="lg:hidden w-8 h-8 rounded-lg bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition-colors"
@@ -156,6 +181,42 @@ export default function Dashboard() {
           </div>
         </div>
       </header>
+
+      {/* Search + filter bar */}
+      {projects.length > 0 && (
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-4 flex flex-col sm:flex-row gap-3">
+          {/* Search */}
+          <div className="relative flex-1">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="8"/>
+              <path d="m21 21-4.35-4.35" strokeLinecap="round"/>
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search projects..."
+              className="w-full bg-gray-900 border border-gray-800 text-gray-200 text-sm rounded-lg pl-10 pr-4 py-2
+                         focus:border-blue-500/50 focus:outline-none placeholder-gray-600"
+            />
+          </div>
+          {/* Status filter pills */}
+          <div className="flex items-center gap-1.5">
+            {(['all', 'running', 'idle', 'paused', 'stopped'] as const).map(st => (
+              <button
+                key={st}
+                onClick={() => setStatusFilter(st)}
+                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors
+                  ${statusFilter === st
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-900 text-gray-500 hover:text-gray-300 border border-gray-800'}`}
+              >
+                {st === 'all' ? 'All' : st.charAt(0).toUpperCase() + st.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Project cards */}
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
@@ -175,7 +236,7 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {projects.map(project => {
+            {filteredProjects.map(project => {
               const cfg = statusConfig(project.status);
               const live = liveStates[project.project_id];
               const subAgents = project.agents.filter(a => a !== 'orchestrator');

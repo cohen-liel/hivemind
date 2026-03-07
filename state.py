@@ -12,6 +12,7 @@ import re
 from orchestrator import OrchestratorManager
 from sdk_client import ClaudeSDKManager
 from session_manager import SessionManager
+from skills_registry import scan_skills
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,10 @@ async def initialize():
         await session_mgr.initialize()
         logger.info("Session manager initialized")
 
+    # Scan available skills
+    skills = scan_skills()
+    logger.info(f"Loaded {len(skills)} skills: {list(skills.keys())}")
+
 
 # ── Helper functions ──────────────────────────────────────────────────
 
@@ -74,16 +79,18 @@ def get_all_managers() -> list[tuple[int, str, OrchestratorManager]]:
     return result
 
 
-def register_manager(user_id: int, project_id: str, manager: OrchestratorManager):
+async def register_manager(user_id: int, project_id: str, manager: OrchestratorManager):
     """Register an OrchestratorManager for a user+project."""
-    if user_id not in active_sessions:
-        active_sessions[user_id] = {}
-    active_sessions[user_id][project_id] = manager
+    async with _state_lock:
+        if user_id not in active_sessions:
+            active_sessions[user_id] = {}
+        active_sessions[user_id][project_id] = manager
 
 
-def unregister_manager(user_id: int, project_id: str):
+async def unregister_manager(user_id: int, project_id: str):
     """Remove an OrchestratorManager for a user+project."""
-    if user_id in active_sessions:
-        active_sessions[user_id].pop(project_id, None)
-        if not active_sessions[user_id]:
-            del active_sessions[user_id]
+    async with _state_lock:
+        if user_id in active_sessions:
+            active_sessions[user_id].pop(project_id, None)
+            if not active_sessions[user_id]:
+                del active_sessions[user_id]

@@ -40,6 +40,16 @@ input, textarea, select {
   100% { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes dashFlow {
+  0% { stroke-dashoffset: 18; }
+  100% { stroke-dashoffset: 0; }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { filter: drop-shadow(0 0 4px currentColor); opacity: 0.7; }
+  50% { filter: drop-shadow(0 0 12px currentColor); opacity: 1; }
+}
+
 /* Safe area padding for notch devices */
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
