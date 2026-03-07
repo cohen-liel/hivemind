@@ -2,6 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Prevent iOS zoom on input focus — font must be >= 16px */
+@supports (-webkit-touch-callout: none) {
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}
+
 @keyframes loading {
   0% { transform: translateX(-100%); }
   50% { transform: translateX(60%); }

@@ -275,27 +275,14 @@ export default function ProjectView() {
         {/* Content (middle, flex-1 takes remaining space) */}
         <div className="flex-1 overflow-y-auto min-h-0">
           {mobileView === 'orchestra' && (
-            allIdle ? (
-              <div className="flex flex-col items-center justify-center h-full px-6 text-center">
-                <div className="text-4xl mb-4">{'\u{1F3B6}'}</div>
-                <h2 className="text-lg font-bold text-gray-300 mb-2">Ready to perform</h2>
-                <p className="text-sm text-gray-600 mb-1">
-                  {subAgentStates.length} agents standing by
-                </p>
-                <p className="text-xs text-gray-700">
-                  Send a task below to start the concert
-                </p>
-              </div>
-            ) : (
-              <div className="p-3">
-                <AgentStatusPanel
-                  agents={agentStateList}
-                  onSelectAgent={setSelectedAgent}
-                  selectedAgent={selectedAgent}
-                  layout="bubbles"
-                />
-              </div>
-            )
+            <div className="p-3">
+              <AgentStatusPanel
+                agents={agentStateList}
+                onSelectAgent={setSelectedAgent}
+                selectedAgent={selectedAgent}
+                layout="bubbles"
+              />
+            </div>
           )}
 
           {mobileView === 'activity' && (
@@ -373,7 +360,7 @@ export default function ProjectView() {
                 }
               }}
               placeholder={status === 'idle' ? 'Send a task...' : 'Message...'}
-              className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-sm rounded-full px-4 py-2
+              className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-base rounded-full px-4 py-2
                          focus:border-blue-500/50 focus:outline-none min-w-0 placeholder-gray-600"
             />
             <button

@@ -115,7 +115,7 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
           onKeyDown={handleKeyDown}
           placeholder={status === 'idle' ? 'Send a task...' : 'Send a message...'}
           rows={1}
-          className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-sm rounded-xl px-4 py-2.5
+          className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-base rounded-xl px-4 py-2.5
                      focus:border-blue-500/50 focus:outline-none resize-none min-w-0
                      placeholder-gray-600"
         />
