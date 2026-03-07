@@ -579,9 +579,8 @@ class ClaudeSDKManager:
                 max_turns=max_turns,
                 max_budget_usd=max_budget_usd,
                 permission_mode=permission_mode,
-                # Only send stream/tool callbacks on first attempt to avoid duplicate UI updates
-                on_stream=on_stream if not is_retry else None,
-                on_tool_use=on_tool_use if not is_retry else None,
+                on_stream=on_stream,
+                on_tool_use=on_tool_use,
                 allowed_tools=allowed_tools,
                 tools=tools,
             )

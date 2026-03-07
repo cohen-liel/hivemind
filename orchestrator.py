@@ -659,12 +659,13 @@ class OrchestratorManager:
 
                 # Check completion
                 if "TASK_COMPLETE" in response.text:
-                    await self.session_mgr.update_task_history(
-                        task_history_id, "completed",
-                        cost_usd=self.total_cost_usd,
-                        turns_used=self.turn_count,
-                        summary=display_text[:500] if display_text.strip() else "Task completed",
-                    )
+                    if task_history_id is not None:
+                        await self.session_mgr.update_task_history(
+                            task_history_id, "completed",
+                            cost_usd=self.total_cost_usd,
+                            turns_used=self.turn_count,
+                            summary=display_text[:500] if display_text.strip() else "Task completed",
+                        )
                     await self._send_final(
                         self._build_final_summary(user_message, start_time)
                     )
@@ -745,6 +746,11 @@ class OrchestratorManager:
 
                 # Execute sub-agents
                 logger.info(f"[{self.project_id}] Running {len(delegations)} sub-agent tasks...")
+                # Mark orchestrator as "waiting" while sub-agents work
+                self.agent_states["orchestrator"] = {
+                    "state": "idle",
+                    "task": f"waiting for {len(delegations)} sub-agent(s)",
+                }
                 sub_results = await self._run_sub_agents(delegations)
                 logger.info(
                     f"[{self.project_id}] Sub-agents finished: "
