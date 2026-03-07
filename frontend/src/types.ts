@@ -122,6 +122,11 @@ export interface AgentState {
   cost: number;
   turns: number;
   duration: number;
+  // Delegation tracking
+  delegated_from?: string;
+  delegated_at?: number;
+  // Last result preview
+  last_result?: string;
 }
 
 export interface LoopProgress {

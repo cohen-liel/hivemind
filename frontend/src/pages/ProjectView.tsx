@@ -90,6 +90,7 @@ export default function ProjectView() {
               name: event.agent!, state: 'working', task: event.task, current_tool: undefined,
               cost: prev[event.agent!]?.cost ?? 0, turns: prev[event.agent!]?.turns ?? 0,
               duration: prev[event.agent!]?.duration ?? 0,
+              last_result: undefined,
             },
           }));
         }
@@ -110,6 +111,9 @@ export default function ProjectView() {
               cost: (prev[event.agent!]?.cost ?? 0) + (event.cost ?? 0),
               turns: (prev[event.agent!]?.turns ?? 0) + (event.turns ?? 0),
               duration: event.duration ?? 0,
+              delegated_from: undefined, delegated_at: undefined,
+              // Preserve last_result from working phase
+              last_result: prev[event.agent!]?.last_result,
             },
           }));
         }
@@ -120,6 +124,19 @@ export default function ProjectView() {
           id: nextId(), type: 'delegation', timestamp: event.timestamp,
           from_agent: event.from_agent, to_agent: event.to_agent, task: event.task,
         }]);
+        // Mark target agent as recently delegated to (for pulse animation)
+        if (event.to_agent) {
+          setAgentStates(prev => ({
+            ...prev,
+            [event.to_agent!]: {
+              ...prev[event.to_agent!],
+              name: event.to_agent!,
+              delegated_from: event.from_agent,
+              delegated_at: Date.now(),
+              task: event.task ?? prev[event.to_agent!]?.task,
+            },
+          }));
+        }
         break;
 
       case 'loop_progress':
@@ -133,10 +150,23 @@ export default function ProjectView() {
       case 'agent_result':
         if (event.text) {
           const agentMatch = event.text.match(/\*(\w+)\*/);
+          const resultAgent = agentMatch ? agentMatch[1] : (event.agent || 'agent');
           setActivities(prev => [...prev, {
             id: nextId(), type: 'agent_text', timestamp: event.timestamp,
-            agent: agentMatch ? agentMatch[1] : 'agent', content: event.text,
+            agent: resultAgent, content: event.text,
           }]);
+          // Store as last result for the agent card preview
+          if (resultAgent && resultAgent !== 'agent') {
+            setAgentStates(prev => {
+              if (prev[resultAgent]) {
+                return {
+                  ...prev,
+                  [resultAgent]: { ...prev[resultAgent], last_result: event.text!.slice(0, 200) },
+                };
+              }
+              return prev;
+            });
+          }
         }
         break;
 
@@ -197,6 +227,9 @@ export default function ProjectView() {
   ));
 
   const orchestratorState = agentStateList.find(a => a.name === 'orchestrator') ?? null;
+  const subAgentStates = agentStateList.filter(a => a.name !== 'orchestrator');
+  const hasEverWorked = subAgentStates.some(a => a.state !== 'idle' || a.cost > 0 || a.turns > 0);
+  const allIdle = project.status === 'idle' && !hasEverWorked;
 
   const mobileNavItems: { id: MobileView; icon: JSX.Element; label: string }[] = [
     {
@@ -235,25 +268,33 @@ export default function ProjectView() {
           orchestrator={orchestratorState}
           progress={loopProgress}
           totalCost={project.total_cost_usd}
+          agentSummary={subAgentStates}
         />
 
         {/* Content (middle, scrollable) */}
         <div className="flex-1 overflow-y-auto">
           {mobileView === 'orchestra' && (
-            <div className="p-3 space-y-3">
-              <AgentStatusPanel
-                agents={agentStateList}
-                onSelectAgent={setSelectedAgent}
-                selectedAgent={selectedAgent}
-                layout="grid"
-              />
-
-              {files && (files.stat || files.status) && (
-                <div className="bg-gray-900/60 border border-gray-800/50 rounded-xl p-3">
-                  <FileDiff files={files} />
-                </div>
-              )}
-            </div>
+            allIdle ? (
+              <div className="flex flex-col items-center justify-center h-full px-6 text-center">
+                <div className="text-4xl mb-4">{'\u{1F3B6}'}</div>
+                <h2 className="text-lg font-bold text-gray-300 mb-2">Ready to perform</h2>
+                <p className="text-sm text-gray-600 mb-1">
+                  {subAgentStates.length} agents standing by
+                </p>
+                <p className="text-xs text-gray-700">
+                  Send a task below to start the concert
+                </p>
+              </div>
+            ) : (
+              <div className="p-3">
+                <AgentStatusPanel
+                  agents={agentStateList}
+                  onSelectAgent={setSelectedAgent}
+                  selectedAgent={selectedAgent}
+                  layout="grid"
+                />
+              </div>
+            )
           )}
 
           {mobileView === 'activity' && (
@@ -311,26 +352,38 @@ export default function ProjectView() {
           orchestrator={orchestratorState}
           progress={loopProgress}
           totalCost={project.total_cost_usd}
+          agentSummary={subAgentStates}
         />
 
         {/* MAIN: Agent Orchestra - takes center stage */}
         <div className="flex-1 overflow-y-auto">
-          <div className="max-w-5xl mx-auto w-full px-6 py-6">
-            {/* Agent cards grid */}
-            <AgentStatusPanel
-              agents={agentStateList}
-              onSelectAgent={setSelectedAgent}
-              selectedAgent={selectedAgent}
-              layout="grid"
-            />
+          {allIdle ? (
+            <div className="flex flex-col items-center justify-center h-full px-6 text-center">
+              <div className="text-5xl mb-5">{'\u{1F3B6}'}</div>
+              <h2 className="text-xl font-bold text-gray-300 mb-2">Ready to perform</h2>
+              <p className="text-sm text-gray-500 mb-1">
+                {subAgentStates.length} agents standing by
+              </p>
+              <p className="text-xs text-gray-700">
+                Send a task below to start the concert
+              </p>
+            </div>
+          ) : (
+            <div className="max-w-5xl mx-auto w-full px-6 py-6">
+              <AgentStatusPanel
+                agents={agentStateList}
+                onSelectAgent={setSelectedAgent}
+                selectedAgent={selectedAgent}
+                layout="grid"
+              />
 
-            {/* File changes (collapsible, below agents) */}
-            {files && (files.stat || files.status || files.diff) && (
-              <div className="mt-6 bg-gray-900/60 border border-gray-800/50 rounded-xl p-4">
-                <FileDiff files={files} />
-              </div>
-            )}
-          </div>
+              {files && (files.stat || files.status || files.diff) && (
+                <div className="mt-6 bg-gray-900/60 border border-gray-800/50 rounded-xl p-4">
+                  <FileDiff files={files} />
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Activity Drawer (collapsible from bottom) */}

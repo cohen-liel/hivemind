@@ -64,9 +64,15 @@ function stateConfig(state: string) {
         dotPulse: false,
         label: 'Standby',
         labelColor: 'text-gray-600',
-        opacity: 'opacity-60',
+        opacity: 'opacity-50',
       };
   }
+}
+
+// Check if delegation happened recently (within 5 seconds)
+function isRecentDelegation(agent: AgentState): boolean {
+  if (!agent.delegated_at) return false;
+  return Date.now() - agent.delegated_at < 5000;
 }
 
 export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent, layout = 'grid' }: Props) {
@@ -88,11 +94,14 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
         {subAgents.map((agent) => {
           const cfg = stateConfig(agent.state);
           const icon = AGENT_ICONS[agent.name] || '\u{1F527}';
+          const recentDelegation = isRecentDelegation(agent);
 
           return (
             <div
               key={agent.name}
-              className={`bg-gray-900/80 border rounded-lg p-2.5 transition-all duration-300 ${cfg.glow} ${cfg.opacity}`}
+              className={`bg-gray-900/80 border rounded-lg p-2.5 transition-all duration-300
+                ${recentDelegation ? 'animate-[delegationPulse_1s_ease-out]' : ''}
+                ${cfg.glow} ${cfg.opacity}`}
             >
               <div className="flex items-center gap-2.5">
                 <div className="relative flex-shrink-0">
@@ -126,11 +135,13 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
         const label = AGENT_LABELS[agent.name] || agent.name;
         const isExpanded = expandedAgent === agent.name;
         const isSelected = selectedAgent === agent.name;
+        const recentDelegation = isRecentDelegation(agent);
 
         return (
           <div
             key={agent.name}
             className={`relative bg-gray-900/80 border rounded-2xl transition-all duration-500 cursor-pointer
+              ${recentDelegation ? 'animate-[delegationPulse_1.5s_ease-out]' : ''}
               ${cfg.glow} ${cfg.opacity} ${isSelected ? 'ring-1 ring-blue-500/40' : ''}
               hover:border-gray-700/80`}
             onClick={() => {
@@ -138,6 +149,18 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
               setExpandedAgent(isExpanded ? null : agent.name);
             }}
           >
+            {/* Delegation banner */}
+            {recentDelegation && agent.delegated_from && (
+              <div className="px-4 pt-3 pb-0 animate-[fadeSlideIn_0.3s_ease-out]">
+                <div className="flex items-center gap-1.5 text-[10px] text-blue-400 bg-blue-500/10 rounded-lg px-2.5 py-1.5">
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M1 8h10M8 4l4 4-4 4"/>
+                  </svg>
+                  Task from <span className="font-semibold capitalize">{agent.delegated_from}</span>
+                </div>
+              </div>
+            )}
+
             {/* Card content */}
             <div className="p-4">
               {/* Header: icon + name + state */}
@@ -173,6 +196,16 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400/80 animate-bounce" style={{ animationDelay: '300ms' }} />
                   </div>
                   <span className="text-xs text-blue-300/90 font-mono truncate">{agent.current_tool}</span>
+                </div>
+              )}
+
+              {/* Last result preview (for done/error agents) */}
+              {(agent.state === 'done' || agent.state === 'error') && agent.last_result && (
+                <div className={`text-[11px] rounded-lg px-3 py-2 mb-2 truncate
+                  ${agent.state === 'done'
+                    ? 'bg-green-500/5 text-green-300/70'
+                    : 'bg-red-500/5 text-red-300/70'}`}>
+                  {agent.last_result.replace(/\*\w+\*\s*/, '').slice(0, 120)}
                 </div>
               )}
 

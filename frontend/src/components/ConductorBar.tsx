@@ -8,10 +8,11 @@ interface Props {
   orchestrator: AgentState | null;
   progress: LoopProgress | null;
   totalCost: number;
+  agentSummary?: AgentState[];
 }
 
 export default function ConductorBar({
-  projectName, status, connected, orchestrator, progress, totalCost,
+  projectName, status, connected, orchestrator, progress, totalCost, agentSummary,
 }: Props) {
   const isActive = orchestrator?.state === 'working';
   const isOrchestratorDone = orchestrator?.state === 'done';
@@ -21,6 +22,16 @@ export default function ConductorBar({
   const turnsMax = progress?.max_turns ?? 0;
   const turnsPct = turnsMax > 0 ? Math.min((turnsUsed / turnsMax) * 100, 100) : 0;
   const costUsed = progress?.cost ?? totalCost;
+
+  // Agent summary counts
+  const counts = { working: 0, done: 0, error: 0, idle: 0 };
+  if (agentSummary) {
+    for (const a of agentSummary) {
+      if (a.state in counts) counts[a.state as keyof typeof counts]++;
+    }
+  }
+  const hasAgents = agentSummary && agentSummary.length > 0;
+  const hasActivity = counts.working > 0 || counts.done > 0 || counts.error > 0;
 
   return (
     <header className={`relative border-b border-gray-800 bg-gray-900/80 backdrop-blur-md sticky top-0 z-20 transition-all duration-500
@@ -47,7 +58,7 @@ export default function ConductorBar({
 
       {/* Conductor section */}
       <div className="px-4 pb-3">
-        <div className={`flex items-center gap-3 mt-1 transition-all duration-500`}>
+        <div className="flex items-center gap-3 mt-1 transition-all duration-500">
           {/* Conductor icon with aura */}
           <div className="relative flex-shrink-0">
             <div className={`w-9 h-9 rounded-full flex items-center justify-center text-base transition-all duration-500
@@ -93,6 +104,36 @@ export default function ConductorBar({
             </div>
           )}
         </div>
+
+        {/* Status Summary: colored dots with counts */}
+        {hasAgents && hasActivity && (
+          <div className="flex items-center gap-3 mt-2">
+            {counts.working > 0 && (
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                <span className="text-[10px] text-blue-400 font-medium">{counts.working} working</span>
+              </div>
+            )}
+            {counts.done > 0 && (
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-green-500" />
+                <span className="text-[10px] text-green-400/80 font-medium">{counts.done} done</span>
+              </div>
+            )}
+            {counts.error > 0 && (
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-red-500" />
+                <span className="text-[10px] text-red-400 font-medium">{counts.error} error</span>
+              </div>
+            )}
+            {counts.idle > 0 && (
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-gray-600" />
+                <span className="text-[10px] text-gray-600 font-medium">{counts.idle} standby</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Progress bar */}
         {turnsMax > 0 && status === 'running' && (
