@@ -2,17 +2,10 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getProjects } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
+import { AGENT_ICONS } from '../constants';
 import type { Project, WSEvent } from '../types';
 
-const AGENT_ICONS: Record<string, string> = {
-  orchestrator: '\u{1F3AF}',
-  developer: '\u{1F4BB}',
-  reviewer: '\u{1F50D}',
-  tester: '\u{1F9EA}',
-  devops: '\u{2699}\uFE0F',
-};
-
-interface LiveState {
+interface DashboardLiveState {
   text: string;
   agent?: string;
   activeAgents: Set<string>;
@@ -20,7 +13,7 @@ interface LiveState {
 
 export default function Dashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [liveStates, setLiveStates] = useState<Record<string, LiveState>>({});
+  const [liveStates, setLiveStates] = useState<Record<string, DashboardLiveState>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const navigate = useNavigate();

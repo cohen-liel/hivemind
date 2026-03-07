@@ -1,18 +1,11 @@
 import { useMemo } from 'react';
 import type { AgentState } from '../types';
+import { AGENT_ICONS } from '../constants';
 
 interface Props {
   agents: AgentState[];
   onSelectAgent?: (name: string) => void;
 }
-
-const AGENT_ICONS: Record<string, string> = {
-  orchestrator: '\u{1F3AF}',
-  developer: '\u{1F4BB}',
-  reviewer: '\u{1F50D}',
-  tester: '\u{1F9EA}',
-  devops: '\u{2699}\uFE0F',
-};
 
 const AGENT_COLORS: Record<string, { stroke: string; fill: string; text: string; glow: string }> = {
   orchestrator: { stroke: '#6b7280', fill: '#1f2937', text: '#d1d5db', glow: 'rgba(107,114,128,0.3)' },
@@ -35,6 +28,9 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
   const orchestrator = agents.find(a => a.name === 'orchestrator');
   const subAgents = agents.filter(a => a.name !== 'orchestrator');
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const agentKey = subAgents.map(a => a.name).join(',');
+
   // Calculate positions in a radial layout
   const layout = useMemo(() => {
     const cx = 200;
@@ -51,7 +47,7 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
       };
     });
     return positions;
-  }, [subAgents.length]);
+  }, [agentKey]); // recalc when agent set changes
 
   return (
     <div className="w-full flex justify-center">

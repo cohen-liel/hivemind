@@ -6,13 +6,23 @@ interface Props {
 
 export default function ApprovalModal({ description, projectId, onClose }: Props) {
   const handleApprove = async () => {
-    await fetch(`/api/projects/${projectId}/approve`, { method: 'POST' });
-    onClose();
+    try {
+      const res = await fetch(`/api/projects/${projectId}/approve`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onClose();
+    } catch (e) {
+      alert(`Failed to approve: ${e instanceof Error ? e.message : 'Unknown error'}. Try again.`);
+    }
   };
 
   const handleReject = async () => {
-    await fetch(`/api/projects/${projectId}/reject`, { method: 'POST' });
-    onClose();
+    try {
+      const res = await fetch(`/api/projects/${projectId}/reject`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onClose();
+    } catch (e) {
+      alert(`Failed to reject: ${e instanceof Error ? e.message : 'Unknown error'}. Try again.`);
+    }
   };
 
   return (

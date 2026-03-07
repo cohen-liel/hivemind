@@ -90,6 +90,20 @@ export async function getSettings(): Promise<Settings> {
   return fetchJSON<Settings>('/settings');
 }
 
+export async function updateSettings(settings: Record<string, number>): Promise<void> {
+  await fetchJSON('/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function persistSettings(settings: Record<string, number>): Promise<void> {
+  await fetchJSON('/settings/persist', {
+    method: 'POST',
+    body: JSON.stringify(settings),
+  });
+}
+
 export async function browseDirs(path: string = '~'): Promise<BrowseDirsResponse> {
   return fetchJSON<BrowseDirsResponse>(`/browse-dirs?path=${encodeURIComponent(path)}`);
 }
@@ -116,6 +130,7 @@ export interface LiveState {
   current_agent?: string;
   current_tool?: string;
   loop_progress?: {
+    loop: number;
     turn: number;
     max_turns: number;
     cost: number;

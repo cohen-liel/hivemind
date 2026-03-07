@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
-import { getSettings } from '../api';
+import { getSettings, updateSettings, persistSettings } from '../api';
 import type { Settings } from '../types';
-
-const API_BASE = '/api';
 
 interface EditableField {
   key: string;
@@ -66,23 +64,11 @@ export default function SettingsPage() {
     setSaving(true);
     setSaved(false);
     try {
-      const res = await fetch(`${API_BASE}/settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
-      });
-      if (!res.ok) throw new Error('Save failed');
-
-      // Also persist to data/settings_overrides.json
-      await fetch(`${API_BASE}/settings/persist`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
-      }).catch(() => {});
-
+      await updateSettings(draft);
+      await persistSettings(draft).catch(() => {});
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
-    } catch (e) {
+    } catch {
       setError('Failed to save settings');
     } finally {
       setSaving(false);

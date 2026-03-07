@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import html
 import logging
 import os
 import re
 import time
 from pathlib import Path
+from typing import Callable
 
 from telegram import Update, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton, constants
 from telegram.ext import (
@@ -47,8 +50,130 @@ _PROJECT_NAME_RE = state.PROJECT_NAME_RE
 _user_last_message = state.user_last_message
 _msg_to_project = state.msg_to_project
 
+# --- Constants ---
+HANDLER_TIMEOUT_SECONDS = 120  # Max time for any handler before timeout
+API_CALL_TIMEOUT_SECONDS = 30  # Timeout for individual Claude API calls injected via /talk
+RATE_LIMIT_CLEANUP_INTERVAL = 300  # Clean up stale rate-limit entries every 5 minutes
+RATE_LIMIT_ENTRY_TTL = 600  # Remove rate-limit entries older than 10 minutes
+_BOT_START_TIME = time.monotonic()  # Track uptime for /health
 
-# --- Authorization ---
+# Regex for sanitizing user input — allows letters, numbers, common punctuation, whitespace
+_SAFE_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")  # Strip control chars except \n \r \t
+
+# Allowed agent names (whitelist for /talk)
+_VALID_AGENT_NAMES = frozenset({"orchestrator", "developer", "reviewer", "tester", "devops"})
+
+# Track last rate-limit cleanup time
+_last_rate_limit_cleanup: float = 0.0
+
+
+# ============================================================
+# Error Handling Decorator
+# ============================================================
+
+def handler_guard(func: Callable) -> Callable:
+    """Decorator that wraps Telegram handler functions with comprehensive error handling.
+
+    - Catches all exceptions and logs them with context
+    - Sends a user-friendly error message (never raw tracebacks)
+    - Prevents one handler crash from taking down the bot
+    """
+    @functools.wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        handler_name = func.__name__
+        try:
+            return await func(update, context, *args, **kwargs)
+        except asyncio.CancelledError:
+            # Let cancellations propagate — don't swallow them
+            raise
+        except asyncio.TimeoutError:
+            logger.error(f"[{handler_name}] Timed out", exc_info=True)
+            await _safe_reply(update, context, "⏱ Operation timed out. Please try again.")
+        except PermissionError as e:
+            logger.error(f"[{handler_name}] Permission error: {e}")
+            await _safe_reply(update, context, f"🚫 Permission denied: {e}")
+        except Exception as e:
+            logger.error(f"[{handler_name}] Unhandled exception: {e}", exc_info=True)
+            await _safe_reply(
+                update, context,
+                "❌ Something went wrong. The error has been logged.\n"
+                "Please try again or use /help."
+            )
+    return wrapper
+
+
+async def _safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Send a reply to the user, handling all possible failure modes."""
+    try:
+        if update and update.callback_query:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+            try:
+                await update.callback_query.edit_message_text(text)
+                return
+            except Exception:
+                pass
+
+        if update and update.effective_chat:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    except Exception as e:
+        logger.error(f"Failed to send error message to user: {e}")
+
+
+# ============================================================
+# Input Validation & Sanitization
+# ============================================================
+
+def _sanitize_text(text: str | None) -> str:
+    """Sanitize user input text by removing control characters and trimming."""
+    if not text:
+        return ""
+    # Strip control characters (keep newlines, carriage returns, tabs)
+    cleaned = _SAFE_TEXT_RE.sub("", text)
+    # Collapse excessive whitespace (more than 5 consecutive newlines)
+    cleaned = re.sub(r"\n{6,}", "\n\n\n\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _validate_project_id(project_id: str) -> str | None:
+    """Validate and sanitize a project ID. Returns cleaned ID or None if invalid."""
+    if not project_id or not isinstance(project_id, str):
+        return None
+    cleaned = project_id.strip().lower()
+    if not cleaned or len(cleaned) > 100:
+        return None
+    if not _PROJECT_NAME_RE.match(cleaned):
+        return None
+    return cleaned
+
+
+def _validate_agent_name(name: str) -> str | None:
+    """Validate an agent name against the known whitelist. Returns cleaned name or None."""
+    if not name or not isinstance(name, str):
+        return None
+    cleaned = name.strip().lower()
+    if cleaned in _VALID_AGENT_NAMES:
+        return cleaned
+    return None
+
+
+def _validate_agents_count(count_str: str) -> int | None:
+    """Validate agents count string. Returns int 1-5 or None."""
+    try:
+        count = int(count_str)
+        if 1 <= count <= 5:
+            return count
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+# ============================================================
+# Rate Limiter (improved)
+# ============================================================
+
 def is_authorized(user_id: int) -> bool:
     if not ALLOWED_USER_IDS:
         return True
@@ -68,22 +193,45 @@ async def _check_auth(update: Update) -> bool:
 
 
 async def _check_rate_limit(update: Update) -> bool:
-    """Return False (and warn user) if the user is sending messages too fast."""
+    """Return False (and warn user) if the user is sending messages too fast.
+
+    Improved: properly handles per-user tracking with periodic cleanup
+    of stale entries to prevent memory leaks.
+    """
     if RATE_LIMIT_SECONDS <= 0:
         return True
+
     user_id = update.effective_user.id
     now = time.monotonic()
+
+    # Periodic cleanup of stale entries (every RATE_LIMIT_CLEANUP_INTERVAL seconds)
+    global _last_rate_limit_cleanup
+    if (now - _last_rate_limit_cleanup) > RATE_LIMIT_CLEANUP_INTERVAL:
+        _last_rate_limit_cleanup = now
+        stale_cutoff = now - RATE_LIMIT_ENTRY_TTL
+        stale_keys = [uid for uid, ts in _user_last_message.items() if ts < stale_cutoff]
+        for uid in stale_keys:
+            _user_last_message.pop(uid, None)
+        if stale_keys:
+            logger.debug(f"Rate limiter cleanup: removed {len(stale_keys)} stale entries")
+
     last = _user_last_message.get(user_id, 0.0)
-    if (now - last) < RATE_LIMIT_SECONDS:
-        remaining = RATE_LIMIT_SECONDS - (now - last)
+    elapsed = now - last
+    if elapsed < RATE_LIMIT_SECONDS:
+        remaining = RATE_LIMIT_SECONDS - elapsed
         if update.message:
             await update.message.reply_text(
                 f"⏳ Slow down! Please wait {remaining:.1f}s before sending another message."
             )
         return False
+
     _user_last_message[user_id] = now
     return True
 
+
+# ============================================================
+# Session / Manager Helpers
+# ============================================================
 
 def get_user_sessions(user_id: int) -> dict[str, OrchestratorManager]:
     """Get or create the sessions dict for a user. Caller MUST hold _state_lock."""
@@ -100,6 +248,10 @@ def get_current_manager(user_id: int) -> OrchestratorManager | None:
         return sessions[proj_id]
     return None
 
+
+# ============================================================
+# Telegram Message Helpers
+# ============================================================
 
 async def send_long_message(bot, chat_id: int, text: str, project_id: str | None = None, **kwargs) -> list[int]:
     """Send a message, splitting if it exceeds Telegram's limit. Returns sent message IDs."""
@@ -147,6 +299,10 @@ async def send_long_message(bot, chat_id: int, text: str, project_id: str | None
 
     return sent_ids
 
+
+# ============================================================
+# Progress Message (streaming edits with reactions)
+# ============================================================
 
 class ProgressMessage:
     """Manages a single Telegram progress message that gets edited in-place.
@@ -351,6 +507,10 @@ class ProgressMessage:
             self._heartbeat_task = None
 
 
+# ============================================================
+# Callback factories (bridge Telegram <-> EventBus)
+# ============================================================
+
 def _make_callbacks(bot, chat_id: int, user_message_id: int | None = None,
                     project_id: str | None = None, project_name: str | None = None):
     """Create on_update (progress), on_result (intermediate), and on_final callbacks.
@@ -409,6 +569,10 @@ def _make_callbacks(bot, chat_id: int, user_message_id: int | None = None,
 
     return on_update, on_result, on_final
 
+
+# ============================================================
+# Project activation
+# ============================================================
 
 async def _activate_project(
     user_id: int,
@@ -483,7 +647,11 @@ async def _activate_project(
     return manager
 
 
-# --- /start ---
+# ============================================================
+# /start
+# ============================================================
+
+@handler_guard
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -494,6 +662,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Commands:*\n"
         "/projects — Select a project\n"
         "/status — Current project status\n"
+        "/health — Bot health check\n"
         "/talk <agent> <msg> — Message a specific agent\n"
         "/log — Conversation log\n"
         "/pause — Pause agents\n"
@@ -505,14 +674,89 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# --- /help ---
+# ============================================================
+# /help
+# ============================================================
+
+@handler_guard
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
     await start_command(update, context)
 
 
-# --- /projects ---
+# ============================================================
+# /health — New health check command
+# ============================================================
+
+@handler_guard
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Return bot health status including uptime, active sessions, memory info."""
+    if not await _check_auth(update):
+        return
+
+    uptime_seconds = time.monotonic() - _BOT_START_TIME
+    uptime_hours = int(uptime_seconds // 3600)
+    uptime_minutes = int((uptime_seconds % 3600) // 60)
+    uptime_secs = int(uptime_seconds % 60)
+
+    if uptime_hours > 0:
+        uptime_str = f"{uptime_hours}h {uptime_minutes}m {uptime_secs}s"
+    elif uptime_minutes > 0:
+        uptime_str = f"{uptime_minutes}m {uptime_secs}s"
+    else:
+        uptime_str = f"{uptime_secs}s"
+
+    # Count active sessions across all users
+    total_sessions = 0
+    running_sessions = 0
+    paused_sessions = 0
+    total_cost = 0.0
+
+    async with _state_lock:
+        for user_id, sessions in active_sessions.items():
+            for pid, mgr in sessions.items():
+                total_sessions += 1
+                if mgr.is_running:
+                    running_sessions += 1
+                elif mgr.is_paused:
+                    paused_sessions += 1
+                total_cost += mgr.total_cost_usd
+
+    # SDK client status
+    sdk_status = "✅ Connected" if state.sdk_client else "❌ Not initialized"
+
+    # Session manager status
+    db_status = "✅ Connected" if state.session_mgr else "❌ Not initialized"
+
+    # Rate limiter stats
+    rate_limit_entries = len(_user_last_message)
+
+    lines = [
+        "🏥 *Bot Health Status*\n",
+        f"⏱ *Uptime:* {uptime_str}",
+        f"🔌 *SDK:* {sdk_status}",
+        f"💾 *Database:* {db_status}",
+        "",
+        f"📊 *Sessions:* {total_sessions} total",
+        f"  ▶️ Running: {running_sessions}",
+        f"  ⏸ Paused: {paused_sessions}",
+        f"  ⏹ Idle: {total_sessions - running_sessions - paused_sessions}",
+        "",
+        f"💰 *Total Cost:* ${total_cost:.4f}",
+        f"🚦 *Rate Limiter:* {rate_limit_entries} tracked user(s)",
+        f"⚙️ *Rate Limit:* {RATE_LIMIT_SECONDS}s between messages",
+        f"🔄 *Max Turns:* {MAX_TURNS_PER_CYCLE}",
+    ]
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ============================================================
+# /projects
+# ============================================================
+
+@handler_guard
 async def projects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -527,8 +771,8 @@ async def projects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if sessions:
             for pid, mgr in sessions.items():
-                state = "running" if mgr.is_running else ("paused" if mgr.is_paused else "stopped")
-                keyboard.append([InlineKeyboardButton(f"🟢 {mgr.project_name} [{state}]", callback_data=f"sel_proj:{pid}")])
+                mgr_state = "running" if mgr.is_running else ("paused" if mgr.is_paused else "stopped")
+                keyboard.append([InlineKeyboardButton(f"🟢 {mgr.project_name} [{mgr_state}]", callback_data=f"sel_proj:{pid}")])
 
         if saved:
             active_ids = sessions.keys()
@@ -552,6 +796,12 @@ async def projects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
+# ============================================================
+# Callback query handler (inline keyboard presses)
+# ============================================================
+
+@handler_guard
 async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -560,10 +810,17 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
 
     data = query.data
+    if not data or not isinstance(data, str):
+        logger.warning("Received callback query with no data")
+        return
 
     # Handle /talk agent selection
     if data.startswith("talk_agent:"):
-        agent_name = data.split(":", 1)[1]
+        agent_name = _validate_agent_name(data.split(":", 1)[1])
+        if not agent_name:
+            await query.edit_message_text("❌ Invalid agent name.")
+            return
+
         stored_msg = context.user_data.get('talk_msg')
 
         if not stored_msg:
@@ -584,7 +841,20 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
             return
 
         await query.edit_message_text(f"📨 Sending to *{agent_name}*...", parse_mode="Markdown")
-        await manager.inject_user_message(agent_name, stored_msg)
+
+        # Wrap the injection with a timeout
+        try:
+            await asyncio.wait_for(
+                manager.inject_user_message(agent_name, stored_msg),
+                timeout=API_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout injecting message to {agent_name}")
+            await send_long_message(
+                context.bot, update.effective_chat.id,
+                f"⏱ Timed out sending message to *{agent_name}*. Please try again.",
+                parse_mode="Markdown",
+            )
         context.user_data.pop('talk_msg', None)
         return
 
@@ -592,7 +862,16 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
     if data.startswith("sel_proj:"):
         proj_id = data.split(":", 1)[1]
-        context.user_data['pending_switch'] = proj_id
+        # Validate the project ID from callback data
+        validated_id = _validate_project_id(proj_id)
+        if not validated_id:
+            # Predefined projects might have mixed-case names — try original
+            if proj_id not in PREDEFINED_PROJECTS:
+                await query.edit_message_text("❌ Invalid project name.")
+                return
+            validated_id = proj_id
+
+        context.user_data['pending_switch'] = validated_id
 
         keyboard = [
             [
@@ -605,7 +884,7 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"Selected: *{proj_id}*\n\nHow many agents?",
+            f"Selected: *{validated_id}*\n\nHow many agents?",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -621,7 +900,12 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
         return
 
     elif data.startswith("set_agents:"):
-        agents_count = int(data.split(":", 1)[1])
+        raw_count = data.split(":", 1)[1]
+        agents_count = _validate_agents_count(raw_count)
+        if agents_count is None:
+            await query.edit_message_text("❌ Invalid agent count. Use 1-5.")
+            return
+
         target = context.user_data.get('pending_switch')
 
         if not target:
@@ -694,7 +978,11 @@ async def project_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     await query.edit_message_text(f"Project '{target}' not found.")
 
 
-# --- /switch ---
+# ============================================================
+# /switch
+# ============================================================
+
+@handler_guard
 async def switch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -712,7 +1000,11 @@ async def switch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Usage: `/switch <project-name> [num_agents]`\nNo active projects. Use /new to create one.", parse_mode="Markdown")
             return
 
-        target = context.args[0].lower()
+        target = _sanitize_text(context.args[0]).lower()
+        if not target:
+            await update.message.reply_text("❌ Invalid project name.")
+            return
+
         chat_id = update.effective_chat.id
         bot = context.bot
 
@@ -724,8 +1016,10 @@ async def switch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             project_dir = str(Path(PREDEFINED_PROJECTS[target]).expanduser().resolve())
 
             agents_count = 2
-            if len(context.args) > 1 and context.args[1].isdigit():
-                agents_count = int(context.args[1])
+            if len(context.args) > 1:
+                validated = _validate_agents_count(context.args[1])
+                if validated is not None:
+                    agents_count = validated
 
             try:
                 await _activate_project(
@@ -751,8 +1045,10 @@ async def switch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 project_dir = data.get("project_dir", str(PROJECTS_BASE_DIR / target))
                 agents_count = 2
 
-                if len(context.args) > 1 and context.args[1].isdigit():
-                    agents_count = int(context.args[1])
+                if len(context.args) > 1:
+                    validated = _validate_agents_count(context.args[1])
+                    if validated is not None:
+                        agents_count = validated
 
                 try:
                     await _activate_project(
@@ -773,7 +1069,11 @@ async def switch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"Project '{target}' not found. Use /projects to see available.")
 
 
-# --- /status ---
+# ============================================================
+# /status
+# ============================================================
+
+@handler_guard
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -792,9 +1092,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for pid, mgr in sessions.items():
             marker = "👉" if pid == cur else "🚪"
-            state = "running" if mgr.is_running else ("paused" if mgr.is_paused else "ready")
+            mgr_state = "running" if mgr.is_running else ("paused" if mgr.is_paused else "ready")
             lines.append(f"{marker} *{mgr.project_name}* (`{pid}`)")
-            lines.append(f"  State: {state} | Turn: {mgr.turn_count}/{MAX_TURNS_PER_CYCLE}")
+            lines.append(f"  State: {mgr_state} | Turn: {mgr.turn_count}/{MAX_TURNS_PER_CYCLE}")
             lines.append(f"  Cost: ${mgr.total_cost_usd:.4f} | Agents: {', '.join(mgr.agent_names)}")
 
             if mgr.conversation_log:
@@ -807,7 +1107,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-# --- /talk ---
+# ============================================================
+# /talk
+# ============================================================
+
+@handler_guard
 async def talk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -842,16 +1146,40 @@ async def talk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Check if first arg is a known agent name (backward compatible: /talk developer do X)
-    first_arg = context.args[0].lower()
-    if first_arg in manager.agent_names and len(context.args) >= 2:
+    first_arg = _validate_agent_name(context.args[0])
+    if first_arg and len(context.args) >= 2:
         agent_name = first_arg
-        message = " ".join(context.args[1:])
+        message = _sanitize_text(" ".join(context.args[1:]))
+
+        if not message:
+            await update.message.reply_text("❌ Message cannot be empty.")
+            return
+        if len(message) > MAX_USER_MESSAGE_LENGTH:
+            await update.message.reply_text(
+                f"❌ Message too long ({len(message):,} chars). Max: {MAX_USER_MESSAGE_LENGTH:,}."
+            )
+            return
+
         await update.effective_chat.send_action(constants.ChatAction.TYPING)
-        await manager.inject_user_message(agent_name, message)
+
+        try:
+            await asyncio.wait_for(
+                manager.inject_user_message(agent_name, message),
+                timeout=API_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text(
+                f"⏱ Timed out sending to *{agent_name}*. Please try again.",
+                parse_mode="Markdown",
+            )
         return
 
     # All args are the message — show keyboard to select agent
-    message = " ".join(context.args)
+    message = _sanitize_text(" ".join(context.args))
+    if not message:
+        await update.message.reply_text("❌ Message cannot be empty.")
+        return
+
     context.user_data['talk_msg'] = message
     keyboard = [
         [
@@ -870,7 +1198,11 @@ async def talk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --- /pause ---
+# ============================================================
+# /pause
+# ============================================================
+
+@handler_guard
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -890,7 +1222,11 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"⏸ Project *{manager.project_name}* paused.", parse_mode="Markdown")
 
 
-# --- /resume ---
+# ============================================================
+# /resume
+# ============================================================
+
+@handler_guard
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -910,7 +1246,11 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"▶️ Project *{manager.project_name}* resumed.", parse_mode="Markdown")
 
 
-# --- /stop ---
+# ============================================================
+# /stop
+# ============================================================
+
+@handler_guard
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -939,7 +1279,11 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 current_project.pop(user_id, None)
 
 
-# --- /clear ---
+# ============================================================
+# /clear
+# ============================================================
+
+@handler_guard
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -957,7 +1301,11 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🗑 Cleared message history for project *{proj_id}*.", parse_mode="Markdown")
 
 
-# --- /log ---
+# ============================================================
+# /log
+# ============================================================
+
+@handler_guard
 async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -989,10 +1337,10 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
     if not messages:
-        state = "running" if manager.is_running else ("paused" if manager.is_paused else "ready")
+        mgr_state = "running" if manager.is_running else ("paused" if manager.is_paused else "ready")
         await update.message.reply_text(
             f"📜 *{manager.project_name}* — No messages yet.\n\n"
-            f"State: {state}\n"
+            f"State: {mgr_state}\n"
             f"Agents: {', '.join(manager.agent_names)}\n\n"
             f"Send a text message to start a conversation.",
             parse_mode="Markdown"
@@ -1017,7 +1365,11 @@ async def log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_long_message(context.bot, update.effective_chat.id, text, parse_mode="Markdown")
 
 
-# --- normal text messages ---
+# ============================================================
+# Normal text messages
+# ============================================================
+
+@handler_guard
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -1029,12 +1381,33 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Check if this is a reply to a /talk agent selection (no stored message)
     talk_target = context.user_data.pop('talk_target_agent', None)
     if talk_target:
-        async with _state_lock:
-            manager = get_current_manager(user_id)
-        if manager:
-            await update.effective_chat.send_action(constants.ChatAction.TYPING)
-            await manager.inject_user_message(talk_target, update.message.text.strip())
-            return
+        validated_target = _validate_agent_name(talk_target)
+        if validated_target:
+            async with _state_lock:
+                manager = get_current_manager(user_id)
+            if manager:
+                raw_text = _sanitize_text(update.message.text)
+                if not raw_text:
+                    await update.message.reply_text("❌ Message cannot be empty.")
+                    return
+                if len(raw_text) > MAX_USER_MESSAGE_LENGTH:
+                    await update.message.reply_text(
+                        f"❌ Message too long ({len(raw_text):,} chars). Max: {MAX_USER_MESSAGE_LENGTH:,}."
+                    )
+                    return
+
+                await update.effective_chat.send_action(constants.ChatAction.TYPING)
+                try:
+                    await asyncio.wait_for(
+                        manager.inject_user_message(validated_target, raw_text),
+                        timeout=API_CALL_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    await update.message.reply_text(
+                        f"⏱ Timed out sending to *{validated_target}*. Please try again.",
+                        parse_mode="Markdown",
+                    )
+                return
 
     # Reply-to-message: auto-detect which project a message belongs to
     reply = update.message.reply_to_message
@@ -1077,7 +1450,12 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         return
 
-    message = update.message.text.strip()
+    # Sanitize and validate user message
+    message = _sanitize_text(update.message.text)
+
+    if not message:
+        await update.message.reply_text("❌ Message cannot be empty.")
+        return
 
     # Reject messages that are too long to prevent abuse
     if len(message) > MAX_USER_MESSAGE_LENGTH:
@@ -1109,21 +1487,42 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await manager.start_session(message)
     else:
         # Running — inject message to orchestrator
-        await manager.inject_user_message("orchestrator", message)
+        try:
+            await asyncio.wait_for(
+                manager.inject_user_message("orchestrator", message),
+                timeout=API_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await update.message.reply_text(
+                "⏱ Timed out injecting message. The agent may be busy. Please try again shortly."
+            )
 
 
-# --- Error handler ---
+# ============================================================
+# Global error handler
+# ============================================================
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Global error handler — catches anything that slips through handler_guard."""
     logger.error(f"Update {update} caused error: {context.error}", exc_info=context.error)
     if update and update.effective_chat:
         try:
+            # Don't expose raw error details to users
+            error_msg = str(context.error) if context.error else "Unknown error"
+            # Truncate very long error messages
+            if len(error_msg) > 200:
+                error_msg = error_msg[:200] + "..."
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"❌ An error occurred: {context.error}",
+                text=f"❌ An error occurred. Please try again.\n\nDetails: {error_msg}",
             )
         except Exception:
             pass
 
+
+# ============================================================
+# Bot application builder
+# ============================================================
 
 def build_bot_application() -> Application:
     """Build and configure the Telegram bot Application (without starting it).
@@ -1147,6 +1546,7 @@ def build_bot_application() -> Application:
         commands = [
             BotCommand("projects", "Select a project"),
             BotCommand("status", "Project status"),
+            BotCommand("health", "Bot health check"),
             BotCommand("log", "Conversation log"),
             BotCommand("talk", "Message a specific agent"),
             BotCommand("pause", "Pause agents"),
@@ -1171,6 +1571,7 @@ def build_bot_application() -> Application:
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("health", health_command))
     app.add_handler(CommandHandler("projects", projects_command))
     app.add_handler(CommandHandler("switch", switch_command))
     app.add_handler(CommandHandler("status", status_command))
@@ -1191,6 +1592,10 @@ def build_bot_application() -> Application:
 
     return app
 
+
+# ============================================================
+# Legacy entry point
+# ============================================================
 
 def main():
     # Legacy entry point — use server.py instead

@@ -60,30 +60,7 @@ export default function ProjectView() {
     const p = await getProject(id);
     setProject(p);
 
-    // Restore live agent states from server (survives browser refresh)
-    if (p.agent_states && Object.keys(p.agent_states).length > 0) {
-      setAgentStates(prev => {
-        // Only restore if we don't already have live data (i.e., fresh load)
-        const hasLiveData = Object.values(prev).some(a => a.state === 'working');
-        if (hasLiveData) return prev;
-
-        const restored: Record<string, AgentStateType> = {};
-        for (const [name, s] of Object.entries(p.agent_states!)) {
-          restored[name] = {
-            name,
-            state: (s.state as AgentStateType['state']) ?? 'idle',
-            task: s.task,
-            current_tool: s.current_tool,
-            cost: s.cost ?? 0,
-            turns: s.turns ?? 0,
-            duration: s.duration ?? 0,
-          };
-        }
-        return { ...prev, ...restored };
-      });
-    }
-
-    // Restore pending approval
+    // Restore pending approval from project data
     if (p.pending_approval) {
       setApprovalRequest(p.pending_approval);
     }
@@ -121,6 +98,35 @@ export default function ProjectView() {
     }).catch(() => {});
     loadFiles().catch(() => {});
 
+    // Full live state recovery — restores loop progress, agent states, approval on refresh
+    getLiveState(id).then((live) => {
+      if (live.agent_states && Object.keys(live.agent_states).length > 0) {
+        const restored: Record<string, AgentStateType> = {};
+        for (const [name, s] of Object.entries(live.agent_states)) {
+          restored[name] = {
+            name,
+            state: (s.state as AgentStateType['state']) ?? 'idle',
+            task: s.task,
+            current_tool: s.current_tool,
+            cost: s.cost ?? 0,
+            turns: s.turns ?? 0,
+            duration: s.duration ?? 0,
+          };
+        }
+        setAgentStates(prev => {
+          // Only restore from live state if we don't already have fresher WS data
+          const hasLiveData = Object.values(prev).some(a => a.state === 'working');
+          return hasLiveData ? prev : { ...prev, ...restored };
+        });
+      }
+      if (live.loop_progress) {
+        setLoopProgress(live.loop_progress);
+      }
+      if (live.pending_approval) {
+        setApprovalRequest(live.pending_approval);
+      }
+    }).catch(() => {});
+
     // Periodic status poll — catches missed WS events and stuck states
     const statusPoll = setInterval(() => {
       loadProject().catch(() => {});
@@ -133,7 +139,7 @@ export default function ProjectView() {
 
     switch (event.type) {
       case 'agent_update': {
-        // Live progress from agents — show in ticker and update agent state
+        // Live progress from agents — show what each agent is doing RIGHT NOW
         const updateAgent = event.agent || (event.text?.match(/\*(\w+)\*/)?.[1]);
         if (updateAgent) {
           setAgentStates(prev => ({
@@ -142,13 +148,13 @@ export default function ProjectView() {
               ...prev[updateAgent],
               name: updateAgent,
               state: 'working',
-              current_tool: event.text?.slice(0, 100),
+              current_tool: event.text?.slice(0, 150),
             },
           }));
-          setLastTicker(event.text?.slice(0, 120) || `${updateAgent} is working...`);
+          // Show agent name + action in ticker
+          const action = event.text?.slice(0, 100) || 'working...';
+          setLastTicker(`${updateAgent}: ${action}`);
         }
-        // Refresh project status to keep it alive
-        loadProject();
         break;
       }
 
@@ -312,11 +318,13 @@ export default function ProjectView() {
         loadProject();
         break;
 
-      default:
-        // Handle approval_request events
-        if ((event as { type: string }).type === 'approval_request' && event.description) {
+      case 'approval_request' as WSEvent['type']:
+        if (event.description) {
           setApprovalRequest(event.description);
         }
+        break;
+
+      default:
         break;
     }
   }, [id, loadProject, loadFiles]);

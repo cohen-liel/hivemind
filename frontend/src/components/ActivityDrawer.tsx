@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ActivityEntry } from '../types';
+import { formatTime } from '../constants';
 
 interface Props {
   activities: ActivityEntry[];
-}
-
-function formatTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function EntryRow({ entry }: { entry: ActivityEntry }) {
@@ -14,7 +11,7 @@ function EntryRow({ entry }: { entry: ActivityEntry }) {
     case 'tool_use':
       return (
         <div className="flex items-center gap-2 text-xs font-mono text-gray-500 py-0.5">
-          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp)}</span>
+          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp, true)}</span>
           <span className="text-gray-500">{entry.agent}</span>
           <span className="text-gray-700">&rarr;</span>
           <span className="text-gray-400 truncate">{entry.tool_description || entry.tool_name}</span>
@@ -24,7 +21,7 @@ function EntryRow({ entry }: { entry: ActivityEntry }) {
     case 'agent_started':
       return (
         <div className="flex items-center gap-2 text-xs py-1">
-          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp)}</span>
+          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp, true)}</span>
           <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" className="text-green-500 flex-shrink-0">
             <path d="M4 3l9 5-9 5V3z"/>
           </svg>
@@ -43,7 +40,7 @@ function EntryRow({ entry }: { entry: ActivityEntry }) {
       if (entry.duration !== undefined) stats.push(`${Math.round(entry.duration)}s`);
       return (
         <div className="flex items-center gap-2 text-xs py-1">
-          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp)}</span>
+          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp, true)}</span>
           <span className={`flex-shrink-0 ${entry.is_error ? 'text-red-500' : 'text-green-500'}`}>
             {entry.is_error ? '\u2717' : '\u2713'}
           </span>
@@ -58,7 +55,7 @@ function EntryRow({ entry }: { entry: ActivityEntry }) {
     case 'delegation':
       return (
         <div className="flex items-center gap-2 text-xs py-1 text-blue-400">
-          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp)}</span>
+          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp, true)}</span>
           <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0">
             <path d="M1 8h10M8 4l4 4-4 4"/>
           </svg>
@@ -74,7 +71,7 @@ function EntryRow({ entry }: { entry: ActivityEntry }) {
     case 'user_message':
       return (
         <div className="flex items-center gap-2 text-xs py-1">
-          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp)}</span>
+          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp, true)}</span>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-400 flex-shrink-0">
             <circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0113 0"/>
           </svg>
@@ -85,7 +82,7 @@ function EntryRow({ entry }: { entry: ActivityEntry }) {
     case 'agent_text':
       return (
         <div className="flex items-start gap-2 text-xs py-1">
-          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp)}</span>
+          <span className="text-gray-700 w-14 flex-shrink-0">{formatTime(entry.timestamp, true)}</span>
           <span className="text-gray-500 font-semibold flex-shrink-0">{entry.agent}</span>
           <span className="text-gray-400 truncate">{(entry.content || '').slice(0, 150)}</span>
         </div>

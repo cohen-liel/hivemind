@@ -163,6 +163,11 @@ class OrchestratorManager:
         # Track fire-and-forget tasks to prevent GC and log errors
         self._background_tasks: set[asyncio.Task] = set()
 
+        # Current orchestrator loop count (readable by /live endpoint)
+        self._current_loop: int = 0
+        # Effective budget (respects per-project override)
+        self._effective_budget: float = MAX_BUDGET_USD
+
     @property
     def agent_names(self) -> list[str]:
         names = ["orchestrator"]
@@ -236,6 +241,34 @@ class OrchestratorManager:
                 await self.on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
+
+    def _detect_stuck(self) -> bool:
+        """Detect if the orchestrator is repeating itself (stuck in a loop).
+
+        Compares the last STUCK_WINDOW_SIZE orchestrator responses using
+        SequenceMatcher. If all pairwise similarities exceed
+        STUCK_SIMILARITY_THRESHOLD, the agents are likely stuck.
+        """
+        # Collect recent orchestrator responses
+        recent = [
+            m.content for m in self.conversation_log[-STUCK_WINDOW_SIZE * 2:]
+            if m.agent_name == "orchestrator" and m.content
+        ][-STUCK_WINDOW_SIZE:]
+
+        if len(recent) < STUCK_WINDOW_SIZE:
+            return False  # Not enough data to detect a loop
+
+        # Check pairwise similarity between consecutive responses
+        for i in range(len(recent) - 1):
+            ratio = SequenceMatcher(None, recent[i], recent[i + 1]).ratio()
+            if ratio < STUCK_SIMILARITY_THRESHOLD:
+                return False  # Found a sufficiently different response
+
+        logger.warning(
+            f"[{self.project_id}] Stuck detection triggered: "
+            f"last {len(recent)} orchestrator responses are >{STUCK_SIMILARITY_THRESHOLD:.0%} similar"
+        )
+        return True
 
     def _build_final_summary(self, user_message: str, start_time: float, status: str = "Done") -> str:
         """Build a clean final status message."""
@@ -363,6 +396,13 @@ class OrchestratorManager:
             self._pause_event.clear()
             logger.info("Session paused")
 
+    async def _self_pause(self, reason: str = "paused"):
+        """Pause from within the orchestrator loop — emits project_status so frontend updates."""
+        self.is_paused = True
+        self._pause_event.clear()
+        logger.info(f"[{self.project_id}] Self-paused: {reason}")
+        await self._emit_event("project_status", status="paused", reason=reason)
+
     def resume(self):
         if self.is_paused:
             self.is_paused = False
@@ -480,6 +520,7 @@ class OrchestratorManager:
             prompt += history
         prompt += f"User request:\n{user_message}"
 
+        task_history_id = None  # Guard: prevents NameError in except blocks
         try:
             # Record task history
             task_history_id = await self.session_mgr.add_task_history(
@@ -492,6 +533,7 @@ class OrchestratorManager:
             # Main loop: orchestrator responds, optionally delegates, then loops
             orchestrator_input = prompt
             loop_count = 0
+            self._current_loop = 0
             max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
 
             while self.is_running and loop_count < max_loops:
@@ -530,6 +572,7 @@ class OrchestratorManager:
 
                 self.turn_count += 1
                 loop_count += 1
+                self._current_loop = loop_count
 
                 # Emit loop progress event
                 await self._emit_event(
@@ -599,8 +642,7 @@ class OrchestratorManager:
                             f"⚠️ Orchestrator error: {response.error_message}\n\n"
                             f"Use /resume to retry or /stop to end."
                         )
-                    self.is_paused = True
-                    self._pause_event.clear()
+                    await self._self_pause("orchestrator error")
                     continue
 
                 # Show orchestrator response as intermediate
@@ -636,14 +678,14 @@ class OrchestratorManager:
                         effective_budget = min(effective_budget, project_budget)
                 except Exception:
                     pass
+                self._effective_budget = effective_budget  # Store for sub-agent budget checks
 
                 if self.total_cost_usd >= effective_budget:
                     await self._notify(
                         f"💰 Budget limit reached (${self.total_cost_usd:.4f} / ${effective_budget:.2f}).\n"
                         f"Use /resume to continue or /stop to end."
                     )
-                    self.is_paused = True
-                    self._pause_event.clear()
+                    await self._self_pause("budget limit")
                     continue
 
                 # Check turn limit
@@ -652,8 +694,7 @@ class OrchestratorManager:
                         f"⏰ Reached max turns ({MAX_TURNS_PER_CYCLE}).\n"
                         f"Use /resume to continue or /stop to end."
                     )
-                    self.is_paused = True
-                    self._pause_event.clear()
+                    await self._self_pause("turn limit")
                     continue
 
                 # Parse delegations
@@ -716,8 +757,7 @@ class OrchestratorManager:
                         f"🔁 Agents appear stuck in a loop.\n"
                         f"Use /talk orchestrator <message> to intervene, or /stop to end."
                     )
-                    self.is_paused = True
-                    self._pause_event.clear()
+                    await self._self_pause("stuck detection")
                     continue
 
                 # Feed results back to orchestrator
@@ -725,14 +765,15 @@ class OrchestratorManager:
 
         except asyncio.CancelledError:
             logger.info(f"Orchestrator loop cancelled for {self.project_name}")
-            try:
-                await self.session_mgr.update_task_history(
-                    task_history_id, "cancelled",
-                    cost_usd=self.total_cost_usd, turns_used=self.turn_count,
-                    summary="Task was cancelled",
-                )
-            except Exception:
-                pass
+            if task_history_id is not None:
+                try:
+                    await self.session_mgr.update_task_history(
+                        task_history_id, "cancelled",
+                        cost_usd=self.total_cost_usd, turns_used=self.turn_count,
+                        summary="Task was cancelled",
+                    )
+                except Exception:
+                    pass
             await self._send_final(
                 f"🛑 *{self.project_name}* — Task cancelled.\n"
                 f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
@@ -745,26 +786,28 @@ class OrchestratorManager:
                 f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}\n"
                 f"Send another message to retry."
             )
-            try:
-                await self.session_mgr.update_task_history(
-                    task_history_id, "error",
-                    cost_usd=self.total_cost_usd, turns_used=self.turn_count,
-                    summary=f"Error: {e}",
-                )
-            except Exception:
-                pass
+            if task_history_id is not None:
+                try:
+                    await self.session_mgr.update_task_history(
+                        task_history_id, "error",
+                        cost_usd=self.total_cost_usd, turns_used=self.turn_count,
+                        summary=f"Error: {e}",
+                    )
+                except Exception:
+                    pass
         else:
             # Loop exited normally (not via exception).
             # If we hit the safety limit without a clean exit, send a final summary.
             if loop_count >= max_loops:
-                try:
-                    await self.session_mgr.update_task_history(
-                        task_history_id, "completed",
-                        cost_usd=self.total_cost_usd, turns_used=self.turn_count,
-                        summary="Stopped (loop limit reached)",
-                    )
-                except Exception:
-                    pass
+                if task_history_id is not None:
+                    try:
+                        await self.session_mgr.update_task_history(
+                            task_history_id, "completed",
+                            cost_usd=self.total_cost_usd, turns_used=self.turn_count,
+                            summary="Stopped (loop limit reached)",
+                        )
+                    except Exception:
+                        pass
                 await self._send_final(
                     self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
@@ -819,9 +862,9 @@ class OrchestratorManager:
                             f"Use /resume to continue."
                         )
                         return
-                    if self.total_cost_usd >= MAX_BUDGET_USD:
+                    if self.total_cost_usd >= self._effective_budget:
                         await self._notify(
-                            f"💰 Budget limit reached (${self.total_cost_usd:.4f}) — "
+                            f"💰 Budget limit reached (${self.total_cost_usd:.4f} / ${self._effective_budget:.2f}) — "
                             f"skipping remaining sub-agents.\n"
                             f"Use /resume to continue."
                         )
@@ -933,27 +976,45 @@ class OrchestratorManager:
         # Run different roles in parallel, with proper exception handling
         # Also run a heartbeat task that emits periodic status events
         async def _heartbeat():
-            """Emit periodic status events so the frontend knows agents are alive."""
+            """Emit periodic status events with REAL info about what each agent is doing."""
             elapsed = 0
             while True:
-                await asyncio.sleep(5)
-                elapsed += 5
-                # Build status of currently working agents
-                working = [
-                    name for name, info in self.agent_states.items()
-                    if info.get("state") == "working"
-                ]
-                if working:
-                    agents_str = ", ".join(working)
-                    await self._emit_event(
-                        "agent_update",
-                        agent=working[0],
-                        text=f"Agents working ({elapsed}s): {agents_str}",
-                    )
+                await asyncio.sleep(8)
+                elapsed += 8
+                # Build detailed status of currently working agents
+                working_details = []
+                for name, info in self.agent_states.items():
+                    if info.get("state") != "working":
+                        continue
+                    detail = f"{AGENT_EMOJI.get(name, '🔧')} {name}"
+                    tool = info.get("current_tool")
+                    task = info.get("task", "")
+                    if tool:
+                        detail += f" → {tool}"
+                    elif task:
+                        detail += f": {task[:80]}"
+                    else:
+                        detail += f" (running {elapsed}s)"
+                    working_details.append(detail)
+
+                if working_details:
+                    # Emit per-agent updates so the frontend can show each one
+                    for name, info in self.agent_states.items():
+                        if info.get("state") == "working":
+                            tool = info.get("current_tool", "")
+                            task = info.get("task", "")
+                            status_text = tool if tool else (f"Working on: {task[:100]}" if task else f"Running ({elapsed}s)")
+                            await self._emit_event(
+                                "agent_update",
+                                agent=name,
+                                text=status_text,
+                                timestamp=time.time(),
+                            )
+
                     # Also emit loop_progress to keep the progress bar alive
                     await self._emit_event(
                         "loop_progress",
-                        loop=0, max_loops=MAX_ORCHESTRATOR_LOOPS,
+                        loop=self._current_loop, max_loops=MAX_ORCHESTRATOR_LOOPS,
                         turn=self.turn_count, max_turns=MAX_TURNS_PER_CYCLE,
                         cost=self.total_cost_usd, max_budget=MAX_BUDGET_USD,
                     )
@@ -1212,12 +1273,23 @@ class OrchestratorManager:
             self.current_tool = tool_info
             if agent_role in self.agent_states:
                 self.agent_states[agent_role]["current_tool"] = tool_info
+                # Track tool count for progress insight
+                count = self.agent_states[agent_role].get("tool_count", 0) + 1
+                self.agent_states[agent_role]["tool_count"] = count
             await self._emit_event(
                 "tool_use",
                 agent=agent_role,
                 tool_name=tool_name,
                 description=tool_info,
                 input=tool_input,
+                timestamp=time.time(),
+            )
+            # Also emit an agent_update so the ticker shows what's happening NOW
+            await self._emit_event(
+                "agent_update",
+                agent=agent_role,
+                text=tool_info,
+                timestamp=time.time(),
             )
 
         response = await self.sdk.query_with_retry(
@@ -1447,23 +1519,4 @@ class OrchestratorManager:
         except Exception:
             return "(unable to detect changes)"
 
-    def _detect_stuck(self) -> bool:
-        if len(self.conversation_log) < STUCK_WINDOW_SIZE:
-            return False
-
-        agent_messages = [
-            m.content for m in self.conversation_log[-STUCK_WINDOW_SIZE:]
-            if m.agent_name != "user"
-        ]
-        if len(agent_messages) < STUCK_WINDOW_SIZE:
-            return False
-
-        for i in range(len(agent_messages)):
-            for j in range(i + 1, len(agent_messages)):
-                similarity = SequenceMatcher(
-                    None, agent_messages[i][:500], agent_messages[j][:500]
-                ).ratio()
-                if similarity > STUCK_SIMILARITY_THRESHOLD:
-                    logger.warning(f"Stuck detected: similarity={similarity:.2f}")
-                    return True
-        return False
+    # _detect_stuck is defined earlier in the class (line ~245)

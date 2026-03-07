@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ActivityEntry } from '../types';
+import { AGENT_ICONS, formatTime } from '../constants';
 
 type ViewMode = 'detail' | 'summary';
 
@@ -8,15 +9,6 @@ interface Props {
   hasMore?: boolean;
   onLoadMore?: () => void;
 }
-
-// --- Agent icon mapping (same as AgentStatusPanel) ---
-const AGENT_ICONS: Record<string, string> = {
-  orchestrator: '\u{1F3AF}',
-  developer: '\u{1F4BB}',
-  reviewer: '\u{1F50D}',
-  tester: '\u{1F9EA}',
-  devops: '\u{2699}\uFE0F',
-};
 
 function agentIcon(name?: string): string {
   if (!name) return '\u{1F916}';
@@ -60,14 +52,6 @@ function groupBySender(activities: ActivityEntry[]): MessageGroup[] {
     }
   }
   return groups;
-}
-
-// --- Time formatting ---
-function formatTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 // --- Render code blocks inside text ---

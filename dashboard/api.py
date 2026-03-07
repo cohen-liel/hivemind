@@ -170,30 +170,6 @@ def _create_web_manager(
     return manager
 
 
-def _git_diff(project_dir: str) -> str:
-    """Run git diff --stat + git status in the project directory."""
-    try:
-        diff = subprocess.run(
-            ["git", "diff", "--stat", "HEAD"],
-            cwd=project_dir, capture_output=True, text=True, timeout=5,
-        )
-        status = subprocess.run(
-            ["git", "status", "--short"],
-            cwd=project_dir, capture_output=True, text=True, timeout=5,
-        )
-        full_diff = subprocess.run(
-            ["git", "diff", "HEAD"],
-            cwd=project_dir, capture_output=True, text=True, timeout=10,
-        )
-        return json.dumps({
-            "stat": diff.stdout.strip(),
-            "status": status.stdout.strip(),
-            "diff": full_diff.stdout[:50000],  # cap at 50KB
-        })
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
 # --- App factory ---
 
 async def _resolve_project_dir(project_id: str) -> str | None:
@@ -360,6 +336,7 @@ def create_app() -> FastAPI:
         if manager.is_running:
             from config import MAX_TURNS_PER_CYCLE, MAX_BUDGET_USD, MAX_ORCHESTRATOR_LOOPS
             loop_progress = {
+                "loop": getattr(manager, '_current_loop', 0),
                 "turn": manager.turn_count,
                 "max_turns": MAX_TURNS_PER_CYCLE,
                 "cost": manager.total_cost_usd,

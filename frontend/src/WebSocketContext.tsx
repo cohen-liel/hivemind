@@ -34,7 +34,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
     ws.onmessage = (e) => {
       try {
-        const event = JSON.parse(e.data) as WSEvent;
+        const data = JSON.parse(e.data);
+        // Handle ping/pong at transport level — don't dispatch to subscribers
+        if (data.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong' }));
+          return;
+        }
+        const event = data as WSEvent;
         for (const cb of subscribersRef.current) {
           try {
             cb(event);
