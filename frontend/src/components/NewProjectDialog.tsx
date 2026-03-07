@@ -90,7 +90,7 @@ export default function NewProjectDialog() {
               onChange={e => setName(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="my-awesome-project"
-              className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5
+              className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-base rounded-lg px-3 py-2.5
                          focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none
                          placeholder-gray-500"
               autoFocus
@@ -107,7 +107,7 @@ export default function NewProjectDialog() {
                 onChange={e => setDirectory(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="~/projects/my-project"
-                className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5
+                className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 text-base rounded-lg px-3 py-2.5
                            focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none
                            placeholder-gray-500 font-mono"
               />
@@ -193,7 +193,7 @@ export default function NewProjectDialog() {
               onChange={e => setDescription(e.target.value)}
               placeholder="Brief description of the project..."
               rows={2}
-              className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5
+              className="w-full bg-gray-800 border border-gray-700 text-gray-200 text-base rounded-lg px-3 py-2.5
                          focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none
                          placeholder-gray-500 resize-none"
             />

@@ -2,11 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Prevent iOS zoom on input focus — font must be >= 16px */
-@supports (-webkit-touch-callout: none) {
-  input, textarea, select {
-    font-size: 16px !important;
-  }
+/* ===== iOS ZOOM PREVENTION ===== */
+
+/* 1. Prevent double-tap zoom everywhere */
+html {
+  touch-action: manipulation;
+  -ms-touch-action: manipulation;
+}
+
+/* 2. Force all form elements to 16px — iOS auto-zooms anything < 16px on focus */
+input, textarea, select {
+  font-size: 16px !important;
 }
 
 @keyframes loading {
@@ -30,7 +36,7 @@
 }
 
 @keyframes fadeSlideIn {
-  0% { opacity: 0; transform: translateY(-4px); }
+  0% { opacity: 0; transform: translateY(12px); }
   100% { opacity: 1; transform: translateY(0); }
 }
 

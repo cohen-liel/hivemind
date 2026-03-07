@@ -142,7 +142,15 @@ export default function Dashboard() {
             <h1 className="text-xl font-bold text-white">Mission Control</h1>
             <p className="text-xs text-gray-600 mt-0.5">Manage your agent orchestra</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate('/new')}
+              className="lg:hidden w-8 h-8 rounded-lg bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition-colors"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </button>
             <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'} ${connected ? 'animate-pulse' : ''}`} />
             <span className="text-[11px] text-gray-600">{connected ? 'Live' : 'Offline'}</span>
           </div>

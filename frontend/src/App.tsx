@@ -9,8 +9,11 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="flex h-screen bg-gray-950 overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 overflow-y-auto">
+        {/* Sidebar: hidden on mobile, visible on desktop */}
+        <div className="hidden lg:flex">
+          <Sidebar />
+        </div>
+        <main className="flex-1 overflow-y-auto min-w-0">
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/project/:id" element={<ProjectView />} />

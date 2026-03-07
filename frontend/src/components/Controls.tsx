@@ -97,9 +97,9 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
           <select
             value={targetAgent}
             onChange={(e) => setTargetAgent(e.target.value)}
-            className="bg-gray-800 border border-gray-700/50 text-gray-400 text-[11px] rounded-lg
+            className="bg-gray-800 border border-gray-700/50 text-gray-400 text-base rounded-lg
                        px-2 py-2.5 focus:border-blue-500 focus:outline-none flex-shrink-0
-                       appearance-none cursor-pointer"
+                       appearance-none cursor-pointer max-w-[70px]"
           >
             <option value="orchestrator">all</option>
             {agents.filter(a => a !== 'orchestrator').map(a => (

@@ -2,11 +2,11 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject } from '../api';
 import { useWebSocket } from '../useWebSocket';
+import { useIOSViewport } from '../useIOSViewport';
 import ActivityFeed from '../components/ActivityFeed';
 import ActivityDrawer from '../components/ActivityDrawer';
 import AgentStatusPanel from '../components/AgentStatusPanel';
 import ConductorBar from '../components/ConductorBar';
-import ProjectHeader from '../components/ProjectHeader';
 import FileDiff from '../components/FileDiff';
 import Controls from '../components/Controls';
 import CodeBrowser from '../components/CodeBrowser';
@@ -197,12 +197,11 @@ export default function ProjectView() {
       case 'project_status':
         loadProject();
         break;
-        loadProject();
-        break;
     }
   }, [id, loadProject, loadFiles]);
 
   const { connected } = useWebSocket(handleWSEvent);
+  useIOSViewport();
 
   if (!project || !id) {
     return (
@@ -262,10 +261,16 @@ export default function ProjectView() {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col">
+    <div className="h-full bg-gray-950 flex flex-col">
 
       {/* ===== MOBILE LAYOUT ===== */}
-      <div className="lg:hidden flex flex-col h-dvh">
+      <div
+        className="lg:hidden fixed inset-x-0 flex flex-col bg-gray-950 z-30"
+        style={{
+          height: 'var(--app-height, 100dvh)',
+          top: 'var(--app-offset, 0px)',
+        }}
+      >
 
         {/* Conductor (top, compact) */}
         <ConductorBar
@@ -333,9 +338,9 @@ export default function ProjectView() {
             ))}
 
             {/* Inline action buttons */}
-            {(status === 'running' || status === 'paused') && (
+            {(project.status === 'running' || project.status === 'paused') && (
               <div className="flex items-center gap-0.5 pl-1 border-l border-gray-800/50 ml-1">
-                {status === 'running' && (
+                {project.status === 'running' && (
                   <button onClick={handlePause} className="p-1.5 text-yellow-500">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                       <rect x="4" y="3" width="3" height="10" rx="0.5"/>
@@ -343,7 +348,7 @@ export default function ProjectView() {
                     </svg>
                   </button>
                 )}
-                {status === 'paused' && (
+                {project.status === 'paused' && (
                   <button onClick={handleResume} className="p-1.5 text-green-500">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                       <path d="M4 3l9 5-9 5V3z"/>
@@ -374,7 +379,7 @@ export default function ProjectView() {
                   }
                 }
               }}
-              placeholder={status === 'idle' ? 'Send a task...' : 'Message...'}
+              placeholder={project.status === 'idle' ? 'Send a task...' : 'Message...'}
               className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-base rounded-full px-4 py-2
                          focus:border-blue-500/50 focus:outline-none min-w-0 placeholder-gray-600"
             />
@@ -400,7 +405,7 @@ export default function ProjectView() {
       </div>
 
       {/* ===== DESKTOP LAYOUT ===== */}
-      <div className="hidden lg:flex flex-col h-screen">
+      <div className="hidden lg:flex flex-col h-full">
         {/* Conductor header with progress */}
         <ConductorBar
           projectName={project.project_name}
