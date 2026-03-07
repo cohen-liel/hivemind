@@ -649,10 +649,12 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/message")
     async def send_message(project_id: str, req: SendMessageRequest):
         """Send message to orchestrator."""
+        logger.info(f"[{project_id}] Received message: {req.message[:100]}")
         manager, _ = _find_manager(project_id)
 
         if not manager:
             # Try to activate from DB first
+            logger.info(f"[{project_id}] No active manager, trying DB lookup...")
             if state.session_mgr:
                 db_project = await state.session_mgr.load_project(project_id)
                 if db_project:
@@ -666,13 +668,17 @@ def create_app() -> FastAPI:
                     )
                     if manager:
                         state.register_manager(user_id, project_id, manager)
+                        logger.info(f"[{project_id}] Manager created from DB")
 
         if not manager:
+            logger.error(f"[{project_id}] No manager found — cannot send message")
             return JSONResponse({"error": "Project not found."}, status_code=404)
 
         if not manager.is_running:
+            logger.info(f"[{project_id}] Starting new session (multi_agent={manager.is_multi_agent})")
             await manager.start_session(req.message)
         else:
+            logger.info(f"[{project_id}] Injecting message into running session")
             await manager.inject_user_message("orchestrator", req.message)
 
         return {"ok": True}

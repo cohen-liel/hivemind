@@ -264,9 +264,11 @@ class OrchestratorManager:
     async def start_session(self, user_message: str):
         """Start processing a user message."""
         if self.is_running:
+            logger.warning(f"[{self.project_id}] start_session called but already running")
             await self._notify("Session is already running.")
             return
 
+        logger.info(f"[{self.project_id}] Starting session: multi_agent={self.multi_agent}, message={user_message[:80]}")
         self.is_running = True
         self._stop_event.clear()
         self._pause_event.set()
@@ -429,6 +431,14 @@ class OrchestratorManager:
                 agent_start = time.monotonic()
                 response = await self._query_agent("orchestrator", orchestrator_input)
                 agent_duration = time.monotonic() - agent_start
+                logger.info(
+                    f"[{self.project_id}] Orchestrator response: "
+                    f"len={len(response.text)}, cost=${response.cost_usd:.4f}, "
+                    f"turns={response.num_turns}, error={response.is_error}, "
+                    f"has_delegate={'<delegate>' in response.text}, "
+                    f"has_complete={'TASK_COMPLETE' in response.text}, "
+                    f"duration={agent_duration:.1f}s"
+                )
                 self._record_response("orchestrator", "Orchestrator", response)
                 self.current_agent = None
                 self.current_tool = None
@@ -507,6 +517,7 @@ class OrchestratorManager:
 
                 # Parse delegations
                 delegations = self._parse_delegations(response.text)
+                logger.info(f"[{self.project_id}] Parsed {len(delegations)} delegations: {[f'{d.agent}:{d.task[:40]}' for d in delegations]}")
 
                 # Emit delegation events
                 for d in delegations:
@@ -551,7 +562,12 @@ class OrchestratorManager:
                     break
 
                 # Execute sub-agents
+                logger.info(f"[{self.project_id}] Running {len(delegations)} sub-agent tasks...")
                 sub_results = await self._run_sub_agents(delegations)
+                logger.info(
+                    f"[{self.project_id}] Sub-agents finished: "
+                    f"{', '.join(f'{k}(${v.cost_usd:.3f}, err={v.is_error})' for k, v in sub_results.items())}"
+                )
 
                 # Check stuck detection
                 if self._detect_stuck():
@@ -716,26 +732,24 @@ class OrchestratorManager:
         allowed_tools = None  # None = all tools available (default)
 
         if agent_role == "orchestrator" and self.multi_agent:
-            # Multi-agent: orchestrator is a COORDINATOR ONLY — no tool access.
-            # It can only produce text with <delegate> blocks.
-            # Without this, it wastes turns reading files instead of delegating.
             system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
             max_turns = 1
             max_budget = 0.5
             permission_mode = "bypassPermissions"
             allowed_tools = []  # No tools — text-only output
+            logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, no tools, max_turns=1)")
         elif agent_role == "orchestrator" and not self.multi_agent:
-            # Solo mode: orchestrator IS the worker — full access to tools
             system_prompt = SOLO_AGENT_PROMPT
             max_turns = SDK_MAX_TURNS_PER_QUERY
             max_budget = SDK_MAX_BUDGET_PER_QUERY
             permission_mode = "bypassPermissions"
+            logger.info(f"[{self.project_id}] Querying orchestrator (solo mode, full tools)")
         else:
-            # Sub-agents do real work — full turns, budget, and tool access
             system_prompt = SUB_AGENT_PROMPTS.get(agent_role, "You are a helpful coding assistant.")
             max_turns = SDK_MAX_TURNS_PER_QUERY
             max_budget = SDK_MAX_BUDGET_PER_QUERY
             permission_mode = "bypassPermissions"
+            logger.info(f"[{self.project_id}] Querying sub-agent '{agent_role}' (max_turns={max_turns}, budget=${max_budget})")
 
         # Try to resume session
         session_id = await self.session_mgr.get_session(

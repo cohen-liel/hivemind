@@ -92,6 +92,13 @@ class ClaudeSDKManager:
         if session_id:
             options.resume = session_id
 
+        logger.info(
+            f"SDK query: max_turns={max_turns}, budget=${max_budget_usd}, "
+            f"session={'resume' if session_id else 'new'}, "
+            f"tools={'none' if allowed_tools == [] else 'all'}, "
+            f"prompt={prompt[:80]}..."
+        )
+
         try:
             # Run the stream consumption as a task so we can apply a timeout
             result = await asyncio.wait_for(
