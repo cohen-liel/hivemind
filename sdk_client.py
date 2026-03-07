@@ -57,6 +57,7 @@ class ClaudeSDKManager:
         on_stream=None,
         on_tool_use=None,
         allowed_tools: list[str] | None = None,
+        tools: list[str] | None = None,
     ) -> SDKResponse:
         """Send a query to Claude Agent SDK.
 
@@ -70,6 +71,8 @@ class ClaudeSDKManager:
             permission_mode: Permission mode — "bypassPermissions" for full
                 access, None for default (no auto-tool-approval).
             on_stream: Optional async callback for real-time text updates.
+            tools: Base tool set — [] disables ALL tools (passes --tools ""),
+                None uses default tools. Different from allowed_tools.
 
         Returns:
             SDKResponse with text, session_id, cost, etc.
@@ -89,13 +92,16 @@ class ClaudeSDKManager:
         if allowed_tools is not None:
             options.allowed_tools = allowed_tools
 
+        if tools is not None:
+            options.tools = tools
+
         if session_id:
             options.resume = session_id
 
         logger.info(
             f"SDK query: max_turns={max_turns}, budget=${max_budget_usd}, "
             f"session={'resume' if session_id else 'new'}, "
-            f"tools={'none' if allowed_tools == [] else 'all'}, "
+            f"tools={'disabled' if tools is not None and len(tools) == 0 else 'all'}, "
             f"prompt={prompt[:80]}..."
         )
 
@@ -267,6 +273,7 @@ class ClaudeSDKManager:
         on_stream=None,
         on_tool_use=None,
         allowed_tools: list[str] | None = None,
+        tools: list[str] | None = None,
     ) -> SDKResponse:
         """Query with automatic retry on transient errors.
 
@@ -292,6 +299,7 @@ class ClaudeSDKManager:
                 on_stream=on_stream if attempt == 1 else None,
                 on_tool_use=on_tool_use if attempt == 1 else None,
                 allowed_tools=allowed_tools,
+                tools=tools,
             )
 
             if not response.is_error:
@@ -307,9 +315,13 @@ class ClaudeSDKManager:
                 await asyncio.sleep(1)
                 continue
 
-            # Timeout: retry once
+            # Timeout: retry once with a wake-up nudge
             if "timeout" in error_msg:
-                logger.warning(f"Timeout, retrying: {response.error_message}")
+                logger.warning(f"Timeout, retrying with wake-up nudge: {response.error_message}")
+                prompt = (
+                    "[SYSTEM: Previous attempt timed out. Please complete the task efficiently. "
+                    "Focus on the most important parts first.]\n\n" + prompt
+                )
                 await asyncio.sleep(1)
                 continue
 

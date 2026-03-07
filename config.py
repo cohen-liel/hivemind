@@ -28,13 +28,14 @@ except OSError:
 
 # Agent limits
 MAX_TURNS_PER_CYCLE = int(os.getenv("MAX_TURNS_PER_CYCLE", "100"))
-MAX_BUDGET_USD = float(os.getenv("MAX_BUDGET_USD", "5.0"))
+MAX_BUDGET_USD = float(os.getenv("MAX_BUDGET_USD", "100.0"))
 AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "300"))
+SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "3600"))
 
 # SDK settings
 SDK_MAX_RETRIES = 2
-SDK_MAX_TURNS_PER_QUERY = int(os.getenv("SDK_MAX_TURNS_PER_QUERY", "10"))
-SDK_MAX_BUDGET_PER_QUERY = float(os.getenv("SDK_MAX_BUDGET_PER_QUERY", "2.0"))
+SDK_MAX_TURNS_PER_QUERY = int(os.getenv("SDK_MAX_TURNS_PER_QUERY", "30"))
+SDK_MAX_BUDGET_PER_QUERY = float(os.getenv("SDK_MAX_BUDGET_PER_QUERY", "10.0"))
 
 # Session persistence
 SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "24"))

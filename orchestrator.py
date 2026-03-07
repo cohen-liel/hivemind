@@ -19,6 +19,7 @@ from config import (
     ORCHESTRATOR_SYSTEM_PROMPT,
     SDK_MAX_TURNS_PER_QUERY,
     SDK_MAX_BUDGET_PER_QUERY,
+    SESSION_TIMEOUT_SECONDS,
     SOLO_AGENT_PROMPT,
     STUCK_SIMILARITY_THRESHOLD,
     STUCK_WINDOW_SIZE,
@@ -392,6 +393,21 @@ class OrchestratorManager:
 
                 await self._pause_event.wait()
 
+                # Check session timeout (60 min default)
+                elapsed = time.monotonic() - start_time
+                if elapsed >= SESSION_TIMEOUT_SECONDS:
+                    logger.warning(
+                        f"[{self.project_id}] Session timeout after {elapsed:.0f}s "
+                        f"(limit: {SESSION_TIMEOUT_SECONDS}s)"
+                    )
+                    await self._send_final(
+                        self._build_final_summary(
+                            user_message, start_time,
+                            status=f"Stopped (session timeout after {int(elapsed // 60)}m)"
+                        )
+                    )
+                    break
+
                 # Check for user injection
                 if self._user_injection:
                     target_name, injected_msg = self._user_injection
@@ -730,13 +746,14 @@ class OrchestratorManager:
         """Query a specific agent (orchestrator or sub-agent) using the SDK."""
         # Get system prompt and resource limits based on role and mode
         allowed_tools = None  # None = all tools available (default)
+        tools = None  # None = default tool set; [] = disable ALL tools
 
         if agent_role == "orchestrator" and self.multi_agent:
             system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
             max_turns = 1
             max_budget = 0.5
             permission_mode = "bypassPermissions"
-            allowed_tools = []  # No tools — text-only output
+            tools = []  # Disable ALL tools — text-only coordinator
             logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, no tools, max_turns=1)")
         elif agent_role == "orchestrator" and not self.multi_agent:
             system_prompt = SOLO_AGENT_PROMPT
@@ -785,6 +802,7 @@ class OrchestratorManager:
             on_stream=on_stream,
             on_tool_use=on_tool_use,
             allowed_tools=allowed_tools,
+            tools=tools,
         )
 
         # Save session for future resume
