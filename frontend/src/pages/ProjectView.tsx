@@ -40,6 +40,7 @@ export default function ProjectView() {
   const [mobileView, setMobileView] = useState<MobileView>('orchestra');
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [message, setMessage] = useState('');
+  const [lastTicker, setLastTicker] = useState('');
 
   const loadProject = useCallback(async () => {
     if (!id) return;
@@ -76,6 +77,7 @@ export default function ProjectView() {
             ...prev,
             [event.agent!]: { ...prev[event.agent!], name: event.agent!, current_tool: event.description },
           }));
+          setLastTicker(`${event.agent}: ${event.description || event.tool_name}`);
         }
         break;
 
@@ -94,6 +96,7 @@ export default function ProjectView() {
               last_result: undefined,
             },
           }));
+          setLastTicker(`${event.agent} started${event.task ? ': ' + event.task.slice(0, 60) : ''}`);
         }
         break;
 
@@ -188,9 +191,12 @@ export default function ProjectView() {
           return reset;
         });
         setLoopProgress(null);
+        setLastTicker('');
         break;
 
       case 'project_status':
+        loadProject();
+        break;
         loadProject();
         break;
     }
@@ -302,8 +308,17 @@ export default function ProjectView() {
           )}
         </div>
 
-        {/* Bottom: tab nav + input in compact area */}
+        {/* Bottom: ticker + tab nav + input */}
         <div className="flex-shrink-0 border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-md safe-area-bottom">
+          {/* Live ticker */}
+          {lastTicker && (
+            <div className="px-3 pt-1.5 pb-0.5">
+              <div className="text-[10px] text-blue-300/70 font-mono truncate">
+                {lastTicker}
+              </div>
+            </div>
+          )}
+
           {/* Tab nav (icon-only, tight) */}
           <div className="flex items-center px-1">
             {mobileNavItems.map(item => (
