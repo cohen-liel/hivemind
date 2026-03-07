@@ -40,10 +40,44 @@ AGENT_EMOJI = {
 }
 
 # Regex to parse <delegate> blocks from orchestrator output
+# Match everything between <delegate> and </delegate> tags, then parse JSON separately
 _DELEGATE_RE = re.compile(
-    r"<delegate>\s*(\{.*?\})\s*</delegate>",
+    r"<delegate>\s*(.*?)\s*</delegate>",
     re.DOTALL,
 )
+
+
+def _extract_json(text: str) -> dict | None:
+    """Extract a JSON object from text, handling nested braces properly."""
+    # Find the first { and match to its closing }
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text[start:], start):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
 
 
 @dataclass
@@ -486,10 +520,19 @@ class OrchestratorManager:
                 if not delegations:
                     if self.multi_agent:
                         # No delegations in multi-agent mode — nudge to delegate or complete
+                        logger.warning(
+                            f"Orchestrator produced no parseable delegations. "
+                            f"Response length: {len(response.text)}, "
+                            f"contains '<delegate>': {'<delegate>' in response.text}"
+                        )
                         orchestrator_input = (
-                            "You didn't delegate any work. If the task is fully complete "
-                            "and verified, respond with TASK_COMPLETE. Otherwise, delegate "
-                            "the remaining work using <delegate> blocks.\n\n"
+                            "You didn't delegate any work. You MUST use <delegate> blocks with "
+                            "valid JSON. Example:\n\n"
+                            "<delegate>\n"
+                            '{"agent": "developer", "task": "your task here", "context": "relevant context"}\n'
+                            "</delegate>\n\n"
+                            "If the task is fully complete and verified, respond with TASK_COMPLETE. "
+                            "Otherwise, delegate the remaining work using <delegate> blocks.\n\n"
                             f"Original user request:\n{user_message}"
                         )
                         continue
@@ -770,20 +813,40 @@ class OrchestratorManager:
         """Parse <delegate> blocks from orchestrator output."""
         delegations = []
         for match in _DELEGATE_RE.finditer(text):
+            raw = match.group(1)
             try:
-                data = json.loads(match.group(1))
-                delegations.append(Delegation(
-                    agent=data.get("agent", "developer"),
-                    task=data.get("task", ""),
-                    context=data.get("context", ""),
-                ))
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.warning(f"Failed to parse delegation block: {e}")
+                # First try simple json.loads
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # Fall back to robust JSON extraction (handles nested braces, etc.)
+                data = _extract_json(raw)
+            if data and isinstance(data, dict):
+                agent = data.get("agent", "developer")
+                task = data.get("task", "")
+                if task:  # Only add if there's an actual task
+                    delegations.append(Delegation(
+                        agent=agent,
+                        task=task,
+                        context=data.get("context", ""),
+                    ))
+                    logger.info(f"Parsed delegation: {agent} -> {task[:80]}")
+                else:
+                    logger.warning(f"Delegation block missing 'task': {raw[:200]}")
+            else:
+                logger.warning(f"Failed to parse delegation JSON: {raw[:200]}")
+
+        # Fallback: if we found <delegate> tags but got no valid delegations, log it
+        if not delegations and "<delegate>" in text:
+            logger.error(
+                f"Found <delegate> tags but failed to parse any delegations! "
+                f"Raw text around tags: {text[text.find('<delegate>'):text.find('</delegate>') + 20][:500]}"
+            )
         return delegations
 
     def _strip_delegate_blocks(self, text: str) -> str:
-        """Remove <delegate> blocks from text for display purposes."""
-        return _DELEGATE_RE.sub("", text).strip()
+        """Remove <delegate>...</delegate> blocks from text for display purposes."""
+        # Use a broader regex that catches everything between the tags
+        return re.sub(r"<delegate>.*?</delegate>", "", text, flags=re.DOTALL).strip()
 
     def _build_review_prompt(self, sub_results: dict[str, SDKResponse]) -> str:
         """Build a prompt for the orchestrator to review sub-agent results."""

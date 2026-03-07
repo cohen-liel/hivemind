@@ -195,12 +195,13 @@ class ClaudeSDKManager:
                         logger.error(f"Stream callback error: {e}")
                     last_seen_text = turn_text
 
-                # Only add to final text_parts when we get substantive text
-                if turn_text and turn_text not in text_parts:
-                    # Replace last partial with this more complete version
+                # Collect final text — each turn may extend or replace the previous
+                if turn_text:
                     if text_parts and turn_text.startswith(text_parts[-1]):
+                        # This turn's text extends the last one (streaming partial)
                         text_parts[-1] = turn_text
-                    elif turn_text not in "".join(text_parts):
+                    elif not text_parts or turn_text != text_parts[-1]:
+                        # New distinct turn text
                         text_parts.append(turn_text)
 
             elif isinstance(message, ResultMessage):
