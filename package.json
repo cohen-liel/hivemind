@@ -1,0 +1,12 @@
+{
+  "name": "web-claude-bot",
+  "private": true,
+  "scripts": {
+    "dev": ".venv/bin/python server.py & cd frontend && ./node_modules/.bin/vite",
+    "dev:frontend": "cd frontend && ./node_modules/.bin/vite",
+    "dev:backend": ".venv/bin/python server.py",
+    "build": "cd frontend && ./node_modules/.bin/tsc && ./node_modules/.bin/vite build",
+    "install:frontend": "cd frontend && npm install",
+    "install:all": ".venv/bin/pip install -r requirements.txt && cd frontend && npm install"
+  }
+}

@@ -29,6 +29,16 @@ from session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
+# Agent emoji map for clear visual identification
+AGENT_EMOJI = {
+    "orchestrator": "🎯",
+    "developer": "💻",
+    "reviewer": "🔍",
+    "tester": "🧪",
+    "devops": "⚙️",
+    "user": "👤",
+}
+
 # Regex to parse <delegate> blocks from orchestrator output
 _DELEGATE_RE = re.compile(
     r"<delegate>\s*(\{.*?\})\s*</delegate>",
@@ -69,6 +79,8 @@ class OrchestratorManager:
         project_id: str,
         on_update: Callable[[str], Awaitable[None]] | None = None,
         on_result: Callable[[str], Awaitable[None]] | None = None,
+        on_final: Callable[[str], Awaitable[None]] | None = None,
+        on_event: Callable[[dict], Awaitable[None]] | None = None,
         multi_agent: bool = True,
     ):
         self.project_name = project_name
@@ -79,6 +91,8 @@ class OrchestratorManager:
         self.project_id = project_id
         self.on_update = on_update
         self.on_result = on_result
+        self.on_final = on_final
+        self.on_event = on_event
         self.multi_agent = multi_agent
 
         self.conversation_log: list[Message] = []
@@ -86,6 +100,11 @@ class OrchestratorManager:
         self.is_paused = False
         self.total_cost_usd = 0.0
         self.turn_count = 0
+
+        # Live state tracking for dashboard
+        self.current_agent: str | None = None
+        self.current_tool: str | None = None
+        self.agent_states: dict[str, dict] = {}  # agent_name -> {state, task, cost, turns, ...}
 
         self._pause_event = asyncio.Event()
         self._pause_event.set()
@@ -125,6 +144,58 @@ class OrchestratorManager:
                 await self.on_update(text)
             except Exception as e:
                 logger.error(f"Update callback error: {e}")
+
+    async def _send_final(self, text: str):
+        """Send the final clean message (deletes all intermediates, stays forever)."""
+        if self.on_final:
+            try:
+                await self.on_final(text)
+            except Exception as e:
+                logger.error(f"Final callback error: {e}")
+        else:
+            # Fallback to on_result
+            await self._send_result(text)
+
+    async def _emit_event(self, event_type: str, **data):
+        """Emit a structured event for the dashboard."""
+        if self.on_event:
+            try:
+                event = {"type": event_type, **data}
+                await self.on_event(event)
+            except Exception as e:
+                logger.error(f"Event callback error: {e}")
+
+    def _build_final_summary(self, user_message: str, start_time: float, status: str = "Done") -> str:
+        """Build a clean final status message."""
+        duration = time.monotonic() - start_time
+        minutes = int(duration // 60)
+        seconds = int(duration % 60)
+        duration_str = f"{minutes}m {seconds:02d}s" if minutes > 0 else f"{seconds}s"
+
+        task_preview = user_message[:100]
+        if len(user_message) > 100:
+            task_preview += "..."
+
+        agents_used = list(dict.fromkeys(
+            m.agent_name for m in self.conversation_log if m.agent_name != "user"
+        ))
+        agents_str = " → ".join(agents_used) if agents_used else "orchestrator"
+
+        file_changes = self._detect_file_changes()
+        changes_str = ""
+        if file_changes and "(no file" not in file_changes:
+            changes_str = f"\n\n📝 Changes:\n```\n{file_changes}\n```"
+
+        return (
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ {self.project_name} — {status}\n\n"
+            f"📋 Task: {task_preview}\n"
+            f"🤖 Agents: {agents_str}\n"
+            f"⏱ {duration_str} | 📊 {self.turn_count} turns | 💰 ${self.total_cost_usd:.2f}"
+            f"{changes_str}\n\n"
+            f"Send another message to continue.\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
 
     def _get_workspace_context(self) -> str:
         """Scan project directory and return a short file listing (2 levels deep)."""
@@ -200,7 +271,7 @@ class OrchestratorManager:
             if len(response.text) > 3000:
                 summary += "\n... (truncated)"
             cost_str = f" | ${response.cost_usd:.4f}" if response.cost_usd > 0 else ""
-            await self._send_result(f"💬 *orchestrator*{cost_str}\n\n{summary}")
+            await self._send_final(f"💬 *orchestrator*{cost_str}\n\n{summary}")
         else:
             self._user_injection = (agent_name, message)
             if self.is_paused:
@@ -229,7 +300,7 @@ class OrchestratorManager:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        await self._send_result(
+        await self._send_final(
             f"🛑 Project *{self.project_name}* stopped.\n"
             f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}"
         )
@@ -238,6 +309,8 @@ class OrchestratorManager:
 
     async def _run_orchestrator(self, user_message: str):
         """Main orchestrator loop."""
+        start_time = time.monotonic()
+
         # Log user message
         self.conversation_log.append(
             Message(agent_name="user", role="User", content=user_message)
@@ -276,7 +349,6 @@ class OrchestratorManager:
             orchestrator_input = prompt
             loop_count = 0
             max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
-            finished_naturally = False
 
             while self.is_running and loop_count < max_loops:
                 if self._stop_event.is_set():
@@ -296,14 +368,50 @@ class OrchestratorManager:
                 self.turn_count += 1
                 loop_count += 1
 
+                # Emit loop progress event
+                await self._emit_event(
+                    "loop_progress",
+                    loop=loop_count, max_loops=max_loops,
+                    turn=self.turn_count, max_turns=MAX_TURNS_PER_CYCLE,
+                    cost=self.total_cost_usd, max_budget=MAX_BUDGET_USD,
+                )
+
                 await self._notify(
-                    f"🔄 Turn {self.turn_count}/{MAX_TURNS_PER_CYCLE} — "
-                    f"*orchestrator* is working..."
+                    f"{AGENT_EMOJI.get('orchestrator', '🔄')} Turn {self.turn_count}/{MAX_TURNS_PER_CYCLE} — "
+                    f"*orchestrator* is {'planning & delegating' if self.multi_agent else 'working'}..."
                 )
 
                 # Query orchestrator
+                self.current_agent = "orchestrator"
+                self.agent_states["orchestrator"] = {
+                    "state": "working",
+                    "task": "planning & delegating" if self.multi_agent else "working",
+                }
+                await self._emit_event(
+                    "agent_started",
+                    agent="orchestrator",
+                    task="planning & delegating" if self.multi_agent else "working",
+                )
+                agent_start = time.monotonic()
                 response = await self._query_agent("orchestrator", orchestrator_input)
+                agent_duration = time.monotonic() - agent_start
                 self._record_response("orchestrator", "Orchestrator", response)
+                self.current_agent = None
+                self.current_tool = None
+                self.agent_states["orchestrator"] = {
+                    "state": "error" if response.is_error else "done",
+                    "cost": response.cost_usd,
+                    "turns": response.num_turns,
+                    "duration": agent_duration,
+                }
+                await self._emit_event(
+                    "agent_finished",
+                    agent="orchestrator",
+                    cost=response.cost_usd,
+                    turns=response.num_turns,
+                    duration=round(agent_duration, 1),
+                    is_error=response.is_error,
+                )
 
                 if response.is_error:
                     error_msg = response.error_message.lower()
@@ -324,25 +432,22 @@ class OrchestratorManager:
                     self._pause_event.clear()
                     continue
 
-                # Show orchestrator response
+                # Show orchestrator response as intermediate
                 display_text = self._strip_delegate_blocks(response.text)
                 if display_text.strip():
                     summary = display_text[:2000]
                     if len(display_text) > 2000:
                         summary += "\n... (truncated)"
                     await self._send_result(
-                        f"✅ *orchestrator* — Turn {self.turn_count}\n"
+                        f"🎯 *orchestrator* — Turn {self.turn_count}\n"
                         f"💰 ${response.cost_usd:.4f} (total: ${self.total_cost_usd:.4f})\n\n"
                         f"{summary}"
                     )
 
                 # Check completion
                 if "TASK_COMPLETE" in response.text:
-                    await self._send_result(
-                        f"🎉 Project *{self.project_name}* completed!\n\n"
-                        f"📊 Total turns: {self.turn_count}\n"
-                        f"💰 Total cost: ${self.total_cost_usd:.4f}\n"
-                        f"📁 Files: `{self.project_dir}`"
+                    await self._send_final(
+                        self._build_final_summary(user_message, start_time)
                     )
                     break
 
@@ -369,25 +474,37 @@ class OrchestratorManager:
                 # Parse delegations
                 delegations = self._parse_delegations(response.text)
 
+                # Emit delegation events
+                for d in delegations:
+                    await self._emit_event(
+                        "delegation",
+                        from_agent="orchestrator",
+                        to_agent=d.agent,
+                        task=d.task[:300],
+                    )
+
                 if not delegations:
-                    if self.multi_agent and loop_count == 1 and "TASK_COMPLETE" not in response.text:
-                        # First turn, multi-agent mode, but orchestrator didn't delegate.
-                        # Nudge it to actually use <delegate> blocks.
-                        # Include original request so context isn't lost.
+                    if self.multi_agent:
+                        # No delegations in multi-agent mode — nudge to delegate or complete
                         orchestrator_input = (
-                            "You responded without any <delegate> blocks. "
-                            "You MUST delegate work to sub-agents using <delegate> blocks.\n\n"
-                            f"Original user request:\n{user_message}\n\n"
-                            "Now delegate the work. Include <delegate> blocks in your response."
+                            "You didn't delegate any work. If the task is fully complete "
+                            "and verified, respond with TASK_COMPLETE. Otherwise, delegate "
+                            "the remaining work using <delegate> blocks.\n\n"
+                            f"Original user request:\n{user_message}"
                         )
                         continue
-                    # No delegations — orchestrator handled it directly, done for now
-                    finished_naturally = True
-                    break
+                    else:
+                        # Solo mode — orchestrator handled it directly, done
+                        await self._send_final(
+                            self._build_final_summary(user_message, start_time)
+                        )
+                        break
 
                 if not self.multi_agent:
                     # Single-agent mode — ignore delegations
-                    finished_naturally = True
+                    await self._send_final(
+                        self._build_final_summary(user_message, start_time)
+                    )
                     break
 
                 # Execute sub-agents
@@ -413,114 +530,169 @@ class OrchestratorManager:
             await self._notify(f"❌ Unexpected error in orchestrator: {e}")
         else:
             # Loop exited normally (not via exception).
-            # IMPORTANT: always use _send_result here (not _notify) — after the
-            # orchestrator sent its last result, the ProgressMessage was already
-            # closed (started=False). Calling _notify at this point would open a
-            # NEW progress message that never gets closed and stays stuck in Telegram.
-            if loop_count >= max_loops and not finished_naturally:
-                await self._send_result(
-                    f"⏹ Reached the orchestrator safety limit ({max_loops} iterations).\n\n"
-                    f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}\n\n"
-                    f"Send another message to continue working on this project."
-                )
-            elif finished_naturally:
-                # Ended naturally (no more delegations, no TASK_COMPLETE).
-                # Send a brief "done" signal so the user knows the session ended.
-                await self._send_result(
-                    f"✅ *{self.project_name}* — Done for now.\n\n"
-                    f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}\n\n"
-                    f"Send another message to continue."
+            # If we hit the safety limit without a clean exit, send a final summary.
+            if loop_count >= max_loops:
+                await self._send_final(
+                    self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
         finally:
             if not self.is_paused:
                 self.is_running = False
     async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, SDKResponse]:
-        """Execute sub-agent tasks and return their responses."""
-        results: dict[str, SDKResponse] = {}
+        """Execute sub-agent tasks, running different agent roles in parallel.
 
-        for delegation in delegations:
-            if self._stop_event.is_set():
-                break
-
-            # Check limits before starting each sub-agent
-            if self.turn_count >= MAX_TURNS_PER_CYCLE:
-                await self._notify(
-                    f"⏰ Turn limit reached ({MAX_TURNS_PER_CYCLE}) — "
-                    f"skipping remaining sub-agents.\n"
-                    f"Use /resume to continue."
-                )
-                break
-            if self.total_cost_usd >= MAX_BUDGET_USD:
-                await self._notify(
-                    f"💰 Budget limit reached (${self.total_cost_usd:.4f}) — "
-                    f"skipping remaining sub-agents.\n"
-                    f"Use /resume to continue."
-                )
-                break
-
-            agent_role = delegation.agent
-            if agent_role not in SUB_AGENT_PROMPTS:
-                logger.warning(f"Unknown sub-agent role: {agent_role}, skipping")
+        Agents with different roles run concurrently via asyncio.gather().
+        If the orchestrator delegates multiple tasks to the same role,
+        those run sequentially (they share a session).
+        """
+        # Group delegations by agent role
+        by_role: dict[str, list[Delegation]] = {}
+        for d in delegations:
+            if d.agent not in SUB_AGENT_PROMPTS:
+                logger.warning(f"Unknown sub-agent role: {d.agent}, skipping")
                 continue
+            by_role.setdefault(d.agent, []).append(d)
 
-            self.turn_count += 1
+        results: dict[str, SDKResponse] = {}
+        lock = asyncio.Lock()  # Protect shared state updates
 
-            await self._notify(
-                f"🔧 *{agent_role}* is working on: {delegation.task[:200]}..."
+        async def run_role(agent_role: str, role_delegations: list[Delegation]):
+            """Run all delegations for a single role (sequentially)."""
+            for delegation in role_delegations:
+                if self._stop_event.is_set():
+                    break
+
+                # Check limits (under lock since turn_count is shared)
+                async with lock:
+                    if self.turn_count >= MAX_TURNS_PER_CYCLE:
+                        await self._notify(
+                            f"⏰ Turn limit reached ({MAX_TURNS_PER_CYCLE}) — "
+                            f"skipping remaining sub-agents.\n"
+                            f"Use /resume to continue."
+                        )
+                        return
+                    if self.total_cost_usd >= MAX_BUDGET_USD:
+                        await self._notify(
+                            f"💰 Budget limit reached (${self.total_cost_usd:.4f}) — "
+                            f"skipping remaining sub-agents.\n"
+                            f"Use /resume to continue."
+                        )
+                        return
+                    self.turn_count += 1
+
+                await self._notify(
+                    f"{AGENT_EMOJI.get(agent_role, '🔧')} *{agent_role}* is working on:\n_{delegation.task[:200]}_"
+                )
+
+                # Emit agent_started event
+                self.current_agent = agent_role
+                self.agent_states[agent_role] = {
+                    "state": "working",
+                    "task": delegation.task[:300],
+                }
+                await self._emit_event(
+                    "agent_started",
+                    agent=agent_role,
+                    task=delegation.task[:300],
+                )
+                agent_start = time.monotonic()
+
+                # Build sub-agent prompt
+                sub_prompt = f"Task: {delegation.task}"
+                if delegation.context:
+                    sub_prompt += f"\n\nContext: {delegation.context}"
+
+                workspace = self._get_workspace_context()
+                if workspace:
+                    sub_prompt += f"\n\n{workspace}"
+
+                response = await self._query_agent(agent_role, sub_prompt)
+
+                async with lock:
+                    self._record_response(agent_role, agent_role.capitalize(), response)
+                    results[agent_role] = response
+
+                # Emit agent_finished event
+                agent_duration = time.monotonic() - agent_start
+                self.agent_states[agent_role] = {
+                    "state": "error" if response.is_error else "done",
+                    "task": delegation.task[:300],
+                    "cost": response.cost_usd,
+                    "turns": response.num_turns,
+                    "duration": agent_duration,
+                }
+                await self._emit_event(
+                    "agent_finished",
+                    agent=agent_role,
+                    cost=response.cost_usd,
+                    turns=response.num_turns,
+                    duration=round(agent_duration, 1),
+                    is_error=response.is_error,
+                )
+
+                # Show sub-agent response
+                summary = response.text[:2500]
+                if len(response.text) > 2500:
+                    summary += "\n... (truncated)"
+
+                # If agent did tool-only work with no text, show what files changed
+                if "tool use" in summary.lower() and "no text output" in summary.lower():
+                    changed = self._detect_file_changes()
+                    if changed:
+                        summary += f"\n\nFiles changed:\n{changed}"
+
+                status_icon = "✅" if not response.is_error else "⚠️"
+                emoji = AGENT_EMOJI.get(agent_role, "🔧")
+                dur_str = f" ({response.duration_ms // 1000}s)" if response.duration_ms > 0 else ""
+                await self._send_result(
+                    f"{status_icon}{emoji} *{agent_role}* finished{dur_str}\n"
+                    f"💰 ${response.cost_usd:.4f} | Turns: {response.num_turns}\n\n"
+                    f"{summary}"
+                )
+
+        # Run different roles in parallel
+        if len(by_role) > 1:
+            await asyncio.gather(
+                *(run_role(role, dels) for role, dels in by_role.items()),
+                return_exceptions=True,
             )
+        elif by_role:
+            # Single role — run directly (no overhead)
+            role, dels = next(iter(by_role.items()))
+            await run_role(role, dels)
 
-            # Build sub-agent prompt
-            sub_prompt = f"Task: {delegation.task}"
-            if delegation.context:
-                sub_prompt += f"\n\nContext: {delegation.context}"
-
-            workspace = self._get_workspace_context()
-            if workspace:
-                sub_prompt += f"\n\n{workspace}"
-
-            response = await self._query_agent(agent_role, sub_prompt)
-            self._record_response(agent_role, agent_role.capitalize(), response)
-            results[agent_role] = response
-
-            # Show sub-agent response
-            summary = response.text[:2500]
-            if len(response.text) > 2500:
-                summary += "\n... (truncated)"
-
-            # If agent did tool-only work with no text, show what files changed
-            if "tool use" in summary.lower() and "no text output" in summary.lower():
-                changed = self._detect_file_changes()
-                if changed:
-                    summary += f"\n\nFiles changed:\n{changed}"
-
-            status = "✅" if not response.is_error else "⚠️"
-            duration = f" ({response.duration_ms // 1000}s)" if response.duration_ms > 0 else ""
-            await self._send_result(
-                f"{status} *{agent_role}* finished{duration}\n"
-                f"💰 ${response.cost_usd:.4f} | Turns: {response.num_turns}\n\n"
-                f"{summary}"
-            )
+        # Reset current_agent after all sub-agents finish
+        self.current_agent = None
+        self.current_tool = None
 
         return results
 
     async def _query_agent(self, agent_role: str, prompt: str) -> SDKResponse:
         """Query a specific agent (orchestrator or sub-agent) using the SDK."""
         # Get system prompt and resource limits based on role and mode
+        allowed_tools = None  # None = all tools available (default)
+
         if agent_role == "orchestrator" and self.multi_agent:
-            # Multi-agent: orchestrator is a coordinator only (no tools)
+            # Multi-agent: orchestrator is a COORDINATOR ONLY — no tool access.
+            # It can only produce text with <delegate> blocks.
+            # Without this, it wastes turns reading files instead of delegating.
             system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
             max_turns = 1
             max_budget = 0.5
+            permission_mode = "bypassPermissions"
+            allowed_tools = []  # No tools — text-only output
         elif agent_role == "orchestrator" and not self.multi_agent:
             # Solo mode: orchestrator IS the worker — full access to tools
             system_prompt = SOLO_AGENT_PROMPT
             max_turns = SDK_MAX_TURNS_PER_QUERY
             max_budget = SDK_MAX_BUDGET_PER_QUERY
+            permission_mode = "bypassPermissions"
         else:
-            # Sub-agents do real work — full turns and budget
+            # Sub-agents do real work — full turns, budget, and tool access
             system_prompt = SUB_AGENT_PROMPTS.get(agent_role, "You are a helpful coding assistant.")
             max_turns = SDK_MAX_TURNS_PER_QUERY
             max_budget = SDK_MAX_BUDGET_PER_QUERY
+            permission_mode = "bypassPermissions"
 
         # Try to resume session
         session_id = await self.session_mgr.get_session(
@@ -529,7 +701,21 @@ class OrchestratorManager:
 
         # Stream callback: show live agent activity in the progress message
         async def on_stream(text: str):
-            await self._notify(f"🔧 *{agent_role}*\n{text[-500:]}")
+            emoji = AGENT_EMOJI.get(agent_role, "🔧")
+            await self._notify(f"{emoji} *{agent_role}*\n{text[-500:]}")
+
+        # Tool use callback: emit tool_use events for dashboard
+        async def on_tool_use(tool_name: str, tool_info: str, tool_input: dict):
+            self.current_tool = tool_info
+            if agent_role in self.agent_states:
+                self.agent_states[agent_role]["current_tool"] = tool_info
+            await self._emit_event(
+                "tool_use",
+                agent=agent_role,
+                tool_name=tool_name,
+                description=tool_info,
+                input=tool_input,
+            )
 
         response = await self.sdk.query_with_retry(
             prompt=prompt,
@@ -538,7 +724,10 @@ class OrchestratorManager:
             session_id=session_id,
             max_turns=max_turns,
             max_budget_usd=max_budget,
+            permission_mode=permission_mode,
             on_stream=on_stream,
+            on_tool_use=on_tool_use,
+            allowed_tools=allowed_tools,
         )
 
         # Save session for future resume

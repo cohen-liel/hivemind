@@ -20,11 +20,14 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ALLOWED_USER_IDS = [int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()]
 
 # Projects
-PROJECTS_BASE_DIR = Path(os.getenv("CLAUDE_PROJECTS_DIR", "~/claude-projects")).expanduser()
-PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
+PROJECTS_BASE_DIR = Path(os.getenv("CLAUDE_PROJECTS_DIR", "~/Downloads")).expanduser()
+try:
+    PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass  # Directory may already exist with restricted permissions
 
 # Agent limits
-MAX_TURNS_PER_CYCLE = int(os.getenv("MAX_TURNS_PER_CYCLE", "20"))
+MAX_TURNS_PER_CYCLE = int(os.getenv("MAX_TURNS_PER_CYCLE", "100"))
 MAX_BUDGET_USD = float(os.getenv("MAX_BUDGET_USD", "5.0"))
 AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "300"))
 
@@ -42,9 +45,25 @@ STUCK_WINDOW_SIZE = 4
 MAX_ORCHESTRATOR_LOOPS = int(os.getenv("MAX_ORCHESTRATOR_LOOPS", "10"))
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "3.0"))
 
+# Budget warning threshold (percentage of MAX_BUDGET_USD)
+BUDGET_WARNING_THRESHOLD = float(os.getenv("BUDGET_WARNING_THRESHOLD", "0.8"))
+
+# Stall detection for proactive alerts (seconds)
+STALL_ALERT_SECONDS = int(os.getenv("STALL_ALERT_SECONDS", "60"))
+
+# Pipeline settings
+PIPELINE_MAX_STEPS = int(os.getenv("PIPELINE_MAX_STEPS", "10"))
+
+# Scheduler check interval (seconds)
+SCHEDULER_CHECK_INTERVAL = int(os.getenv("SCHEDULER_CHECK_INTERVAL", "30"))
+
 # Conversation store / session DB
-STORE_DIR = Path(os.getenv("CONVERSATION_STORE_DIR", "./data")).expanduser()
-STORE_DIR.mkdir(parents=True, exist_ok=True)
+_PROJECT_ROOT = Path(__file__).resolve().parent
+STORE_DIR = Path(os.getenv("CONVERSATION_STORE_DIR", str(_PROJECT_ROOT / "data"))).expanduser()
+try:
+    STORE_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
 SESSION_DB_PATH = str(STORE_DIR / "sessions.db")
 
 # Telegram message limits
@@ -55,8 +74,8 @@ MAX_USER_MESSAGE_LENGTH = int(os.getenv("MAX_USER_MESSAGE_LENGTH", "4000"))
 
 # Predefined projects
 PREDEFINED_PROJECTS: dict = {
-    "telegram-claude-bot": "~/Downloads/telegram-claude-bot",
-    "family-finance": "~/claude-projects/family-finance",
+    "web-claude-bot": "~/Downloads/web-claude-bot",
+    "family-finance": "~/Downloads/family-finance",
 }
 
 # Default agent roles (kept for display/reference)
@@ -79,7 +98,11 @@ ORCHESTRATOR_SYSTEM_PROMPT = (
     "2. Break it into concrete sub-tasks\n"
     "3. Delegate IMMEDIATELY using <delegate> blocks in your response\n"
     "4. After sub-agents finish, review their results\n"
-    "5. If more work needed, delegate again. If everything is done, say TASK_COMPLETE\n\n"
+    "5. If more work is needed, delegate again — keep going until FULLY complete\n"
+    "6. Only say TASK_COMPLETE when you've verified the work is done, tested, and committed\n\n"
+    "IMPORTANT: Do NOT stop after one round of delegation. Non-trivial tasks require "
+    "multiple rounds: implement → review → fix issues → verify. Keep delegating until "
+    "the entire task is verified as complete. One delegation round is rarely enough.\n\n"
     "DELEGATION FORMAT — you MUST include these in your response:\n\n"
     "<delegate>\n"
     '{"agent": "developer", "task": "Read all source files in the project and implement rate limiting in bot.py", "context": "Python telegram bot using python-telegram-bot library"}\n'
@@ -95,7 +118,8 @@ ORCHESTRATOR_SYSTEM_PROMPT = (
     "- Do NOT read files or write code yourself — delegate to developer\n"
     "- Do NOT respond with just a plan or list — always delegate in the SAME response\n"
     "- Keep your own text brief — focus on the delegation\n"
-    "- After reviewing sub-agent results: say TASK_COMPLETE if done, or delegate more work"
+    "- After reviewing sub-agent results: say TASK_COMPLETE if done, or delegate more work\n"
+    "- Do NOT say TASK_COMPLETE until you are certain the work is fully done"
 )
 
 # --- Solo agent prompt (when user selects 1 agent) ---

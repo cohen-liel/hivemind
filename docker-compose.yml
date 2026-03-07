@@ -7,8 +7,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./data:/app/data
-      # Map the user's claude-projects directory inside the container
-      - ~/claude-projects:/root/claude-projects
+      # Map the user's Downloads directory inside the container
+      - ~/Downloads:/root/Downloads
       # Map the predefined projects so the bot can access them
       - ~/Downloads/SkillUp:/root/Downloads/SkillUp
       - ~/Downloads/telegram-claude-bot:/root/Downloads/telegram-claude-bot

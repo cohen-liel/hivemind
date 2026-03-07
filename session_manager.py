@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
     description TEXT DEFAULT '',
     project_dir TEXT NOT NULL,
     status TEXT DEFAULT 'active',
+    away_mode INTEGER DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -48,11 +49,63 @@ CREATE TABLE IF NOT EXISTS messages (
     timestamp REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS notification_prefs (
+    user_id INTEGER PRIMARY KEY,
+    level TEXT DEFAULT 'all',
+    budget_warning INTEGER DEFAULT 1,
+    stall_alert INTEGER DEFAULT 1,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    task_description TEXT NOT NULL,
+    status TEXT DEFAULT 'running',
+    cost_usd REAL DEFAULT 0.0,
+    turns_used INTEGER DEFAULT 0,
+    started_at REAL NOT NULL,
+    completed_at REAL,
+    summary TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS away_digest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    project_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    timestamp REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    project_id TEXT NOT NULL,
+    schedule_time TEXT NOT NULL,
+    task_description TEXT NOT NULL,
+    repeat TEXT DEFAULT 'once',
+    enabled INTEGER DEFAULT 1,
+    last_run REAL,
+    created_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_lookup
     ON sessions(project_id, user_id, agent_role);
 
 CREATE INDEX IF NOT EXISTS idx_messages_project
     ON messages(project_id, timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_task_history_project
+    ON task_history(project_id, completed_at);
+
+CREATE INDEX IF NOT EXISTS idx_away_digest_user
+    ON away_digest(user_id, timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_enabled
+    ON schedules(enabled, schedule_time);
 """
 
 
@@ -70,6 +123,8 @@ class SessionManager:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
+        # Add away_mode column to existing projects table if missing
+        await self._migrate_add_columns()
         await self._migrate_json()
         logger.info(f"SessionManager initialized: {self.db_path}")
 
@@ -258,6 +313,217 @@ class SessionManager:
         row = await cursor.fetchone()
         return float(row[0]) if row else 0.0
 
+    # --- Notification Preferences ---
+
+    async def get_notification_prefs(self, user_id: int) -> dict:
+        """Get notification preferences for a user."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT level, budget_warning, stall_alert FROM notification_prefs WHERE user_id=?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {"level": row["level"], "budget_warning": bool(row["budget_warning"]), "stall_alert": bool(row["stall_alert"])}
+        # Default prefs
+        return {"level": "all", "budget_warning": True, "stall_alert": True}
+
+    async def set_notification_prefs(self, user_id: int, level: str = "all", budget_warning: bool = True, stall_alert: bool = True):
+        """Set notification preferences for a user."""
+        db = await self._get_db()
+        now = time.time()
+        await db.execute(
+            """INSERT INTO notification_prefs (user_id, level, budget_warning, stall_alert, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET level=?, budget_warning=?, stall_alert=?, updated_at=?""",
+            (user_id, level, int(budget_warning), int(stall_alert), now,
+             level, int(budget_warning), int(stall_alert), now),
+        )
+        await db.commit()
+
+    # --- Task History ---
+
+    async def add_task_history(
+        self,
+        project_id: str,
+        user_id: int,
+        task_description: str,
+        status: str = "running",
+        cost_usd: float = 0.0,
+        turns_used: int = 0,
+        summary: str = "",
+    ) -> int:
+        """Add a task history entry, returns the row ID."""
+        db = await self._get_db()
+        now = time.time()
+        cursor = await db.execute(
+            """INSERT INTO task_history (project_id, user_id, task_description, status, cost_usd, turns_used, started_at, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (project_id, user_id, task_description, status, cost_usd, turns_used, now, summary),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+    async def update_task_history(
+        self,
+        task_id: int,
+        status: str,
+        cost_usd: float = 0.0,
+        turns_used: int = 0,
+        summary: str = "",
+    ):
+        """Update a task history entry on completion."""
+        db = await self._get_db()
+        now = time.time()
+        await db.execute(
+            """UPDATE task_history SET status=?, cost_usd=?, turns_used=?, completed_at=?, summary=?
+               WHERE id=?""",
+            (status, cost_usd, turns_used, now, summary, task_id),
+        )
+        await db.commit()
+
+    async def get_recent_task_history(self, user_id: int, count: int = 10) -> list[dict]:
+        """Get the last N completed tasks for a user."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            """SELECT th.*, p.name as project_name
+               FROM task_history th
+               LEFT JOIN projects p ON th.project_id = p.project_id
+               WHERE th.user_id=?
+               ORDER BY th.started_at DESC LIMIT ?""",
+            (user_id, count),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    # --- Away Mode ---
+
+    async def set_away_mode(self, user_id: int, enabled: bool):
+        """Set away mode for all projects of a user."""
+        db = await self._get_db()
+        await db.execute(
+            "UPDATE projects SET away_mode=?, updated_at=? WHERE user_id=?",
+            (int(enabled), time.time(), user_id),
+        )
+        await db.commit()
+
+    async def is_away(self, user_id: int) -> bool:
+        """Check if user is in away mode (checks any project)."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT away_mode FROM projects WHERE user_id=? AND away_mode=1 LIMIT 1",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return bool(row)
+
+    async def add_away_digest(self, user_id: int, project_id: str, event_type: str, summary: str):
+        """Add an event to the away digest queue."""
+        db = await self._get_db()
+        await db.execute(
+            "INSERT INTO away_digest (user_id, project_id, event_type, summary, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (user_id, project_id, event_type, summary, time.time()),
+        )
+        await db.commit()
+
+    async def get_away_digest(self, user_id: int) -> list[dict]:
+        """Get all pending away digest entries for a user."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            """SELECT ad.*, p.name as project_name
+               FROM away_digest ad
+               LEFT JOIN projects p ON ad.project_id = p.project_id
+               WHERE ad.user_id=?
+               ORDER BY ad.timestamp ASC""",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def clear_away_digest(self, user_id: int):
+        """Clear all away digest entries for a user after catchup."""
+        db = await self._get_db()
+        await db.execute("DELETE FROM away_digest WHERE user_id=?", (user_id,))
+        await db.commit()
+
+    # --- Schedules ---
+
+    async def add_schedule(
+        self,
+        user_id: int,
+        chat_id: int,
+        project_id: str,
+        schedule_time: str,
+        task_description: str,
+        repeat: str = "once",
+    ) -> int:
+        """Add a scheduled task, returns the row ID."""
+        db = await self._get_db()
+        now = time.time()
+        cursor = await db.execute(
+            """INSERT INTO schedules (user_id, chat_id, project_id, schedule_time, task_description, repeat, enabled, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+            (user_id, chat_id, project_id, schedule_time, task_description, repeat, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+    async def get_schedules(self, user_id: int) -> list[dict]:
+        """Get all schedules for a user."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            """SELECT s.*, p.name as project_name
+               FROM schedules s
+               LEFT JOIN projects p ON s.project_id = p.project_id
+               WHERE s.user_id=? AND s.enabled=1
+               ORDER BY s.schedule_time ASC""",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_due_schedules(self, current_time_hhmm: str) -> list[dict]:
+        """Get all enabled schedules matching the given HH:MM time."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            """SELECT s.*, p.name as project_name, p.project_dir
+               FROM schedules s
+               LEFT JOIN projects p ON s.project_id = p.project_id
+               WHERE s.enabled=1 AND s.schedule_time=?""",
+            (current_time_hhmm,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_schedule_run(self, schedule_id: int):
+        """Mark a schedule as having run."""
+        db = await self._get_db()
+        now = time.time()
+        await db.execute(
+            "UPDATE schedules SET last_run=? WHERE id=?",
+            (now, schedule_id),
+        )
+        await db.commit()
+
+    async def disable_schedule(self, schedule_id: int):
+        """Disable a one-time schedule after it runs."""
+        db = await self._get_db()
+        await db.execute(
+            "UPDATE schedules SET enabled=0 WHERE id=?",
+            (schedule_id,),
+        )
+        await db.commit()
+
+    async def delete_schedule(self, schedule_id: int, user_id: int) -> bool:
+        """Delete a schedule (ensures user owns it). Returns True if deleted."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "DELETE FROM schedules WHERE id=? AND user_id=?",
+            (schedule_id, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
     async def cleanup_expired(self, max_age_hours: int = SESSION_EXPIRY_HOURS):
         """Clean up sessions older than max_age_hours."""
         db = await self._get_db()
@@ -267,6 +533,15 @@ class SessionManager:
             (cutoff,),
         )
         await db.commit()
+
+    async def _migrate_add_columns(self):
+        """Add columns that may be missing in older DBs."""
+        db = await self._get_db()
+        try:
+            await db.execute("SELECT away_mode FROM projects LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE projects ADD COLUMN away_mode INTEGER DEFAULT 0")
+            await db.commit()
 
     # --- Migration from JSON ConversationStore ---
 

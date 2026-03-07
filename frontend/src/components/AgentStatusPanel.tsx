@@ -1,0 +1,219 @@
+import type { AgentState } from '../types';
+import { useState } from 'react';
+
+interface Props {
+  agents: AgentState[];
+  onSelectAgent?: (name: string) => void;
+  selectedAgent?: string | null;
+  layout?: 'grid' | 'compact';
+}
+
+const AGENT_ICONS: Record<string, string> = {
+  orchestrator: '\u{1F3AF}',
+  developer: '\u{1F4BB}',
+  reviewer: '\u{1F50D}',
+  tester: '\u{1F9EA}',
+  devops: '\u{2699}\uFE0F',
+};
+
+const AGENT_LABELS: Record<string, string> = {
+  developer: 'Developer',
+  reviewer: 'Reviewer',
+  tester: 'Tester',
+  devops: 'DevOps',
+  orchestrator: 'Orchestrator',
+};
+
+function stateConfig(state: string) {
+  switch (state) {
+    case 'working':
+      return {
+        glow: 'shadow-[0_0_25px_rgba(59,130,246,0.5)] border-blue-500/60',
+        bg: 'bg-blue-500/10',
+        dotColor: 'bg-blue-500',
+        dotPulse: true,
+        label: 'Working',
+        labelColor: 'text-blue-400',
+        opacity: '',
+      };
+    case 'done':
+      return {
+        glow: 'shadow-[0_0_15px_rgba(34,197,94,0.25)] border-green-500/40',
+        bg: 'bg-green-500/5',
+        dotColor: 'bg-green-500',
+        dotPulse: false,
+        label: 'Done',
+        labelColor: 'text-green-400',
+        opacity: '',
+      };
+    case 'error':
+      return {
+        glow: 'shadow-[0_0_15px_rgba(239,68,68,0.35)] border-red-500/50 animate-[shake_0.5s_ease-in-out]',
+        bg: 'bg-red-500/5',
+        dotColor: 'bg-red-500',
+        dotPulse: false,
+        label: 'Error',
+        labelColor: 'text-red-400',
+        opacity: '',
+      };
+    default:
+      return {
+        glow: 'border-gray-800/60',
+        bg: 'bg-gray-800/30',
+        dotColor: 'bg-gray-600',
+        dotPulse: false,
+        label: 'Standby',
+        labelColor: 'text-gray-600',
+        opacity: 'opacity-60',
+      };
+  }
+}
+
+export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent, layout = 'grid' }: Props) {
+  const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
+
+  if (agents.length === 0) {
+    return (
+      <div className="text-gray-600 text-sm italic p-8 text-center">
+        No agents registered yet
+      </div>
+    );
+  }
+
+  const subAgents = agents.filter(a => a.name !== 'orchestrator');
+
+  if (layout === 'compact') {
+    return (
+      <div className="space-y-2 px-1">
+        {subAgents.map((agent) => {
+          const cfg = stateConfig(agent.state);
+          const icon = AGENT_ICONS[agent.name] || '\u{1F527}';
+
+          return (
+            <div
+              key={agent.name}
+              className={`bg-gray-900/80 border rounded-lg p-2.5 transition-all duration-300 ${cfg.glow} ${cfg.opacity}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="relative flex-shrink-0">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${cfg.bg}`}>
+                    {icon}
+                  </div>
+                  <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-gray-900 ${cfg.dotColor} ${cfg.dotPulse ? 'animate-pulse' : ''}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-semibold text-gray-300 capitalize">{agent.name}</span>
+                    <span className={`text-[9px] font-medium uppercase ${cfg.labelColor}`}>{cfg.label}</span>
+                  </div>
+                  {agent.state === 'working' && agent.current_tool && (
+                    <p className="text-[10px] text-blue-300/70 font-mono truncate mt-0.5">{agent.current_tool}</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {subAgents.map((agent) => {
+        const cfg = stateConfig(agent.state);
+        const icon = AGENT_ICONS[agent.name] || '\u{1F527}';
+        const label = AGENT_LABELS[agent.name] || agent.name;
+        const isExpanded = expandedAgent === agent.name;
+        const isSelected = selectedAgent === agent.name;
+
+        return (
+          <div
+            key={agent.name}
+            className={`relative bg-gray-900/80 border rounded-2xl transition-all duration-500 cursor-pointer
+              ${cfg.glow} ${cfg.opacity} ${isSelected ? 'ring-1 ring-blue-500/40' : ''}
+              hover:border-gray-700/80`}
+            onClick={() => {
+              if (onSelectAgent) onSelectAgent(agent.name);
+              setExpandedAgent(isExpanded ? null : agent.name);
+            }}
+          >
+            {/* Card content */}
+            <div className="p-4">
+              {/* Header: icon + name + state */}
+              <div className="flex items-center gap-3 mb-3">
+                <div className="relative flex-shrink-0">
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl transition-all duration-500 ${cfg.bg}`}>
+                    {icon}
+                  </div>
+                  <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-gray-900
+                    ${cfg.dotColor} ${cfg.dotPulse ? 'animate-pulse' : ''}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-bold text-gray-200">{label}</h3>
+                  <span className={`text-[11px] font-semibold uppercase tracking-wide ${cfg.labelColor}`}>
+                    {cfg.label}
+                  </span>
+                </div>
+              </div>
+
+              {/* Task description */}
+              {agent.task && (
+                <p className={`text-xs mb-2 leading-relaxed ${agent.state === 'working' ? 'text-gray-300' : 'text-gray-500'}`}>
+                  {agent.task.length > 120 ? agent.task.slice(0, 120) + '...' : agent.task}
+                </p>
+              )}
+
+              {/* Current tool (thought bubble) */}
+              {agent.state === 'working' && agent.current_tool && (
+                <div className="flex items-center gap-2 bg-blue-500/10 rounded-lg px-3 py-2 mb-2">
+                  <div className="flex gap-0.5 flex-shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400/80 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400/80 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400/80 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                  <span className="text-xs text-blue-300/90 font-mono truncate">{agent.current_tool}</span>
+                </div>
+              )}
+
+              {/* No task placeholder for idle */}
+              {agent.state === 'idle' && !agent.task && (
+                <p className="text-xs text-gray-700 italic">Ready for tasks</p>
+              )}
+
+              {/* Loading bar for working agents */}
+              {agent.state === 'working' && (
+                <div className="h-1 bg-gray-800 rounded-full overflow-hidden mt-2">
+                  <div className="h-full bg-gradient-to-r from-blue-600 to-blue-400 rounded-full animate-[loading_2s_ease-in-out_infinite]"
+                    style={{ width: '60%' }} />
+                </div>
+              )}
+
+              {/* Stats bar */}
+              {(agent.cost > 0 || agent.turns > 0 || agent.duration > 0) && (
+                <div className="flex items-center gap-3 mt-3 pt-2 border-t border-gray-800/40">
+                  {agent.cost > 0 && (
+                    <span className="text-[11px] text-gray-500 font-mono">${agent.cost.toFixed(3)}</span>
+                  )}
+                  {agent.turns > 0 && (
+                    <span className="text-[11px] text-gray-600">{agent.turns} turns</span>
+                  )}
+                  {agent.duration > 0 && (
+                    <span className="text-[11px] text-gray-600">{Math.round(agent.duration)}s</span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Expanded full details */}
+            {isExpanded && agent.task && (
+              <div className="px-4 pb-4 border-t border-gray-800/30">
+                <p className="text-xs text-gray-400 mt-3 whitespace-pre-wrap">{agent.task}</p>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

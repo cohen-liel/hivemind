@@ -2,3 +2,6 @@ python-telegram-bot>=21.0
 python-dotenv>=1.0
 claude-agent-sdk>=0.0.10
 aiosqlite>=0.20
+fastapi>=0.115
+uvicorn[standard]>=0.30
+websockets>=12.0

@@ -23,6 +23,13 @@ from config import AGENT_TIMEOUT_SECONDS, SDK_MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
+# Force the SDK to use the system-installed Claude CLI wrapper (/usr/local/bin/claude)
+# instead of the bundled binary.  The wrapper sets up Meta-specific authentication
+# (x2p proxy, CAT tokens, ANTHROPIC_BASE_URL, etc.) which the bundled binary skips.
+import shutil as _shutil
+
+SYSTEM_CLI_PATH = _shutil.which("claude") or "/usr/local/bin/claude"
+
 
 @dataclass
 class SDKResponse:
@@ -46,7 +53,10 @@ class ClaudeSDKManager:
         session_id: str | None = None,
         max_turns: int = 10,
         max_budget_usd: float = 2.0,
+        permission_mode: str | None = "bypassPermissions",
         on_stream=None,
+        on_tool_use=None,
+        allowed_tools: list[str] | None = None,
     ) -> SDKResponse:
         """Send a query to Claude Agent SDK.
 
@@ -57,6 +67,8 @@ class ClaudeSDKManager:
             session_id: If set, resumes a previous session.
             max_turns: Max agentic turns.
             max_budget_usd: Max budget for this query.
+            permission_mode: Permission mode — "bypassPermissions" for full
+                access, None for default (no auto-tool-approval).
             on_stream: Optional async callback for real-time text updates.
 
         Returns:
@@ -67,9 +79,15 @@ class ClaudeSDKManager:
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
             cwd=cwd,
-            permission_mode="bypassPermissions",
+            cli_path=SYSTEM_CLI_PATH,
             include_partial_messages=on_stream is not None,
         )
+
+        if permission_mode:
+            options.permission_mode = permission_mode
+
+        if allowed_tools is not None:
+            options.allowed_tools = allowed_tools
 
         if session_id:
             options.resume = session_id
@@ -77,7 +95,7 @@ class ClaudeSDKManager:
         try:
             # Run the stream consumption as a task so we can apply a timeout
             result = await asyncio.wait_for(
-                self._consume_stream(prompt, options, on_stream),
+                self._consume_stream(prompt, options, on_stream, on_tool_use),
                 timeout=AGENT_TIMEOUT_SECONDS,
             )
             return result
@@ -98,7 +116,7 @@ class ClaudeSDKManager:
                 error_message=str(e),
             )
 
-    async def _consume_stream(self, prompt, options, on_stream=None) -> SDKResponse:
+    async def _consume_stream(self, prompt, options, on_stream=None, on_tool_use=None) -> SDKResponse:
         """Consume the SDK async stream and return the final SDKResponse.
 
         With include_partial_messages=True, we get intermediate AssistantMessage
@@ -144,6 +162,18 @@ class ClaudeSDKManager:
                             tool_info = f"🔎 Grep: {pattern}"
                         else:
                             tool_info = f"🔧 {tool_name}"
+
+                        # Fire on_tool_use callback with structured data
+                        if on_tool_use:
+                            try:
+                                # Truncate tool_input for the callback
+                                truncated_input = {
+                                    k: (str(v)[:200] if isinstance(v, str) and len(str(v)) > 200 else v)
+                                    for k, v in (tool_input or {}).items()
+                                }
+                                await on_tool_use(tool_name, tool_info, truncated_input)
+                            except Exception as e:
+                                logger.error(f"on_tool_use callback error: {e}")
 
                 # Call stream callback with meaningful updates
                 if on_stream and (turn_text != last_seen_text or tool_info):
@@ -225,7 +255,10 @@ class ClaudeSDKManager:
         max_turns: int = 10,
         max_budget_usd: float = 2.0,
         max_retries: int = SDK_MAX_RETRIES,
+        permission_mode: str | None = "bypassPermissions",
         on_stream=None,
+        on_tool_use=None,
+        allowed_tools: list[str] | None = None,
     ) -> SDKResponse:
         """Query with automatic retry on transient errors.
 
@@ -247,7 +280,10 @@ class ClaudeSDKManager:
                 session_id=current_session,
                 max_turns=max_turns,
                 max_budget_usd=max_budget_usd,
+                permission_mode=permission_mode,
                 on_stream=on_stream if attempt == 1 else None,
+                on_tool_use=on_tool_use if attempt == 1 else None,
+                allowed_tools=allowed_tools,
             )
 
             if not response.is_error:

@@ -30,3 +30,9 @@ htmlcov/
 out.json
 out.txt
 err.txt
+bot.log
+
+# Frontend build artifacts and dependencies
+node_modules/
+frontend/node_modules/
+frontend/dist/
