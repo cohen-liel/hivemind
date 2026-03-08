@@ -43,7 +43,7 @@ async def _check_due_schedules():
         repeat = schedule.get("repeat", "once")
 
         # Find or create manager
-        manager = state.get_manager(user_id, project_id)
+        manager, _ = state.get_manager(project_id)
         if not manager:
             logger.warning(f"Scheduler: no manager for project {project_id}, skipping schedule {schedule_id}")
             continue
@@ -52,7 +52,7 @@ async def _check_due_schedules():
 
         try:
             if not manager.is_running:
-                await manager.start(task_desc)
+                await manager.start_session(task_desc)
             else:
                 await manager.inject_user_message("orchestrator", task_desc)
 

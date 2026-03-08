@@ -128,6 +128,7 @@ def _create_web_manager(
             "project_id": project_id,
             "project_name": project_name,
             "text": text,
+            "timestamp": __import__('time').time(),
         })
 
     async def on_result(text: str):
@@ -136,6 +137,7 @@ def _create_web_manager(
             "project_id": project_id,
             "project_name": project_name,
             "text": text,
+            "timestamp": __import__('time').time(),
         })
 
     async def on_final(text: str):
@@ -144,6 +146,7 @@ def _create_web_manager(
             "project_id": project_id,
             "project_name": project_name,
             "text": text,
+            "timestamp": __import__('time').time(),
         })
 
     async def on_event(event: dict):
@@ -846,7 +849,6 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": "DB not ready"}, status_code=500)
         schedule_id = await state.session_mgr.add_schedule(
             user_id=data.get("user_id", 0),
-            chat_id=data.get("chat_id", 0),
             project_id=data["project_id"],
             schedule_time=data["schedule_time"],
             task_description=data["task_description"],

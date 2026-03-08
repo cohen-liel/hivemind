@@ -316,6 +316,18 @@ export default function ProjectView() {
 
       case 'project_status':
         loadProject();
+        // When project goes idle, reset all agent states so UI doesn't show stale "working"
+        if (event.status === 'idle') {
+          setAgentStates(prev => {
+            const reset: Record<string, AgentStateType> = {};
+            for (const [k, v] of Object.entries(prev)) {
+              reset[k] = { ...v, state: 'idle', current_tool: undefined };
+            }
+            return reset;
+          });
+          setLoopProgress(null);
+          setLastTicker('');
+        }
         break;
 
       case 'approval_request' as WSEvent['type']:

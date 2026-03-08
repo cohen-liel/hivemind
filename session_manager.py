@@ -83,7 +83,6 @@ CREATE TABLE IF NOT EXISTS away_digest (
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    chat_id INTEGER NOT NULL,
     project_id TEXT NOT NULL,
     schedule_time TEXT NOT NULL,
     task_description TEXT NOT NULL,
@@ -473,7 +472,6 @@ class SessionManager:
     async def add_schedule(
         self,
         user_id: int,
-        chat_id: int,
         project_id: str,
         schedule_time: str,
         task_description: str,
@@ -483,9 +481,9 @@ class SessionManager:
         db = await self._get_db()
         now = time.time()
         cursor = await db.execute(
-            """INSERT INTO schedules (user_id, chat_id, project_id, schedule_time, task_description, repeat, enabled, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
-            (user_id, chat_id, project_id, schedule_time, task_description, repeat, now),
+            """INSERT INTO schedules (user_id, project_id, schedule_time, task_description, repeat, enabled, created_at)
+               VALUES (?, ?, ?, ?, ?, 1, ?)""",
+            (user_id, project_id, schedule_time, task_description, repeat, now),
         )
         await db.commit()
         return cursor.lastrowid
