@@ -793,6 +793,9 @@ class OrchestratorManager:
         prompt += f"\n\n{complexity_hints.get(complexity, '')}\n\nUser request:\n{user_message}"
 
         task_history_id = None  # Guard: prevents NameError in except blocks
+        _anyio_retries = 0
+        _MAX_ANYIO_RETRIES = 3  # Max times to auto-retry on spurious CancelledError
+        _should_retry = False
         try:
             # Record task history
             task_history_id = await self.session_mgr.add_task_history(
@@ -1155,7 +1158,23 @@ class OrchestratorManager:
                     "state": "idle",
                     "task": f"waiting for {len(delegations)} sub-agent(s)",
                 }
-                sub_results = await self._run_sub_agents(delegations)
+                # Execute sub-agents — wrapped in retry for spurious anyio CancelledError
+                try:
+                    sub_results = await self._run_sub_agents(delegations)
+                except asyncio.CancelledError:
+                    if self._stop_event.is_set():
+                        raise  # Real cancellation — propagate up
+                    # Spurious anyio cancel-scope leak — retry this round
+                    _anyio_retries += 1
+                    logger.warning(
+                        f"[{self.project_id}] Spurious CancelledError before/during sub-agents "
+                        f"(retry {_anyio_retries}/{_MAX_ANYIO_RETRIES})"
+                    )
+                    if _anyio_retries <= _MAX_ANYIO_RETRIES:
+                        await self._notify("⚠️ Internal hiccup — retrying automatically...")
+                        continue  # Retry the while loop iteration
+                    else:
+                        raise  # Too many retries — propagate up
                 logger.info(
                     f"[{self.project_id}] Sub-agents finished: "
                     f"{', '.join(f'{k}({len(v)} tasks)' for k, v in sub_results.items())}"
@@ -1205,13 +1224,20 @@ class OrchestratorManager:
                 logger.warning(
                     f"Orchestrator loop got SPURIOUS CancelledError for {self.project_name} "
                     f"(stop_event not set — likely anyio cancel-scope leak). "
-                    f"Treating as error, not true cancellation."
+                    f"Retrying the round ({_anyio_retries + 1}/{_MAX_ANYIO_RETRIES})."
                 )
-                await self._send_final(
-                    f"⚠️ *{self.project_name}* — Agent session interrupted (anyio bug).\n"
-                    f"Send your message again to retry.\n"
-                    f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
+                await self._notify(
+                    f"⚠️ Internal hiccup (anyio bug) — retrying automatically..."
                 )
+                _anyio_retries += 1
+                if _anyio_retries <= _MAX_ANYIO_RETRIES:
+                    _should_retry = True
+                else:
+                    await self._send_final(
+                        f"⚠️ *{self.project_name}* — Repeated anyio errors ({_anyio_retries}x).\n"
+                        f"Send your message again to retry.\n"
+                        f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
+                    )
         except Exception as e:
             logger.error(f"Orchestrator loop error: {e}", exc_info=True)
             # Use _send_final (not _notify) so the frontend receives an agent_final event
@@ -1262,6 +1288,11 @@ class OrchestratorManager:
                     "turns": prev.get("turns", 0),
                 }
             # NOTE: _on_task_done callback handles auto-restart if queue has pending messages
+
+        # If we set the retry flag due to spurious anyio CancelledError,
+        # re-enter the orchestrator loop (tail-call style, max 3 retries).
+        if _should_retry:
+            return await self._run_orchestrator(user_message)
 
     async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, list[SDKResponse]]:
         """Execute sub-agent tasks, running different agent roles in parallel.
@@ -1576,11 +1607,29 @@ class OrchestratorManager:
                 # Wait for all tasks to complete — with timeout to prevent infinite hangs
                 if role_tasks:
                     _wait_timeout = AGENT_TIMEOUT_SECONDS + 60  # agent timeout + buffer
-                    done, still_pending = await asyncio.wait(
-                        role_tasks.values(),
-                        return_when=asyncio.ALL_COMPLETED,
-                        timeout=_wait_timeout,
-                    )
+                    remaining = set(role_tasks.values())
+                    while remaining:
+                        try:
+                            done, still_pending = await asyncio.wait(
+                                remaining,
+                                return_when=asyncio.ALL_COMPLETED,
+                                timeout=_wait_timeout,
+                            )
+                            remaining = set()  # All done
+                        except asyncio.CancelledError:
+                            if self._stop_event.is_set():
+                                raise  # Real cancellation — propagate
+                            # Spurious anyio cancel-scope leak — DON'T kill children!
+                            # Filter out completed tasks and re-wait for the rest.
+                            remaining = {t for t in remaining if not t.done()}
+                            if not remaining:
+                                break
+                            logger.warning(
+                                f"[{self.project_id}] Spurious CancelledError in asyncio.wait — "
+                                f"{len(remaining)} agent(s) still running, re-waiting..."
+                            )
+                            continue
+
                     if still_pending:
                         logger.warning(
                             f"[{self.project_id}] {len(still_pending)} agent task(s) timed out "
@@ -1622,14 +1671,35 @@ class OrchestratorManager:
                 role, dels = next(iter(by_role.items()))
                 await run_role(role, dels)
         except asyncio.CancelledError:
-            # Orchestrator was stopped — cancel any running agent tasks
-            if role_tasks:
-                for task in role_tasks.values():
-                    if not task.done():
-                        task.cancel()
-                # Wait briefly for tasks to finish cancellation
-                await asyncio.wait(role_tasks.values(), timeout=5.0)
-            raise
+            # Check if this is a REAL cancellation (user pressed Stop) or a
+            # spurious anyio cancel-scope leak from generator GC.
+            if self._stop_event.is_set():
+                # Real cancellation — kill running agent tasks
+                if role_tasks:
+                    for task in role_tasks.values():
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.wait(role_tasks.values(), timeout=5.0)
+                raise
+            else:
+                # Spurious cancellation — DON'T kill children.
+                # Wait for any still-running tasks to complete.
+                logger.warning(
+                    f"[{self.project_id}] _run_sub_agents got SPURIOUS CancelledError "
+                    f"(anyio cancel-scope leak). Waiting for agents to finish..."
+                )
+                if role_tasks:
+                    pending_tasks = {t for t in role_tasks.values() if not t.done()}
+                    if pending_tasks:
+                        try:
+                            await asyncio.wait(pending_tasks, timeout=AGENT_TIMEOUT_SECONDS)
+                        except asyncio.CancelledError:
+                            if self._stop_event.is_set():
+                                for t in pending_tasks:
+                                    if not t.done():
+                                        t.cancel()
+                                raise
+                            # Another spurious cancel — ignore and continue
         finally:
             heartbeat_task.cancel()
             try:
