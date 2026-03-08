@@ -9,9 +9,5 @@ services:
       - ./data:/app/data
       # Map the user's Downloads directory inside the container
       - ~/Downloads:/root/Downloads
-      # Map the predefined projects so the bot can access them
-      - ~/Downloads/SkillUp:/root/Downloads/SkillUp
-      - ~/Downloads/telegram-claude-bot:/root/Downloads/telegram-claude-bot
-      - ~/Downloads/family-finance:/root/Downloads/family-finance
     env_file:
       - .env

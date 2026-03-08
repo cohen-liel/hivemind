@@ -1,4 +1,4 @@
-"""Configuration for the Telegram Claude Bot.
+"""Configuration for the Web Claude Bot.
 
 Reads settings from environment variables (via .env) and exposes them
 as module-level constants to be imported across the project.
@@ -32,12 +32,6 @@ def _get(key: str, default: str, type_fn=str):
         return type_fn(_OVERRIDES[key.lower()])
     return type_fn(os.getenv(key, default))
 
-
-# Telegram
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-
-# Access control — comma-separated Telegram user IDs (empty = allow all)
-ALLOWED_USER_IDS = [int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()]
 
 # CORS origins (comma-separated)
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()]
@@ -89,9 +83,6 @@ except OSError:
     pass
 SESSION_DB_PATH = str(STORE_DIR / "sessions.db")
 
-# Telegram message limits
-MAX_TELEGRAM_MESSAGE_LENGTH = 4000
-
 # User input validation
 MAX_USER_MESSAGE_LENGTH = _get("MAX_USER_MESSAGE_LENGTH", "4000", int)
 
@@ -138,7 +129,7 @@ ORCHESTRATOR_SYSTEM_PROMPT = (
     "the entire task is verified as complete. One delegation round is rarely enough.\n\n"
     "DELEGATION FORMAT — you MUST include these in your response:\n\n"
     "<delegate>\n"
-    '{"agent": "developer", "task": "Read all source files in the project and implement rate limiting in bot.py", "context": "Python telegram bot using python-telegram-bot library"}\n'
+    '{"agent": "developer", "task": "Read all source files in the project and implement rate limiting", "context": "Python web project with FastAPI backend"}\n'
     "</delegate>\n\n"
     "Available sub-agents:\n"
     "- developer: Reads code, writes code, creates files, implements features, fixes bugs\n"

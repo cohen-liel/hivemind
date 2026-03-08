@@ -367,10 +367,19 @@ export default function ProjectView() {
       id: nextId(), type: 'user_message', timestamp: Date.now() / 1000,
       agent: 'user', content: message,
     }]);
-    if (agent) {
-      await talkToAgent(id, agent, message);
-    } else {
-      await sendMessage(id, message);
+    try {
+      if (agent) {
+        await talkToAgent(id, agent, message);
+      } else {
+        await sendMessage(id, message);
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('Failed to send message:', errMsg);
+      setActivities(prev => [...prev, {
+        id: nextId(), type: 'error', timestamp: Date.now() / 1000,
+        agent: 'system', content: `Failed to send: ${errMsg}`,
+      }]);
     }
     loadProject();
   };

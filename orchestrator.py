@@ -200,6 +200,38 @@ class OrchestratorManager:
         task.add_done_callback(_on_done)
         return task
 
+    def _on_task_done(self, task: asyncio.Task):
+        """Callback attached to the main _run_orchestrator task.
+
+        Catches silent crashes that would otherwise go unnoticed and
+        auto-restarts if there are pending messages in the queue.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.error(
+                f"[{self.project_id}] Orchestrator task crashed: {exc}",
+                exc_info=exc,
+            )
+        # If messages arrived while the task was finishing, restart
+        if not self._message_queue.empty() and not self._stop_event.is_set():
+            pending_parts: list[str] = []
+            while not self._message_queue.empty():
+                try:
+                    _target, msg = self._message_queue.get_nowait()
+                    pending_parts.append(msg)
+                except asyncio.QueueEmpty:
+                    break
+            if pending_parts:
+                combined = "\n\n---\n\n".join(pending_parts)
+                logger.info(
+                    f"[{self.project_id}] {len(pending_parts)} pending message(s) "
+                    f"found after task ended — auto-restarting"
+                )
+                # Schedule a new session (can't await from a sync callback)
+                asyncio.ensure_future(self.start_session(combined))
+
     async def _notify(self, text: str):
         """Send a progress/status update (edited in-place in Telegram)."""
         if self.on_update:
@@ -356,6 +388,8 @@ class OrchestratorManager:
         self._task = asyncio.create_task(
             self._run_orchestrator(user_message)
         )
+        # Log uncaught errors from the task so they don't vanish silently
+        self._task.add_done_callback(self._on_task_done)
 
     async def inject_user_message(self, agent_name: str, message: str):
         """Inject a user message into the orchestrator or a sub-agent.
@@ -829,6 +863,7 @@ class OrchestratorManager:
                     "state": "idle",
                     "current_tool": None,
                 }
+            # NOTE: _on_task_done callback handles auto-restart if queue has pending messages
 
     async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, list[SDKResponse]]:
         """Execute sub-agent tasks, running different agent roles in parallel.

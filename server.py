@@ -1,8 +1,7 @@
-"""Main entry point — starts the web dashboard, optionally the Telegram bot.
+"""Main entry point — starts the web dashboard.
 
 Usage:
-    python server.py          # web-only (no Telegram token needed)
-    python server.py          # web + Telegram (if TELEGRAM_BOT_TOKEN is set)
+    python server.py
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from pathlib import Path
 import uvicorn
 
 import state
-from config import TELEGRAM_BOT_TOKEN, PREDEFINED_PROJECTS
+from config import PREDEFINED_PROJECTS
 from dashboard.api import create_app, _create_web_manager
 
 logging.basicConfig(
@@ -47,27 +46,9 @@ def _check_sandbox():
 
 
 async def run():
-    """Start web server (always) and Telegram bot (if token is set)."""
+    """Start web server."""
     # Initialize shared state (SDK + SessionManager)
     await state.initialize()
-
-    bot_app = None
-
-    # Optionally start Telegram bot
-    if TELEGRAM_BOT_TOKEN:
-        try:
-            from bot import build_bot_application
-
-            bot_app = build_bot_application()
-            await bot_app.initialize()
-            await bot_app.start()
-            await bot_app.updater.start_polling(drop_pending_updates=True)
-            logger.info("Telegram bot started.")
-        except Exception as e:
-            logger.warning(f"Telegram bot failed to start: {e}")
-            bot_app = None
-    else:
-        logger.info("No TELEGRAM_BOT_TOKEN — running web-only mode.")
 
     # Auto-create predefined projects if they don't exist yet
     if state.session_mgr:
@@ -138,10 +119,6 @@ async def run():
         cleanup_task.cancel()
         scheduler_task.cancel()
         logger.info("Shutting down...")
-        if bot_app:
-            await bot_app.updater.stop()
-            await bot_app.stop()
-            await bot_app.shutdown()
 
 
 if __name__ == "__main__":

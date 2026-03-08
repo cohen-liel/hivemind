@@ -1,8 +1,4 @@
-"""Shared application state — the single source of truth for all interfaces.
-
-Both the web dashboard (FastAPI) and the Telegram bot import from here
-instead of reaching into each other's module globals.
-"""
+"""Shared application state — the single source of truth for the web dashboard."""
 from __future__ import annotations
 
 import asyncio
@@ -35,9 +31,6 @@ PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9 _-]+$")
 
 # Per-user rate limiting: user_id -> last message timestamp
 user_last_message: dict[int, float] = {}
-
-# Map bot message_id -> project_id for reply-to project detection (Telegram only)
-msg_to_project: dict[int, str] = {}
 
 
 # ── Initialization ────────────────────────────────────────────────────
