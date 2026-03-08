@@ -791,7 +791,7 @@ def create_app() -> FastAPI:
         projects_base = PROJECTS_BASE_DIR.resolve()
         allowed_roots = [home, projects_base]
         if not any(
-            target == root or str(target).startswith(str(root) + os.sep)
+            target == root or target.is_relative_to(root)
             for root in allowed_roots
         ):
             return JSONResponse(
@@ -1070,7 +1070,7 @@ def create_app() -> FastAPI:
         try:
             file_path = file_path.resolve()
             proj_resolved = Path(project_dir).resolve()
-            if not str(file_path).startswith(str(proj_resolved)):
+            if not file_path.is_relative_to(proj_resolved):
                 return {"error": "Path traversal not allowed"}
         except Exception:
             return {"error": "Invalid path"}

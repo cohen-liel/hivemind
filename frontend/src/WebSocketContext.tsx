@@ -13,12 +13,65 @@ const WSContext = createContext<WSContextValue>({
   subscribe: () => () => {},
 });
 
+/**
+ * After a WebSocket reconnect, fetch live state for all active projects
+ * and dispatch synthetic events so the UI catches up on anything missed
+ * during the disconnect.
+ */
+async function _syncStateOnReconnect(subscribers: Set<Subscriber>) {
+  try {
+    const res = await fetch('/api/projects');
+    if (!res.ok) return;
+    const { projects } = await res.json();
+
+    for (const project of projects ?? []) {
+      if (!project.project_id) continue;
+
+      // Dispatch a project_status event so dashboards refresh
+      const statusEvent: WSEvent = {
+        type: 'project_status',
+        project_id: project.project_id,
+        project_name: project.project_name,
+        status: project.status ?? 'idle',
+        timestamp: Date.now() / 1000,
+      };
+      for (const cb of subscribers) {
+        try { cb(statusEvent); } catch { /* subscriber error */ }
+      }
+
+      // For running projects, fetch detailed live state
+      if (project.is_running) {
+        try {
+          const liveRes = await fetch(`/api/projects/${project.project_id}/live`);
+          if (liveRes.ok) {
+            const liveData = await liveRes.json();
+            const liveEvent: WSEvent = {
+              type: 'live_state_sync',
+              project_id: project.project_id,
+              ...liveData,
+              timestamp: Date.now() / 1000,
+            };
+            for (const cb of subscribers) {
+              try { cb(liveEvent); } catch { /* subscriber error */ }
+            }
+          }
+        } catch {
+          // Ignore per-project fetch errors
+        }
+      }
+    }
+  } catch {
+    // Network error during sync — will retry on next reconnect
+  }
+}
+
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const subscribersRef = useRef<Set<Subscriber>>(new Set());
   const retryDelayRef = useRef(1000);
   const mountedRef = useRef(true);
+  const wasConnectedRef = useRef(false);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -28,8 +81,15 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     const ws = new WebSocket(`${protocol}//${host}/ws`);
 
     ws.onopen = () => {
+      const isReconnect = wasConnectedRef.current;
       setConnected(true);
+      wasConnectedRef.current = true;
       retryDelayRef.current = 1000; // reset backoff on success
+
+      // On reconnect, sync state so UI catches up on missed events
+      if (isReconnect) {
+        _syncStateOnReconnect(subscribersRef.current);
+      }
     };
 
     ws.onmessage = (e) => {

@@ -32,7 +32,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY config.py orchestrator.py scheduler.py sdk_client.py server.py \
+COPY config.py isolated_query.py orchestrator.py scheduler.py sdk_client.py server.py \
      session_manager.py skills_registry.py state.py ./
 COPY dashboard/ ./dashboard/
 

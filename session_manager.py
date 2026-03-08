@@ -115,6 +115,22 @@ CREATE INDEX IF NOT EXISTS idx_away_digest_user
 
 CREATE INDEX IF NOT EXISTS idx_schedules_enabled
     ON schedules(enabled, schedule_time);
+
+-- Trigger: auto-increment message_count on projects when a message is inserted
+CREATE TRIGGER IF NOT EXISTS trg_messages_insert_count
+    AFTER INSERT ON messages
+    BEGIN
+        UPDATE projects SET message_count = COALESCE(message_count, 0) + 1
+        WHERE project_id = NEW.project_id;
+    END;
+
+-- Trigger: auto-decrement message_count when messages are deleted
+CREATE TRIGGER IF NOT EXISTS trg_messages_delete_count
+    AFTER DELETE ON messages
+    BEGIN
+        UPDATE projects SET message_count = MAX(COALESCE(message_count, 0) - 1, 0)
+        WHERE project_id = OLD.project_id;
+    END;
 """
 
 
@@ -335,15 +351,13 @@ class SessionManager:
     async def list_projects(self) -> list[dict]:
         """List all projects, sorted by most recently updated."""
         db = await self._get_db()
-        # Use a single LEFT JOIN to count messages instead of N+1 queries
+        # Use cached message_count column (maintained by triggers) instead of expensive LEFT JOIN
         cursor = await db.execute(
-            """SELECT p.project_id, p.user_id, p.name, p.description, p.project_dir,
-                      p.status, p.created_at, p.updated_at,
-                      COUNT(m.id) as message_count
-               FROM projects p
-               LEFT JOIN messages m ON p.project_id = m.project_id
-               GROUP BY p.project_id
-               ORDER BY p.updated_at DESC"""
+            """SELECT project_id, user_id, name, description, project_dir,
+                      status, created_at, updated_at,
+                      COALESCE(message_count, 0) as message_count
+               FROM projects
+               ORDER BY updated_at DESC"""
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -693,6 +707,16 @@ class SessionManager:
             await db.execute("SELECT budget_usd FROM projects LIMIT 1")
         except Exception:
             await db.execute("ALTER TABLE projects ADD COLUMN budget_usd REAL DEFAULT 0")
+            await db.commit()
+        try:
+            await db.execute("SELECT message_count FROM projects LIMIT 1")
+        except Exception:
+            await db.execute("ALTER TABLE projects ADD COLUMN message_count INTEGER DEFAULT 0")
+            # Backfill message_count from existing messages
+            await db.execute(
+                "UPDATE projects SET message_count = "
+                "(SELECT COUNT(*) FROM messages WHERE messages.project_id = projects.project_id)"
+            )
             await db.commit()
 
     # --- Migration from JSON ConversationStore ---
