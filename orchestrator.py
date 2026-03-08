@@ -400,7 +400,8 @@ class OrchestratorManager:
     def _check_premature_completion(self, loop_count: int, task: str) -> str | None:
         """Validate whether TASK_COMPLETE is appropriate. Returns a reason string if premature.
 
-        Called before accepting TASK_COMPLETE from the orchestrator.
+        Uses the project manifest (persistent) AND conversation log (not just shared_context
+        which is trimmed) to decide — so agents that ran 30+ rounds ago are still detected.
         Returns None if completion is acceptable, or a non-empty string explaining why not.
         """
         complexity = self._estimate_task_complexity(task)
@@ -415,7 +416,7 @@ class OrchestratorManager:
                 f"(minimum {required} required). Continue working through the remaining phases."
             )
 
-        # Any agents blocked or needing followup?
+        # Any agents blocked or needing followup? (check shared_context — most recent)
         outstanding = [
             ctx for ctx in self.shared_context
             if "BLOCKED" in ctx or "NEEDS_FOLLOWUP" in ctx
@@ -426,10 +427,24 @@ class OrchestratorManager:
                 f"Resolve all outstanding items before declaring complete."
             )
 
-        # For LARGE and EPIC: require both reviewer and tester to have run
+        # For LARGE and EPIC: require both reviewer and tester to have run.
+        # Check FULL conversation log (not just trimmed shared_context) so agents that ran
+        # 30+ rounds ago are still detected correctly.
         if complexity in ("LARGE", "EPIC"):
-            tester_ran = any("[tester]" in ctx for ctx in self.shared_context)
-            reviewer_ran = any("[reviewer]" in ctx for ctx in self.shared_context)
+            # Search full conversation log for agent names
+            all_agent_names = {m.agent_name for m in self.conversation_log}
+            tester_ran = "tester" in all_agent_names
+            reviewer_ran = "reviewer" in all_agent_names
+
+            # Also check the manifest for test results (belt-and-suspenders)
+            manifest = self._read_project_manifest()
+            if manifest:
+                manifest_lower = manifest.lower()
+                if "## test results" in manifest_lower and ("passed" in manifest_lower or "failed" in manifest_lower):
+                    tester_ran = True
+                if "## issues log" in manifest_lower and len(manifest_lower) > 100:
+                    reviewer_ran = True
+
             if not tester_ran and not reviewer_ran:
                 return (
                     "For a task of this complexity, tests must be run AND code must be "
@@ -715,6 +730,17 @@ class OrchestratorManager:
 
         # Inject task complexity hint so the orchestrator sets the right expectations upfront
         complexity = self._estimate_task_complexity(user_message)
+
+        # If the manifest already exists, this is a continuation — inject it and override complexity
+        existing_manifest = self._read_project_manifest()
+        if existing_manifest:
+            complexity = "LARGE"  # At minimum — manifest means prior work exists
+            prompt += (
+                f"\n\n📋 EXISTING PROJECT MANIFEST FOUND (.nexus/PROJECT_MANIFEST.md):\n"
+                f"This is a CONTINUATION of previous work. Read the manifest carefully before delegating.\n\n"
+                f"{existing_manifest}\n"
+            )
+
         complexity_hints = {
             "SIMPLE": (
                 "⚡ TASK COMPLEXITY: SIMPLE — Handle efficiently in 1-2 rounds. "
@@ -1971,10 +1997,16 @@ class OrchestratorManager:
         loops_done = self._current_loop
         loops_max = MAX_ORCHESTRATOR_LOOPS
         loops_left = max(0, loops_max - loops_done)
+        # Burn rate: avg cost per round so far → estimate rounds remaining within budget
+        burn_rate = budget_used / max(loops_done, 1)
+        budget_rounds_left = int(budget_left / burn_rate) if burn_rate > 0 else loops_left
+        effective_rounds_left = min(loops_left, budget_rounds_left)
         parts.append(
             f"─── 📊 SESSION PROGRESS ───\n"
             f"Rounds: {loops_done}/{loops_max} ({loops_left} remaining) | "
             f"Budget: ${budget_used:.2f}/${budget_cap:.0f} (${budget_left:.2f} left)\n"
+            f"Burn rate: ${burn_rate:.2f}/round → ~{effective_rounds_left} effective rounds left\n"
+            f"{'⚠️ BUDGET RUNNING LOW — prioritize critical work only!' if effective_rounds_left < 5 else ''}\n"
         )
         has_errors = False
         total_sub_cost = 0.0
