@@ -106,10 +106,19 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 - **Security tests included**: SEC-01 (message length), SEC-03 (project path restriction), browse_dirs traversal, read_file traversal, persist_settings whitelist
 - **Gap**: No WebSocket tests, no end-to-end integration tests
 
-## Next Steps — see `.nexus/IMPROVEMENT_PLAN.md`
+## Next Steps
+
+### Bug Fixes & Security — see `.nexus/IMPROVEMENT_PLAN.md`
 - **3 P0 security fixes**: message length validation, symlink-safe path traversal, project dir restriction
 - **11 P1 items**: WebSocket auth, connection pool init, scheduler dedup, blocking I/O, git caching, refactors
 - **14 P2 items**: code quality, performance, maintainability improvements
+
+### Architecture & Hardening — see `.nexus/IMPROVEMENT_ROADMAP.md`
+- **42 improvements** across 5 categories: Performance, Reliability, Observability, DX, Deployment
+- **12 Tier 1 quick wins** (4-6 hours total): SQLite PRAGMAs, log rotation, heartbeat, Makefile, pre-commit hooks
+- **16 Tier 2 high-value items** (20-30 hours): circuit breaker, structlog, metrics, API tests, caching
+- **4 Tier 3 architectural items** (15-20 hours): DB connection separation, session recovery, TypeScript strict
+- 4-week phased implementation plan with recommended execution order
 
 ## Security Audit — 2026-03-08
 Full report: `.nexus/SECURITY_AUDIT.md`
