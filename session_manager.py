@@ -371,10 +371,21 @@ class SessionManager:
         )
         await db.commit()
 
+    # Whitelist of columns that can be updated via update_project_fields.
+    # Prevents SQL injection through dynamic column names.
+    _UPDATABLE_PROJECT_FIELDS = frozenset({
+        "name", "description", "project_dir", "status",
+        "away_mode", "budget_usd", "message_count",
+    })
+
     async def update_project_fields(self, project_id: str, **fields):
-        """Update arbitrary project fields safely."""
+        """Update project fields safely with column-name whitelist."""
         if not fields:
             return
+        # Reject any column names not in the whitelist
+        invalid = set(fields.keys()) - self._UPDATABLE_PROJECT_FIELDS
+        if invalid:
+            raise ValueError(f"Disallowed column names: {', '.join(sorted(invalid))}")
         db = await self._get_db()
         sets = ", ".join(f"{k}=?" for k in fields)
         vals = list(fields.values()) + [time.time(), project_id]

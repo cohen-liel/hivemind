@@ -125,8 +125,9 @@ async def isolated_query(
         f"max_turns={max_turns}, budget=${max_budget_usd}"
     )
 
-    # Queue for streaming events from isolated thread → caller
-    stream_queue: asyncio.Queue[_StreamEvent] = asyncio.Queue()
+    # Queue for streaming events from isolated thread → caller.
+    # Bounded to prevent unbounded memory growth if the drain task falls behind.
+    stream_queue: asyncio.Queue[_StreamEvent] = asyncio.Queue(maxsize=500)
 
     def _make_bridged_stream_cb():
         """Create a stream callback that bridges to the caller's loop."""
@@ -136,11 +137,12 @@ async def isolated_query(
         async def _bridged_stream(text: str):
             try:
                 caller_loop.call_soon_threadsafe(
-                    stream_queue.put_nowait,
-                    _StreamEvent(kind="stream", payload=text),
+                    lambda t=text: stream_queue.put_nowait(
+                        _StreamEvent(kind="stream", payload=t)
+                    ) if not stream_queue.full() else None,
                 )
             except Exception:
-                pass  # Caller loop may be closing
+                pass  # Caller loop may be closing, or queue full
 
         return _bridged_stream
 
@@ -152,11 +154,12 @@ async def isolated_query(
         async def _bridged_tool(tool_name: str, tool_info: str, tool_input: dict):
             try:
                 caller_loop.call_soon_threadsafe(
-                    stream_queue.put_nowait,
-                    _StreamEvent(kind="tool_use", payload=(tool_name, tool_info, tool_input)),
+                    lambda tn=tool_name, ti=tool_info, tinp=tool_input: stream_queue.put_nowait(
+                        _StreamEvent(kind="tool_use", payload=(tn, ti, tinp))
+                    ) if not stream_queue.full() else None,
                 )
             except Exception:
-                pass
+                pass  # Caller loop may be closing, or queue full
 
         return _bridged_tool
 
