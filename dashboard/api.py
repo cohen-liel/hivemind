@@ -220,6 +220,83 @@ def create_app() -> FastAPI:
                     return JSONResponse({"error": "Unauthorized"}, status_code=401)
             return await call_next(request)
 
+    # --- Request body size limit ---
+    _MAX_BODY_SIZE = int(os.getenv("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024)))  # 1MB default
+
+    @app.middleware("http")
+    async def body_size_limit(request: Request, call_next):
+        """Reject requests with oversized bodies to prevent memory exhaustion."""
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > _MAX_BODY_SIZE:
+            return JSONResponse(
+                {"error": f"Request body too large. Maximum is {_MAX_BODY_SIZE // 1024}KB."},
+                status_code=413,
+            )
+        return await call_next(request)
+
+    # --- Rate limiting middleware ---
+    # Simple in-memory rate limiter per IP address
+    _rate_limit_store: dict[str, list[float]] = {}  # ip -> list of timestamps
+    _RATE_LIMIT_WINDOW = 60  # seconds
+    _RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "120"))  # per window
+    _RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "30"))  # max burst in 5s
+    _RATE_LIMIT_EXEMPT = {"/api/health", "/api/stats"}  # endpoints exempt from rate limiting
+
+    @app.middleware("http")
+    async def rate_limit_middleware(request: Request, call_next):
+        """Per-IP rate limiting with sliding window and burst protection."""
+        # Skip non-API routes and exempt endpoints
+        if not request.url.path.startswith("/api/") or request.url.path in _RATE_LIMIT_EXEMPT:
+            return await call_next(request)
+
+        # Get client IP (support X-Forwarded-For for reverse proxy)
+        client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if not client_ip:
+            client_ip = request.client.host if request.client else "unknown"
+
+        now = time.time()
+        timestamps = _rate_limit_store.get(client_ip, [])
+
+        # Clean old timestamps outside the window
+        timestamps = [t for t in timestamps if now - t < _RATE_LIMIT_WINDOW]
+
+        # Check window limit
+        if len(timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
+            logger.warning(f"Rate limit exceeded for {client_ip}: {len(timestamps)} requests in {_RATE_LIMIT_WINDOW}s")
+            return JSONResponse(
+                {"error": "Rate limit exceeded. Please slow down."},
+                status_code=429,
+                headers={"Retry-After": str(_RATE_LIMIT_WINDOW)},
+            )
+
+        # Check burst limit (last 5 seconds)
+        recent_burst = sum(1 for t in timestamps if now - t < 5)
+        if recent_burst >= _RATE_LIMIT_BURST:
+            logger.warning(f"Burst limit exceeded for {client_ip}: {recent_burst} requests in 5s")
+            return JSONResponse(
+                {"error": "Too many requests in a short time. Please wait a moment."},
+                status_code=429,
+                headers={"Retry-After": "5"},
+            )
+
+        timestamps.append(now)
+        _rate_limit_store[client_ip] = timestamps
+
+        # Periodic cleanup of stale IPs (every ~100 requests)
+        if len(_rate_limit_store) > 100 and hash(client_ip) % 50 == 0:
+            stale_ips = [
+                ip for ip, ts in _rate_limit_store.items()
+                if not ts or now - ts[-1] > _RATE_LIMIT_WINDOW * 2
+            ]
+            for ip in stale_ips:
+                del _rate_limit_store[ip]
+
+        response = await call_next(request)
+        response.headers["X-RateLimit-Remaining"] = str(
+            max(0, _RATE_LIMIT_MAX_REQUESTS - len(timestamps))
+        )
+        return response
+
     # --- Request ID middleware for tracing ---
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):

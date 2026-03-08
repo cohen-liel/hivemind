@@ -295,17 +295,23 @@ class OrchestratorManager:
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
 
-    def _detect_stuck(self) -> bool:
-        """Detect if the orchestrator is repeating itself (stuck in a loop).
+    def _detect_stuck(self) -> dict | None:
+        """Detect if the orchestrator is stuck and suggest an escalation strategy.
 
-        Checks two signals:
+        Returns None if not stuck, or a dict with:
+          - signal: str — which signal triggered
+          - severity: 'warning' | 'critical'
+          - strategy: str — suggested escalation action
+          - details: str — human-readable explanation
+
+        Checks five signals:
         1. Orchestrator text similarity: last N responses are nearly identical
-        2. Error-repeat: same agent failing with the same error 3+ consecutive times
+        2. Error-repeat: same agent failing with the same error 3+ times
+        3. Circular delegations: same agent+task pattern repeating
+        4. No file progress: multiple rounds with no new file changes
+        5. Cost runaway: spending accelerating without progress
         """
         # --- Signal 1: orchestrator response similarity ---
-        # Search the full log for orchestrator entries (not just last N*2) because
-        # in multi-agent sessions each round adds 3-5 sub-agent messages, so a small
-        # window misses all orchestrator responses entirely.
         recent = [
             m.content for m in list(self.conversation_log)
             if m.agent_name == "orchestrator" and m.content
@@ -323,11 +329,19 @@ class OrchestratorManager:
                     f"[{self.project_id}] Stuck detected (text similarity): "
                     f"last {len(recent)} orchestrator responses are >{STUCK_SIMILARITY_THRESHOLD:.0%} similar"
                 )
-                return True
+                return {
+                    "signal": "text_similarity",
+                    "severity": "critical",
+                    "strategy": "change_approach",
+                    "details": (
+                        f"Last {len(recent)} orchestrator responses are >85% similar. "
+                        "The orchestrator is repeating the same delegations. "
+                        "Try: (1) different agent for the task, (2) simpler sub-task, "
+                        "(3) ask researcher to investigate the blocker."
+                    ),
+                }
 
-        # --- Signal 2: repeated identical failures in shared context ---
-        # If the last 3+ context entries are all FAILUREs with nearly the same message,
-        # the team is stuck retrying the same broken approach.
+        # --- Signal 2: repeated identical failures ---
         if len(self.shared_context) >= 3:
             recent_ctx = self.shared_context[-6:]
             error_signatures: list[str] = []
@@ -335,7 +349,6 @@ class OrchestratorManager:
                 for line in ctx.split("\n"):
                     stripped = line.strip()
                     if stripped.startswith("Status: FAILED") or stripped.startswith("BLOCKED"):
-                        # Use first 80 chars of error as signature
                         error_signatures.append(stripped[:80])
                         break
             if len(error_signatures) >= 3:
@@ -346,11 +359,101 @@ class OrchestratorManager:
                 ):
                     logger.warning(
                         f"[{self.project_id}] Stuck detected (repeated errors): "
-                        f"same failure appearing {len(error_signatures)} times in a row"
+                        f"same failure appearing {len(error_signatures)} times"
                     )
-                    return True
+                    return {
+                        "signal": "repeated_errors",
+                        "severity": "critical",
+                        "strategy": "simplify_task",
+                        "details": (
+                            f"Same error repeated {len(error_signatures)} times: "
+                            f"{error_signatures[0][:60]}... "
+                            "Try: (1) break the task into smaller pieces, "
+                            "(2) delegate researcher to find a solution, "
+                            "(3) skip this sub-task and move to the next one."
+                        ),
+                    }
 
-        return False
+        # --- Signal 3: circular delegations ---
+        # Check if the same agent is getting the same task pattern 3+ times
+        if len(self._completed_rounds) >= 3:
+            recent_rounds = self._completed_rounds[-6:]
+            # Extract agent patterns from round summaries like "Round 5: developer(OK), reviewer(ERR)"
+            patterns = []
+            for r in recent_rounds:
+                # Normalize: extract just the agent names and statuses
+                parts = r.split(": ", 1)
+                if len(parts) == 2:
+                    patterns.append(parts[1].strip().lower())
+            if len(patterns) >= 3:
+                # Check if last 3 patterns are identical
+                if patterns[-1] == patterns[-2] == patterns[-3]:
+                    logger.warning(
+                        f"[{self.project_id}] Stuck detected (circular delegations): "
+                        f"same pattern '{patterns[-1]}' repeated 3 times"
+                    )
+                    return {
+                        "signal": "circular_delegations",
+                        "severity": "warning",
+                        "strategy": "change_agents",
+                        "details": (
+                            f"Same delegation pattern repeated 3 times: {patterns[-1]}. "
+                            "Try: (1) use different agents, (2) change the task description, "
+                            "(3) add more context about what's failing."
+                        ),
+                    }
+
+        # --- Signal 4: no file progress ---
+        # If 3+ rounds passed with no file changes, we're spinning wheels
+        if len(self._completed_rounds) >= 4:
+            no_progress_count = 0
+            for ctx in self.shared_context[-8:]:
+                if "Files changed:" in ctx and "(none)" in ctx:
+                    no_progress_count += 1
+                elif "REPORTS ONLY" in ctx or "wrote REPORTS but did NOT modify" in ctx:
+                    no_progress_count += 1
+            if no_progress_count >= 3:
+                logger.warning(
+                    f"[{self.project_id}] Stuck detected (no file progress): "
+                    f"{no_progress_count} rounds without file changes"
+                )
+                return {
+                    "signal": "no_file_progress",
+                    "severity": "warning",
+                    "strategy": "force_implementation",
+                    "details": (
+                        f"{no_progress_count} rounds without any file changes. "
+                        "Agents are producing reports but not implementing. "
+                        "Try: (1) give developer a very specific file+function to create, "
+                        "(2) provide example code in the context, "
+                        "(3) reduce the scope to a single file."
+                    ),
+                }
+
+        # --- Signal 5: cost runaway without progress ---
+        # If we've spent >50% of budget but completed <25% of expected rounds
+        if self._current_loop >= 5 and self.total_cost_usd > 0:
+            from config import MAX_BUDGET_USD
+            budget_used_pct = self.total_cost_usd / MAX_BUDGET_USD
+            progress_pct = self._current_loop / MAX_ORCHESTRATOR_LOOPS
+            if budget_used_pct > 0.5 and progress_pct < 0.25:
+                logger.warning(
+                    f"[{self.project_id}] Stuck detected (cost runaway): "
+                    f"{budget_used_pct:.0%} budget used at {progress_pct:.0%} progress"
+                )
+                return {
+                    "signal": "cost_runaway",
+                    "severity": "critical",
+                    "strategy": "reduce_scope",
+                    "details": (
+                        f"Spent {budget_used_pct:.0%} of budget but only {progress_pct:.0%} through rounds. "
+                        "Cost is accelerating without proportional progress. "
+                        "Try: (1) reduce task scope, (2) use fewer agents per round, "
+                        "(3) give agents shorter, more focused tasks."
+                    ),
+                }
+
+        return None
 
     def _read_project_manifest(self) -> str:
         """Read .nexus/PROJECT_MANIFEST.md — the team's persistent shared memory.
@@ -1381,14 +1484,36 @@ class OrchestratorManager:
                 except Exception as e:
                     logger.debug(f"[{self.project_id}] Auto-commit check failed (non-critical): {e}")
 
-                # Check stuck detection
-                if self._detect_stuck():
-                    await self._notify(
-                        f"🔁 Agents appear stuck in a loop.\n"
-                        f"Use /talk orchestrator <message> to intervene, or /stop to end."
-                    )
-                    await self._self_pause("stuck detection")
-                    continue
+                # Check stuck detection (enhanced with auto-escalation)
+                stuck_info = self._detect_stuck()
+                if stuck_info:
+                    severity = stuck_info['severity']
+                    signal = stuck_info['signal']
+                    details = stuck_info['details']
+                    strategy = stuck_info['strategy']
+
+                    if severity == 'critical':
+                        # Critical: pause and notify user
+                        await self._notify(
+                            f"🔁 **Stuck detected** ({signal})\n\n"
+                            f"{details}\n\n"
+                            f"Suggested strategy: **{strategy}**\n"
+                            f"Use /talk orchestrator <message> to intervene, or /stop to end."
+                        )
+                        await self._self_pause(f"stuck detection: {signal}")
+                        continue
+                    else:
+                        # Warning: inject escalation hint into the review prompt
+                        # but don't pause — let the orchestrator try to self-correct
+                        self._stuck_escalation_hint = (
+                            f"⚠️ STUCK WARNING ({signal}): {details}\n"
+                            f"Suggested strategy: {strategy}. "
+                            f"You MUST change your approach this round — do NOT repeat the same delegations."
+                        )
+                        logger.warning(
+                            f"[{self.project_id}] Stuck warning ({signal}): "
+                            f"injecting escalation hint into review prompt"
+                        )
 
                 # ═══ EVALUATOR-REFLECT-REFINE LOOP ═══
                 # Before sending results to the orchestrator, automatically run
@@ -2946,6 +3071,14 @@ class OrchestratorManager:
                     "Review the results above and decide what to do next.\n"
                     "Create <delegate> blocks for any remaining work."
                 )
+
+        # ── Inject stuck escalation hint if detected ──
+        hint = getattr(self, '_stuck_escalation_hint', None)
+        if hint:
+            parts.append(f"\n{'='*50}")
+            parts.append(hint)
+            parts.append(f"{'='*50}")
+            self._stuck_escalation_hint = None  # Clear after injection
 
         return "\n".join(parts)
 
