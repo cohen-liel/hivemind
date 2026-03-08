@@ -66,6 +66,9 @@ def _get(key: str, default: str, type_fn: Callable[[str], T] = str) -> T:
 # CORS origins (comma-separated)
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()]
 
+# Claude CLI path — configurable for Docker / non-standard installations
+CLAUDE_CLI_PATH: str = os.getenv("CLAUDE_CLI_PATH", "claude")
+
 # Projects
 PROJECTS_BASE_DIR = Path(os.getenv("CLAUDE_PROJECTS_DIR", "~/Downloads")).expanduser()
 try:

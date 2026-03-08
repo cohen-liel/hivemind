@@ -8,13 +8,15 @@ services:
     volumes:
       # Persist session database across restarts
       - ./data:/app/data
-      # Mount projects directory (scoped — NOT the entire home)
-      - ${CLAUDE_PROJECTS_DIR:-~/claude-projects}:/projects:ro
+      # Mount projects directory (read-write — agents need to create/edit files)
+      - ${CLAUDE_PROJECTS_DIR:-~/claude-projects}:/projects
     env_file:
       - .env
     environment:
       - CLAUDE_PROJECTS_DIR=/projects
       - CONVERSATION_STORE_DIR=/app/data
+      # Pass ANTHROPIC_API_KEY from host .env to container
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/stats"]
       interval: 30s
@@ -24,10 +26,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 2g
           cpus: "2.0"
         reservations:
-          memory: 256m
+          memory: 512m
           cpus: "0.5"
     logging:
       driver: json-file

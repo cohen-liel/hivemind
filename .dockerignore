@@ -35,6 +35,7 @@ test_simulation.py
 # Documentation & project metadata
 README.md
 .nexus/
+.claude/plans/
 
 # OS files
 .DS_Store
