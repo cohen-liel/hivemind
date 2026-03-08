@@ -5,6 +5,7 @@ export const AGENT_ICONS: Record<string, string> = {
   reviewer: '\u{1F50D}',
   tester: '\u{1F9EA}',
   devops: '\u{2699}\uFE0F',
+  researcher: '\u{1F50E}',
 };
 
 export const AGENT_LABELS: Record<string, string> = {
@@ -12,6 +13,7 @@ export const AGENT_LABELS: Record<string, string> = {
   reviewer: 'Reviewer',
   tester: 'Tester',
   devops: 'DevOps',
+  researcher: 'Researcher',
   orchestrator: 'Orchestrator',
 };
 
@@ -20,6 +22,7 @@ export const AGENT_COLORS: Record<string, { border: string; bg: string; text: st
   reviewer: { border: 'border-l-purple-500', bg: 'bg-purple-500', text: 'text-purple-400' },
   tester: { border: 'border-l-amber-500', bg: 'bg-amber-500', text: 'text-amber-400' },
   devops: { border: 'border-l-cyan-500', bg: 'bg-cyan-500', text: 'text-cyan-400' },
+  researcher: { border: 'border-l-emerald-500', bg: 'bg-emerald-500', text: 'text-emerald-400' },
   orchestrator: { border: 'border-l-gray-500', bg: 'bg-gray-500', text: 'text-gray-400' },
 };
 

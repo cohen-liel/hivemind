@@ -71,23 +71,13 @@ SKILL_AGENT_MAP: dict[str, str] = {
     "investor-materials": "researcher",
     "strategic-compact": "researcher",
     "weather": "researcher",
-    "xurl": "researcher",
 
     # Integrations — developer
     "coding-agent": "developer",
     "github": "developer",
     "gh-issues": "developer",
-    "discord": "developer",
-    "slack": "developer",
-    "slack-gif-creator": "developer",
-    "notion": "developer",
-    "obsidian": "developer",
-    "trello": "developer",
     "apple-notes": "developer",
     "apple-reminders": "developer",
-    "imsg": "developer",
-    "spotify-player": "developer",
-    "voice-call": "developer",
 
     # Document/media creation — developer
     "pdf": "developer",
@@ -98,15 +88,14 @@ SKILL_AGENT_MAP: dict[str, str] = {
     "canvas-design": "developer",
     "algorithmic-art": "developer",
     "theme-factory": "developer",
-    "openai-image-gen": "developer",
     "openai-whisper": "developer",
     "video-frames": "developer",
     "camsnap": "developer",
     "peekaboo": "developer",
     "internal-comms": "developer",
     "prose": "developer",
-    "gemini": "developer",
     "oracle": "developer",
+    "slack-gif-creator": "developer",
 
     # Orchestration utilities
     "session-logs": "orchestrator",

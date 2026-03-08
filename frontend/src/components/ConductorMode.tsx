@@ -13,10 +13,11 @@ interface Props {
 
 // --- Agent accent lookup ---
 const ACCENTS: Record<string, { color: string; glow: string }> = {
-  developer: { color: '#638cff', glow: 'rgba(99,140,255,0.4)' },
-  reviewer:  { color: '#a78bfa', glow: 'rgba(167,139,250,0.4)' },
-  tester:    { color: '#f5a623', glow: 'rgba(245,166,35,0.4)' },
-  devops:    { color: '#22d3ee', glow: 'rgba(34,211,238,0.4)' },
+  developer:  { color: '#638cff', glow: 'rgba(99,140,255,0.4)' },
+  reviewer:   { color: '#a78bfa', glow: 'rgba(167,139,250,0.4)' },
+  tester:     { color: '#f5a623', glow: 'rgba(245,166,35,0.4)' },
+  devops:     { color: '#22d3ee', glow: 'rgba(34,211,238,0.4)' },
+  researcher: { color: '#34d399', glow: 'rgba(52,211,153,0.4)' },
   orchestrator: { color: '#8b90a5', glow: 'rgba(139,144,165,0.3)' },
 };
 function accent(name: string) { return ACCENTS[name] || ACCENTS.orchestrator; }
