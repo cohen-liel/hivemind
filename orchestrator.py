@@ -1066,7 +1066,14 @@ class OrchestratorManager:
                 delegations = self._parse_delegations(response.text)
                 logger.info(f"[{self.project_id}] Parsed {len(delegations)} delegations: {[f'{d.agent}:{d.task[:40]}' for d in delegations]}")
 
-                # Emit delegation events
+                # Mark delegated agents as queued (state=working) immediately so the
+                # frontend never shows STANDBY between delegation and agent_started events.
+                for d in delegations:
+                    self.agent_states[d.agent] = {
+                        "state": "working",
+                        "task": d.task[:300],
+                    }
+                # Emit delegation events (frontend will confirm 'working' state)
                 for d in delegations:
                     await self._emit_event(
                         "delegation",
@@ -1213,12 +1220,16 @@ class OrchestratorManager:
                 self.is_running = False
             # Always emit project_status so frontend knows the state changed
             await self._emit_event("project_status", status="paused" if self.is_paused else "idle")
-            # Reset all agent states to idle
+            # Reset all agent states to idle — clear task so page-refresh doesn't
+            # show STANDBY with a stale task description from the previous round.
             for agent_name in list(self.agent_states.keys()):
+                prev = self.agent_states.get(agent_name, {})
                 self.agent_states[agent_name] = {
-                    **self.agent_states.get(agent_name, {}),
                     "state": "idle",
                     "current_tool": None,
+                    # Preserve accumulated cost/turns for the stats display
+                    "cost": prev.get("cost", 0),
+                    "turns": prev.get("turns", 0),
                 }
             # NOTE: _on_task_done callback handles auto-restart if queue has pending messages
 

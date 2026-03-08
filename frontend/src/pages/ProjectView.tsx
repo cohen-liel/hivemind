@@ -241,16 +241,19 @@ export default function ProjectView() {
           id: nextId(), type: 'delegation', timestamp: event.timestamp,
           from_agent: event.from_agent, to_agent: event.to_agent, task: event.task,
         }]);
-        // Mark target agent as recently delegated to (for pulse animation)
+        // Optimistically mark delegated agent as 'working' immediately so the UI
+        // never shows STANDBY between the delegation event and agent_started.
         if (event.to_agent) {
           setAgentStates(prev => ({
             ...prev,
             [event.to_agent!]: {
               ...prev[event.to_agent!],
               name: event.to_agent!,
+              state: 'working',
+              task: event.task ?? prev[event.to_agent!]?.task,
               delegated_from: event.from_agent,
               delegated_at: Date.now(),
-              task: event.task ?? prev[event.to_agent!]?.task,
+              current_tool: undefined,
             },
           }));
         }
@@ -303,10 +306,12 @@ export default function ProjectView() {
             icon: '/favicon.ico',
           });
         }
+        // Preserve 'done'/'error' states — only reset agents stuck in 'working'
+        // so the panel shows which agents actually ran after the task completes.
         setAgentStates(prev => {
           const reset: Record<string, AgentStateType> = {};
           for (const [k, v] of Object.entries(prev)) {
-            reset[k] = { ...v, state: 'idle', current_tool: undefined };
+            reset[k] = { ...v, state: v.state === 'working' ? 'idle' : v.state, current_tool: undefined };
           }
           return reset;
         });
@@ -316,12 +321,21 @@ export default function ProjectView() {
 
       case 'project_status':
         loadProject();
-        // When project goes idle, reset all agent states so UI doesn't show stale "working"
-        if (event.status === 'idle') {
+        if (event.status === 'running') {
+          // New task starting — wipe previous round's done/error states for a clean slate
           setAgentStates(prev => {
             const reset: Record<string, AgentStateType> = {};
             for (const [k, v] of Object.entries(prev)) {
-              reset[k] = { ...v, state: 'idle', current_tool: undefined };
+              reset[k] = { ...v, state: 'idle', current_tool: undefined, task: undefined, last_result: undefined };
+            }
+            return reset;
+          });
+        } else if (event.status === 'idle') {
+          // Task ended — only reset stale 'working' states; preserve done/error
+          setAgentStates(prev => {
+            const reset: Record<string, AgentStateType> = {};
+            for (const [k, v] of Object.entries(prev)) {
+              reset[k] = { ...v, state: v.state === 'working' ? 'idle' : v.state, current_tool: undefined };
             }
             return reset;
           });
