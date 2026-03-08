@@ -120,6 +120,13 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 - **4 Tier 3 architectural items** (15-20 hours): DB connection separation, session recovery, TypeScript strict
 - 4-week phased implementation plan with recommended execution order
 
+### Competition Strategy — see `.nexus/COMPETITION_STRATEGY.md`
+- README rewrite template with hook → problem → solution → visual proof structure
+- 90-second demo flow choreography (timed sequence for live presentations)
+- Competitive matrix vs CrewAI, AutoGen, LangGraph, Devin, Bedrock, Vertex AI
+- Branding recommendation: rename to **Nexus** (already self-adopted in codebase via `.nexus/`)
+- 48-hour action plan: 12 items prioritized by impact (demo GIF, README, architecture docs)
+
 ## Security Audit — 2026-03-08
 Full report: `.nexus/SECURITY_AUDIT.md`
 
