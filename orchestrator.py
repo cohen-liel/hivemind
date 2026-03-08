@@ -1164,7 +1164,10 @@ class OrchestratorManager:
                 except asyncio.CancelledError:
                     if self._stop_event.is_set():
                         raise  # Real cancellation — propagate up
-                    # Spurious anyio cancel-scope leak — retry this round
+                    # Spurious anyio cancel-scope leak — uncancel and retry
+                    ct = asyncio.current_task()
+                    if ct is not None and hasattr(ct, 'uncancel'):
+                        ct.uncancel()
                     _anyio_retries += 1
                     logger.warning(
                         f"[{self.project_id}] Spurious CancelledError before/during sub-agents "
@@ -1221,6 +1224,10 @@ class OrchestratorManager:
                     f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
                 )
             else:
+                # Spurious — uncancel so we can keep running
+                ct = asyncio.current_task()
+                if ct is not None and hasattr(ct, 'uncancel'):
+                    ct.uncancel()
                 logger.warning(
                     f"Orchestrator loop got SPURIOUS CancelledError for {self.project_name} "
                     f"(stop_event not set — likely anyio cancel-scope leak). "
@@ -1608,6 +1615,8 @@ class OrchestratorManager:
                 if role_tasks:
                     _wait_timeout = AGENT_TIMEOUT_SECONDS + 60  # agent timeout + buffer
                     remaining = set(role_tasks.values())
+                    still_pending = set()  # Initialize — may not be set if loop exits via break
+                    _cancel_retries = 0
                     while remaining:
                         try:
                             done, still_pending = await asyncio.wait(
@@ -1620,13 +1629,26 @@ class OrchestratorManager:
                             if self._stop_event.is_set():
                                 raise  # Real cancellation — propagate
                             # Spurious anyio cancel-scope leak — DON'T kill children!
-                            # Filter out completed tasks and re-wait for the rest.
+                            # The current task is marked as cancelled — we MUST uncancel
+                            # it, otherwise asyncio.wait() will immediately raise again.
+                            ct = asyncio.current_task()
+                            if ct is not None and hasattr(ct, 'uncancel'):
+                                ct.uncancel()
+                            _cancel_retries += 1
+                            if _cancel_retries > 5:
+                                # Too many spurious cancels — bail out and let caller handle
+                                logger.error(
+                                    f"[{self.project_id}] Too many spurious CancelledErrors "
+                                    f"({_cancel_retries}) — giving up on asyncio.wait"
+                                )
+                                break
                             remaining = {t for t in remaining if not t.done()}
                             if not remaining:
                                 break
                             logger.warning(
                                 f"[{self.project_id}] Spurious CancelledError in asyncio.wait — "
-                                f"{len(remaining)} agent(s) still running, re-waiting..."
+                                f"{len(remaining)} agent(s) still running, re-waiting "
+                                f"(attempt {_cancel_retries})..."
                             )
                             continue
 
@@ -1683,7 +1705,10 @@ class OrchestratorManager:
                 raise
             else:
                 # Spurious cancellation — DON'T kill children.
-                # Wait for any still-running tasks to complete.
+                # Uncancel our task so we can keep awaiting.
+                ct = asyncio.current_task()
+                if ct is not None and hasattr(ct, 'uncancel'):
+                    ct.uncancel()
                 logger.warning(
                     f"[{self.project_id}] _run_sub_agents got SPURIOUS CancelledError "
                     f"(anyio cancel-scope leak). Waiting for agents to finish..."
@@ -1699,7 +1724,10 @@ class OrchestratorManager:
                                     if not t.done():
                                         t.cancel()
                                 raise
-                            # Another spurious cancel — ignore and continue
+                            # Another spurious cancel — uncancel again and continue
+                            ct2 = asyncio.current_task()
+                            if ct2 is not None and hasattr(ct2, 'uncancel'):
+                                ct2.uncancel()
         finally:
             heartbeat_task.cancel()
             try:

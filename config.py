@@ -28,7 +28,7 @@ T = TypeVar("T")
 # ── Load settings overrides from data/settings_overrides.json ────────
 _PROJECT_ROOT: Path = Path(__file__).resolve().parent
 _OVERRIDES: dict[str, Any] = {}
-_overrides_path = _PROJECT_ROOT / "data" / "settings_overrides.json"
+_overrides_path: Path = _PROJECT_ROOT / "data" / "settings_overrides.json"
 if _overrides_path.exists():
     try:
         _OVERRIDES = json.loads(_overrides_path.read_text())
@@ -64,7 +64,7 @@ def _get(key: str, default: str, type_fn: Callable[[str], T] = str) -> T:
 
 
 # CORS origins (comma-separated)
-CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()]
+CORS_ORIGINS: list[str] = [x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()]
 
 # Claude CLI path — configurable for Docker / non-standard installations
 CLAUDE_CLI_PATH: str = os.getenv("CLAUDE_CLI_PATH", "claude")
@@ -77,36 +77,36 @@ except OSError:
     pass  # Directory may already exist with restricted permissions
 
 # Agent limits
-MAX_TURNS_PER_CYCLE = _get("MAX_TURNS_PER_CYCLE", "200", int)
-MAX_BUDGET_USD = _get("MAX_BUDGET_USD", "100.0", float)
-AGENT_TIMEOUT_SECONDS = _get("AGENT_TIMEOUT_SECONDS", "300", int)
-SESSION_TIMEOUT_SECONDS = _get("SESSION_TIMEOUT_SECONDS", "28800", int)  # 8h default
+MAX_TURNS_PER_CYCLE: int = _get("MAX_TURNS_PER_CYCLE", "200", int)
+MAX_BUDGET_USD: float = _get("MAX_BUDGET_USD", "100.0", float)
+AGENT_TIMEOUT_SECONDS: int = _get("AGENT_TIMEOUT_SECONDS", "300", int)
+SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "28800", int)  # 8h default
 
 # SDK settings
-SDK_MAX_RETRIES = 2
-SDK_MAX_TURNS_PER_QUERY = _get("SDK_MAX_TURNS_PER_QUERY", "30", int)
-SDK_MAX_BUDGET_PER_QUERY = _get("SDK_MAX_BUDGET_PER_QUERY", "20.0", float)
+SDK_MAX_RETRIES: int = 2
+SDK_MAX_TURNS_PER_QUERY: int = _get("SDK_MAX_TURNS_PER_QUERY", "30", int)
+SDK_MAX_BUDGET_PER_QUERY: float = _get("SDK_MAX_BUDGET_PER_QUERY", "20.0", float)
 
 # Session persistence
-SESSION_EXPIRY_HOURS = _get("SESSION_EXPIRY_HOURS", "24", int)
+SESSION_EXPIRY_HOURS: int = _get("SESSION_EXPIRY_HOURS", "24", int)
 
 # Stuck detection
-STUCK_SIMILARITY_THRESHOLD = 0.85
-STUCK_WINDOW_SIZE = 4
-MAX_ORCHESTRATOR_LOOPS = _get("MAX_ORCHESTRATOR_LOOPS", "50", int)
-RATE_LIMIT_SECONDS = _get("RATE_LIMIT_SECONDS", "3.0", float)
+STUCK_SIMILARITY_THRESHOLD: float = 0.85
+STUCK_WINDOW_SIZE: int = 4
+MAX_ORCHESTRATOR_LOOPS: int = _get("MAX_ORCHESTRATOR_LOOPS", "50", int)
+RATE_LIMIT_SECONDS: float = _get("RATE_LIMIT_SECONDS", "3.0", float)
 
 # Budget warning threshold (fraction of MAX_BUDGET_USD, e.g. 0.8 = warn at 80%)
-BUDGET_WARNING_THRESHOLD = _get("BUDGET_WARNING_THRESHOLD", "0.8", float)
+BUDGET_WARNING_THRESHOLD: float = _get("BUDGET_WARNING_THRESHOLD", "0.8", float)
 
 # Stall detection for proactive alerts (seconds)
-STALL_ALERT_SECONDS = _get("STALL_ALERT_SECONDS", "60", int)
+STALL_ALERT_SECONDS: int = _get("STALL_ALERT_SECONDS", "60", int)
 
 # Pipeline settings
-PIPELINE_MAX_STEPS = _get("PIPELINE_MAX_STEPS", "10", int)
+PIPELINE_MAX_STEPS: int = _get("PIPELINE_MAX_STEPS", "10", int)
 
 # Scheduler check interval (seconds)
-SCHEDULER_CHECK_INTERVAL = _get("SCHEDULER_CHECK_INTERVAL", "30", int)
+SCHEDULER_CHECK_INTERVAL: int = _get("SCHEDULER_CHECK_INTERVAL", "30", int)
 
 # Conversation store / session DB
 STORE_DIR = Path(os.getenv("CONVERSATION_STORE_DIR", str(_PROJECT_ROOT / "data"))).expanduser()
@@ -207,23 +207,21 @@ def validate_config() -> list[str]:
     return warnings
 
 # Predefined projects (from env JSON or hardcoded)
+_DEFAULT_PROJECTS: dict[str, str] = {
+    "web-claude-bot": "~/claude-projects/web-claude-bot",
+    "family-finance": "~/claude-projects/family-finance",
+}
 _env_projects = os.getenv("PREDEFINED_PROJECTS", "")
 if _env_projects:
     try:
-        PREDEFINED_PROJECTS: dict = json.loads(_env_projects)
+        PREDEFINED_PROJECTS: dict[str, str] = json.loads(_env_projects)
     except Exception:
-        PREDEFINED_PROJECTS = {
-            "web-claude-bot": "~/claude-projects/web-claude-bot",
-            "family-finance": "~/claude-projects/family-finance",
-        }
+        PREDEFINED_PROJECTS = _DEFAULT_PROJECTS.copy()
 else:
-    PREDEFINED_PROJECTS = {
-        "web-claude-bot": "~/claude-projects/web-claude-bot",
-        "family-finance": "~/claude-projects/family-finance",
-    }
+    PREDEFINED_PROJECTS = _DEFAULT_PROJECTS.copy()
 
 # Default agent roles (kept for display/reference)
-DEFAULT_AGENTS = [
+DEFAULT_AGENTS: list[dict[str, str]] = [
     {"name": "orchestrator", "role": "Orchestrator"},
     {"name": "developer", "role": "Developer"},
     {"name": "reviewer", "role": "Reviewer"},
@@ -233,7 +231,7 @@ DEFAULT_AGENTS = [
 ]
 
 # --- Orchestrator system prompt ---
-ORCHESTRATOR_SYSTEM_PROMPT = (
+ORCHESTRATOR_SYSTEM_PROMPT: str = (
     "You are the Orchestrator — the strategic brain of a multi-agent software engineering team.\n\n"
 
     "═══ YOUR ROLE ═══\n"
@@ -364,7 +362,7 @@ ORCHESTRATOR_SYSTEM_PROMPT = (
 )
 
 # --- Solo agent prompt (when user selects 1 agent) ---
-SOLO_AGENT_PROMPT = (
+SOLO_AGENT_PROMPT: str = (
     "You are a world-class software engineer working directly on a project.\n\n"
 
     "═══ YOUR APPROACH ═══\n"

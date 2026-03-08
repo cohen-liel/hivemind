@@ -220,6 +220,16 @@ def create_app() -> FastAPI:
                     return JSONResponse({"error": "Unauthorized"}, status_code=401)
             return await call_next(request)
 
+    # --- Request ID middleware for tracing ---
+    @app.middleware("http")
+    async def add_request_id(request: Request, call_next):
+        """Attach a unique request_id to every HTTP request for log tracing."""
+        request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex[:12])
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
     # --- Health check ---
 
     @app.get("/api/health")
@@ -550,6 +560,19 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": "Not initialized"}, status_code=503)
 
         project_dir = os.path.expanduser(directory)
+
+        # Security: restrict directory creation to home dir or configured projects base
+        from config import PROJECTS_BASE_DIR
+        resolved_dir = Path(project_dir).resolve()
+        home = Path.home().resolve()
+        projects_base = PROJECTS_BASE_DIR.resolve()
+        allowed_roots = [home, projects_base]
+        if not any(resolved_dir.is_relative_to(root) for root in allowed_roots):
+            return JSONResponse(
+                {"error": "Project directory must be within your home directory or configured projects base."},
+                status_code=403,
+            )
+
         try:
             os.makedirs(project_dir, exist_ok=True)
         except OSError as e:
@@ -791,7 +814,7 @@ def create_app() -> FastAPI:
         projects_base = PROJECTS_BASE_DIR.resolve()
         allowed_roots = [home, projects_base]
         if not any(
-            target == root or str(target).startswith(str(root) + os.sep)
+            target == root or target.is_relative_to(root)
             for root in allowed_roots
         ):
             return JSONResponse(
@@ -826,9 +849,17 @@ def create_app() -> FastAPI:
             "entries": entries,
         }
 
+    # --- Maximum allowed message length (security: prevent oversized payloads) ---
+    _MAX_MESSAGE_LENGTH = 50_000
+
     @app.post("/api/projects/{project_id}/message")
     async def send_message(project_id: str, req: SendMessageRequest):
         """Send message to orchestrator."""
+        if len(req.message) > _MAX_MESSAGE_LENGTH:
+            return JSONResponse(
+                {"error": f"Message too long ({len(req.message)} chars). Maximum is {_MAX_MESSAGE_LENGTH}."},
+                status_code=400,
+            )
         logger.info(f"[{project_id}] Received message: {req.message[:100]}")
         manager, _ = _find_manager(project_id)
 
@@ -866,6 +897,11 @@ def create_app() -> FastAPI:
     @app.post("/api/projects/{project_id}/talk/{agent}")
     async def talk_agent(project_id: str, agent: str, req: TalkAgentRequest):
         """Send message to specific agent."""
+        if len(req.message) > _MAX_MESSAGE_LENGTH:
+            return JSONResponse(
+                {"error": f"Message too long ({len(req.message)} chars). Maximum is {_MAX_MESSAGE_LENGTH}."},
+                status_code=400,
+            )
         manager, _ = _find_manager(project_id)
         if not manager:
             return JSONResponse({"error": "Project not active."}, status_code=404)
@@ -1061,19 +1097,25 @@ def create_app() -> FastAPI:
 
     @app.get("/api/projects/{project_id}/file")
     async def read_file(project_id: str, path: str):
-        """Read a file from the project directory."""
+        """Read a file from the project directory.
+
+        Security: resolves symlinks before path check to prevent traversal attacks.
+        Uses is_relative_to() (Python 3.9+) for safe containment check.
+        """
         project_dir = await _resolve_project_dir(project_id)
         if not project_dir:
             return {"error": "Project not found"}
 
         file_path = Path(project_dir) / path
         try:
+            # Resolve symlinks FIRST, then check containment
             file_path = file_path.resolve()
             proj_resolved = Path(project_dir).resolve()
-            if not str(file_path).startswith(str(proj_resolved)):
-                return {"error": "Path traversal not allowed"}
+            # Use is_relative_to for safe containment check (no prefix collisions)
+            if not file_path.is_relative_to(proj_resolved):
+                return JSONResponse({"error": "Path traversal not allowed"}, status_code=403)
         except Exception:
-            return {"error": "Invalid path"}
+            return JSONResponse({"error": "Invalid path"}, status_code=400)
 
         if not file_path.exists():
             return {"error": "File not found"}
@@ -1095,7 +1137,19 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
-        """WebSocket for real-time event stream with ping/pong heartbeat."""
+        """WebSocket for real-time event stream with ping/pong heartbeat.
+
+        When DASHBOARD_API_KEY is set, the client must provide the key via
+        query parameter ``?api_key=...`` to connect. Unauthorized connections
+        are rejected before the handshake completes.
+        """
+        # Security: enforce API key on WebSocket if configured
+        if DASHBOARD_API_KEY:
+            client_key = ws.query_params.get("api_key", "")
+            if client_key != DASHBOARD_API_KEY:
+                await ws.close(code=4003, reason="Unauthorized")
+                return
+
         await ws.accept()
         queue = await event_bus.subscribe()
 
