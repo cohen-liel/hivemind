@@ -1541,7 +1541,7 @@ class OrchestratorManager:
             if available_skills:
                 system_prompt += f"\n\n{available_skills}"
             max_turns = 1
-            max_budget = 0.5
+            max_budget = 1.0  # Increased from 0.5 — complex tasks need more room to think
             permission_mode = "bypassPermissions"
             tools = []  # Disable ALL tools — text-only coordinator
             logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, no tools, max_turns=1)")
@@ -1767,6 +1767,34 @@ class OrchestratorManager:
         file_changes = self._detect_file_changes()
         if file_changes and "(no file" not in file_changes:
             parts.append(f"─── WORKSPACE CHANGES (git diff --stat) ───\n{file_changes}\n")
+
+        # Extract and surface NEEDS_FOLLOWUP / BLOCKED statuses prominently
+        followup_items = []
+        blocked_items = []
+        for agent, responses in sub_results.items():
+            for response in responses:
+                text = response.text
+                for sm in ["## STATUS", "## Status"]:
+                    idx = text.find(sm)
+                    if idx >= 0:
+                        for line in text[idx:idx + 200].strip().split("\n")[1:]:
+                            if line.strip():
+                                sl = line.strip()
+                                if sl.startswith("NEEDS_FOLLOWUP"):
+                                    followup_items.append(f"  {agent}: {sl}")
+                                elif sl.startswith("BLOCKED"):
+                                    blocked_items.append(f"  {agent}: {sl}")
+                                break
+                        break
+
+        if blocked_items:
+            parts.append("─── 🚫 BLOCKED AGENTS (address these first) ───")
+            parts.extend(blocked_items)
+            parts.append("")
+        if followup_items:
+            parts.append("─── 📋 NEEDS FOLLOWUP (must act on these) ───")
+            parts.extend(followup_items)
+            parts.append("")
 
         # Cost summary
         parts.append(
