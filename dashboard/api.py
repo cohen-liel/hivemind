@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -210,15 +209,61 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # --- Optional API key middleware ---
+    DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
+    if DASHBOARD_API_KEY:
+        @app.middleware("http")
+        async def check_api_key(request: Request, call_next):
+            if request.url.path.startswith("/api/") and request.url.path not in ("/api/health", "/api/stats"):
+                key = request.headers.get("X-API-Key", "")
+                if key != DASHBOARD_API_KEY:
+                    return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return await call_next(request)
+
     # --- Health check ---
 
     @app.get("/api/health")
     async def health_check():
-        """Health check endpoint."""
+        """Enhanced health check — DB, CLI binary, disk space, and active sessions."""
+        import shutil as _shutil
+        from config import CLAUDE_CLI_PATH, STORE_DIR
+
+        # DB connectivity check
+        db_status = "error"
+        if state.session_mgr is not None:
+            try:
+                db_status = "ok" if await state.session_mgr.is_healthy() else "error"
+            except Exception:
+                db_status = "error"
+
+        # Claude CLI binary existence check
+        cli_path = CLAUDE_CLI_PATH
+        if os.sep not in cli_path and "/" not in cli_path:
+            import shlex as _shlex, shutil as _shutil2
+            cli_status = "ok" if _shutil2.which(cli_path) else "missing"
+        else:
+            cli_status = "ok" if os.path.isfile(cli_path) else "missing"
+
+        # Disk space check on the data directory
+        try:
+            usage = _shutil.disk_usage(str(STORE_DIR))
+            disk_free_gb = round(usage.free / (1024 ** 3), 2)
+        except Exception:
+            disk_free_gb = -1.0
+
+        # Active sessions count
+        active_count = sum(
+            len(sessions) for sessions in state.active_sessions.values()
+        )
+
+        overall = "ok" if db_status == "ok" and cli_status == "ok" else "degraded"
+
         return {
-            "status": "ok",
-            "db_connected": state.session_mgr is not None,
-            "sdk_ready": state.sdk_client is not None,
+            "status": overall,
+            "db": db_status,
+            "cli": cli_status,
+            "disk_free_gb": disk_free_gb,
+            "active_sessions": active_count,
         }
 
     # --- REST Endpoints ---
@@ -461,22 +506,23 @@ def create_app() -> FastAPI:
             return {"stat": "", "status": "", "diff": ""}
 
         try:
-            diff = subprocess.run(
-                ["git", "diff", "--stat", "HEAD"],
-                cwd=project_dir, capture_output=True, text=True, timeout=5,
-            )
-            status = subprocess.run(
-                ["git", "status", "--short"],
-                cwd=project_dir, capture_output=True, text=True, timeout=5,
-            )
-            full_diff = subprocess.run(
-                ["git", "diff", "HEAD"],
-                cwd=project_dir, capture_output=True, text=True, timeout=10,
-            )
+            async def _run_git(*args: str, timeout: float = 5.0) -> str:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", *args,
+                    cwd=project_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                return stdout.decode("utf-8", errors="replace")
+
+            stat_out = await _run_git("diff", "--stat", "HEAD")
+            status_out = await _run_git("status", "--short")
+            diff_out = await _run_git("diff", "HEAD", timeout=10.0)
             return {
-                "stat": diff.stdout.strip(),
-                "status": status.stdout.strip(),
-                "diff": full_diff.stdout[:50000],
+                "stat": stat_out.strip(),
+                "status": status_out.strip(),
+                "diff": diff_out[:50000],
             }
         except Exception as e:
             return {"error": str(e)}

@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -474,7 +473,7 @@ class OrchestratorManager:
 
         return None  # Completion is acceptable
 
-    def _build_final_summary(self, user_message: str, start_time: float, status: str = "Done") -> str:
+    async def _build_final_summary(self, user_message: str, start_time: float, status: str = "Done") -> str:
         """Build a clean final status message."""
         duration = time.monotonic() - start_time
         minutes = int(duration // 60)
@@ -494,7 +493,7 @@ class OrchestratorManager:
                 agents_used.append(a)
         agents_str = " → ".join(agents_used) if agents_used else "orchestrator"
 
-        file_changes = self._detect_file_changes()
+        file_changes = await self._detect_file_changes()
         changes_str = ""
         if file_changes and "(no file" not in file_changes:
             changes_str = f"\n\n📝 Changes:\n```\n{file_changes}\n```"
@@ -833,7 +832,7 @@ class OrchestratorManager:
                         f"(limit: {SESSION_TIMEOUT_SECONDS}s)"
                     )
                     await self._send_final(
-                        self._build_final_summary(
+                        await self._build_final_summary(
                             user_message, start_time,
                             status=f"Stopped (session timeout after {int(elapsed // 60)}m)"
                         )
@@ -961,10 +960,11 @@ class OrchestratorManager:
                     # Provide actionable messages for common errors
                     if "api key" in error_msg or "invalid api" in error_msg or "authentication" in error_msg:
                         await self._send_result(
-                            "🔑 *API Key Error*\n\n"
+                            "🔑 *Authentication Error*\n\n"
                             "The Claude agent can't authenticate.\n"
-                            "Make sure `ANTHROPIC_API_KEY` is set in your `.env` file.\n\n"
-                            "Get your key at: https://console.anthropic.com/"
+                            "Make sure the Claude CLI is installed and logged in.\n"
+                            "Run: claude login\n\n"
+                            "Docs: https://docs.anthropic.com/claude-code/getting-started"
                         )
                     elif "exit code 71" in error_msg or "exit code: 71" in error_msg:
                         await self._send_result(
@@ -1007,11 +1007,11 @@ class OrchestratorManager:
                         early_delegations = self._parse_delegations(response.text)
                         if early_delegations:
                             sub_results = await self._run_sub_agents(early_delegations)
-                            review = self._build_review_prompt(sub_results, self._completed_rounds)
+                            review = await self._build_review_prompt(sub_results, self._completed_rounds)
                             orchestrator_input = review
                         else:
                             # No delegates — inject rejection and force planning
-                            current_changes = self._detect_file_changes()
+                            current_changes = await self._detect_file_changes()
                             orchestrator_input = (
                                 f"⛔ TASK_COMPLETE REJECTED — the task is not fully complete yet.\n\n"
                                 f"Reason: {premature_reason}\n\n"
@@ -1031,7 +1031,7 @@ class OrchestratorManager:
                             summary=display_text[:500] if display_text.strip() else "Task completed",
                         )
                     await self._send_final(
-                        self._build_final_summary(user_message, start_time)
+                        await self._build_final_summary(user_message, start_time)
                     )
                     break
 
@@ -1109,7 +1109,7 @@ class OrchestratorManager:
                             if self._completed_rounds
                             else "  • (no rounds completed yet — this is round 1)"
                         )
-                        current_changes = self._detect_file_changes()
+                        current_changes = await self._detect_file_changes()
                         changes_line = (
                             f"\nCurrent file changes:\n{current_changes}"
                             if current_changes and "(no file" not in current_changes
@@ -1137,14 +1137,14 @@ class OrchestratorManager:
                     else:
                         # Solo mode — orchestrator handled it directly, done
                         await self._send_final(
-                            self._build_final_summary(user_message, start_time)
+                            await self._build_final_summary(user_message, start_time)
                         )
                         break
 
                 if not self.multi_agent:
                     # Single-agent mode — ignore delegations
                     await self._send_final(
-                        self._build_final_summary(user_message, start_time)
+                        await self._build_final_summary(user_message, start_time)
                     )
                     break
 
@@ -1178,7 +1178,7 @@ class OrchestratorManager:
                 self._completed_rounds.append(f"Round {loop_count}: {_round_summary}")
 
                 # Feed results back to orchestrator with round history
-                orchestrator_input = self._build_review_prompt(sub_results, self._completed_rounds)
+                orchestrator_input = await self._build_review_prompt(sub_results, self._completed_rounds)
 
         except asyncio.CancelledError:
             # Distinguish real cancellation (user pressed Stop) from spurious
@@ -1243,7 +1243,7 @@ class OrchestratorManager:
                     except Exception:
                         pass
                 await self._send_final(
-                    self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
+                    await self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
         finally:
             if not self.is_paused:
@@ -1437,7 +1437,7 @@ class OrchestratorManager:
                     self._record_response(agent_role, agent_role.capitalize(), response)
                     results.setdefault(agent_role, []).append(response)
                     # Accumulate richer shared context under the same lock
-                    self._accumulate_context(agent_role, delegation.task, response)
+                    await self._accumulate_context(agent_role, delegation.task, response)
                     # Track files this agent touched (for conflict detection)
                     touched = self._extract_touched_files(response.text)
                     files_touched.setdefault(agent_role, set()).update(touched)
@@ -1467,7 +1467,7 @@ class OrchestratorManager:
 
                 # If agent did tool-only work with no text, show what files changed
                 if "tool use" in summary.lower() and "no text output" in summary.lower():
-                    changed = self._detect_file_changes()
+                    changed = await self._detect_file_changes()
                     if changed:
                         summary += f"\n\nFiles changed:\n{changed}"
 
@@ -1689,7 +1689,7 @@ class OrchestratorManager:
         # Only return files touched by 2+ agents
         return {f: agents for f, agents in file_to_agents.items() if len(agents) > 1}
 
-    def _accumulate_context(self, agent_role: str, task: str, response: SDKResponse):
+    async def _accumulate_context(self, agent_role: str, task: str, response: SDKResponse):
         """Build rich shared context from an agent's response.
 
         Called under lock. Creates structured context entries that help
@@ -1702,30 +1702,28 @@ class OrchestratorManager:
         files_changed_git = []
         git_diff_snippet = ""
         try:
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "HEAD"],
-                cwd=self.project_dir,
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.stdout.strip():
-                files_changed_git = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
+            async def _git_acc(*args: str) -> str:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", *args,
+                    cwd=self.project_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                return stdout.decode("utf-8", errors="replace")
+
+            diff_names = await _git_acc("diff", "--name-only", "HEAD")
+            if diff_names.strip():
+                files_changed_git = [f.strip() for f in diff_names.strip().split('\n') if f.strip()]
             # Also check untracked (new) files
-            result2 = subprocess.run(
-                ["git", "ls-files", "--others", "--exclude-standard"],
-                cwd=self.project_dir,
-                capture_output=True, text=True, timeout=5,
-            )
-            if result2.stdout.strip():
-                files_changed_git.extend([f"(new) {f.strip()}" for f in result2.stdout.strip().split('\n') if f.strip()])
+            untracked = await _git_acc("ls-files", "--others", "--exclude-standard")
+            if untracked.strip():
+                files_changed_git.extend([f"(new) {f.strip()}" for f in untracked.strip().split('\n') if f.strip()])
             # Get a short diff snippet for context — helps agents know WHAT changed
             if files_changed_git:
-                result3 = subprocess.run(
-                    ["git", "diff", "--stat", "HEAD"],
-                    cwd=self.project_dir,
-                    capture_output=True, text=True, timeout=5,
-                )
-                if result3.stdout.strip():
-                    git_diff_snippet = result3.stdout.strip()[:300]
+                stat_out = await _git_acc("diff", "--stat", "HEAD")
+                if stat_out.strip():
+                    git_diff_snippet = stat_out.strip()[:300]
         except Exception:
             pass
 
@@ -2084,7 +2082,7 @@ class OrchestratorManager:
         # Use a broader regex that catches everything between the tags
         return re.sub(r"<delegate>.*?</delegate>", "", text, flags=re.DOTALL).strip()
 
-    def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]], completed_rounds: list[str] | None = None) -> str:
+    async def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]], completed_rounds: list[str] | None = None) -> str:
         """Build a structured prompt for the orchestrator to review sub-agent results.
 
         Includes manifest state, agent results, workspace changes, round history,
@@ -2159,7 +2157,7 @@ class OrchestratorManager:
                 )
 
         # ALWAYS show current file changes — most reliable way to see what happened
-        file_changes = self._detect_file_changes()
+        file_changes = await self._detect_file_changes()
         if file_changes and "(no file" not in file_changes:
             parts.append(f"─── WORKSPACE CHANGES (git diff --stat) ───\n{file_changes}\n")
 
@@ -2273,23 +2271,25 @@ class OrchestratorManager:
 
     # --- Stuck detection ---
 
-    def _detect_file_changes(self) -> str:
+    async def _detect_file_changes(self) -> str:
         """Run git status in the project dir to show what files the agent changed."""
         try:
-            result = subprocess.run(
-                ["git", "diff", "--stat", "HEAD"],
-                cwd=self.project_dir,
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.stdout.strip():
-                return result.stdout.strip()
+            async def _git(*args: str) -> str:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", *args,
+                    cwd=self.project_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                return stdout.decode("utf-8", errors="replace")
+
+            diff_out = await _git("diff", "--stat", "HEAD")
+            if diff_out.strip():
+                return diff_out.strip()
             # Also check untracked files
-            result2 = subprocess.run(
-                ["git", "status", "--short"],
-                cwd=self.project_dir,
-                capture_output=True, text=True, timeout=5,
-            )
-            return result2.stdout.strip() or "(no file changes detected)"
+            status_out = await _git("status", "--short")
+            return status_out.strip() or "(no file changes detected)"
         except Exception:
             return "(unable to detect changes)"
 

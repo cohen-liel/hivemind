@@ -1,6 +1,22 @@
-python-dotenv>=1.0
-claude-agent-sdk>=0.0.10
-aiosqlite>=0.20
-fastapi>=0.115
-uvicorn[standard]>=0.30
-websockets>=12.0
+# Core dependencies — pinned to exact versions from the active venv (2026-03-08)
+python-dotenv==1.2.2
+claude-agent-sdk==0.1.47
+aiosqlite==0.22.1
+fastapi==0.135.1
+uvicorn[standard]==0.41.0
+websockets==16.0
+# FastAPI / ASGI internals
+starlette==0.52.1
+pydantic==2.12.5
+pydantic_core==2.41.5
+# HTTP client (used by claude-agent-sdk)
+httpx==0.28.1
+httpx-sse==0.4.3
+httpcore==1.0.9
+anyio==4.12.1
+# Performance
+uvloop==0.22.1
+httptools==0.7.1
+watchfiles==1.1.1
+# SSE support
+sse-starlette==3.3.2
