@@ -7,7 +7,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Skill name → agent role auto-mapping
+# These skills are automatically appended to the agent's system prompt when delegated
 SKILL_AGENT_MAP: dict[str, str] = {
+    # Built-in Claude Code skills
     "webapp-testing": "tester",
     "frontend-design": "developer",
     "claude-api": "developer",
@@ -16,6 +18,34 @@ SKILL_AGENT_MAP: dict[str, str] = {
     "web-artifacts-builder": "developer",
     "planning-with-files": "orchestrator",
     "skill-creator": "developer",
+
+    # Backend skills — developer
+    "fastapi-backend": "developer",
+    "sqlalchemy-orm": "developer",
+    "jwt-authentication": "developer",
+    "redis-caching": "developer",
+    "celery-tasks": "developer",
+    "async-python": "developer",
+    "nodejs-express": "developer",
+    "prisma-orm": "developer",
+    "typescript-patterns": "developer",
+    "git-workflow": "developer",
+    "websockets-realtime": "developer",
+    "s3-file-storage": "developer",
+
+    # Frontend skills — developer
+    "react-typescript": "developer",
+    "nextjs-fullstack": "developer",
+    "tailwind-css": "developer",
+
+    # Infrastructure — devops
+    "docker-deployment": "devops",
+    "postgres-database": "devops",
+
+    # Quality & security — reviewer / tester
+    "security-review": "reviewer",
+    "api-design": "reviewer",
+    "pytest-patterns": "tester",
 }
 
 _skills_cache: dict[str, str] = {}
