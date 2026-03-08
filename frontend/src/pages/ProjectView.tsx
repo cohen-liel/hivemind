@@ -64,6 +64,35 @@ export default function ProjectView() {
     if (p.pending_approval) {
       setApprovalRequest(p.pending_approval);
     }
+
+    // Failsafe: merge agent_states from poll response to recover from missed WS events.
+    // Rule: only apply server state when it is non-idle (don't overwrite fresher
+    // WS 'done'/'working' data with a stale server-side 'idle' between rounds).
+    if (p.agent_states && Object.keys(p.agent_states).length > 0) {
+      setAgentStates(prev => {
+        let changed = false;
+        const updated = { ...prev };
+        for (const [name, s] of Object.entries(p.agent_states!)) {
+          const serverState = (s.state ?? 'idle') as AgentStateType['state'];
+          if (serverState === 'idle') continue;   // never downgrade on a stale server idle
+          const ourState = updated[name]?.state ?? 'idle';
+          if (ourState !== serverState) {
+            updated[name] = {
+              ...updated[name],
+              name,
+              state: serverState,
+              task: s.task ?? updated[name]?.task,
+              current_tool: s.current_tool ?? undefined,
+              cost: s.cost ?? updated[name]?.cost ?? 0,
+              turns: s.turns ?? updated[name]?.turns ?? 0,
+              duration: updated[name]?.duration ?? 0,
+            };
+            changed = true;
+          }
+        }
+        return changed ? updated : prev;
+      });
+    }
   }, [id]);
 
   const loadFiles = useCallback(async () => {
