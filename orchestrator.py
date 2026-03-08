@@ -584,6 +584,7 @@ class OrchestratorManager:
             loop_count = 0
             self._current_loop = 0
             max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
+            _completed_rounds: list[str] = []  # Track what has been done each round
 
             while self.is_running and loop_count < max_loops:
                 if self._stop_event.is_set():
@@ -822,13 +823,17 @@ class OrchestratorManager:
                             f"contains '<delegate>': {'<delegate>' in response.text}"
                         )
                         orchestrator_input = (
-                            "You didn't delegate any work. You MUST use <delegate> blocks with "
-                            "valid JSON. Example:\n\n"
+                            "⚠️ No <delegate> blocks found in your response.\n\n"
+                            "You MUST either:\n"
+                            "A) Delegate work using <delegate> blocks:\n"
                             "<delegate>\n"
-                            '{"agent": "developer", "task": "your task here", "context": "relevant context"}\n'
+                            '{"agent": "developer", "task": "specific task description", "context": "relevant file paths and details"}\n'
                             "</delegate>\n\n"
-                            "If the task is fully complete and verified, respond with TASK_COMPLETE. "
-                            "Otherwise, delegate the remaining work using <delegate> blocks.\n\n"
+                            "B) Say TASK_COMPLETE if the task is 100% verified done.\n\n"
+                            "REMINDER — before deciding, check:\n"
+                            "1. Was code actually written/modified? (check git diff)\n"
+                            "2. Was it reviewed by the reviewer agent?\n"
+                            "3. Were tests run and did they pass?\n\n"
                             f"Original user request:\n{user_message}"
                         )
                         continue
@@ -868,8 +873,15 @@ class OrchestratorManager:
                     await self._self_pause("stuck detection")
                     continue
 
-                # Feed results back to orchestrator
-                orchestrator_input = self._build_review_prompt(sub_results)
+                # Track what was done this round
+                _round_summary = ", ".join(
+                    f"{role}({'OK' if all(not r.is_error for r in resps) else 'ERR'})"
+                    for role, resps in sub_results.items()
+                )
+                _completed_rounds.append(f"Round {loop_count}: {_round_summary}")
+
+                # Feed results back to orchestrator with round history
+                orchestrator_input = self._build_review_prompt(sub_results, _completed_rounds)
 
         except asyncio.CancelledError:
             logger.info(f"Orchestrator loop cancelled for {self.project_name}")
@@ -1458,17 +1470,20 @@ class OrchestratorManager:
         if not selected:
             return ""
 
-        # Compress each entry to essential info only
+        # Compress each entry — preserve structured sections, truncate raw output
         compressed = []
         for entry in selected:
             lines = entry.split('\n')
-            # Keep first 3 lines (role/status/files) and skip long output
             essential = []
-            for line in lines[:4]:
-                if line.strip().startswith('Output:'):
-                    # Truncate output to 100 chars
-                    essential.append(line[:110])
-                else:
+            for line in lines:
+                ls = line.strip()
+                # Always keep role/status/files/issues/status-line headers
+                if ls.startswith(('[', 'Status:', 'Files changed:', 'Issues:', 'Commands:')):
+                    essential.append(line)
+                elif ls.startswith('Output:'):
+                    # Truncate long output but keep it
+                    essential.append(line[:200])
+                elif len(essential) < 8:
                     essential.append(line)
             compressed.append('\n'.join(essential))
 
@@ -1660,10 +1675,10 @@ class OrchestratorManager:
         # Use a broader regex that catches everything between the tags
         return re.sub(r"<delegate>.*?</delegate>", "", text, flags=re.DOTALL).strip()
 
-    def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]]) -> str:
+    def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]], completed_rounds: list[str] | None = None) -> str:
         """Build a structured prompt for the orchestrator to review sub-agent results.
 
-        Includes clear status, cost, workspace changes, and actionable guidance.
+        Includes clear status, cost, workspace changes, round history, and actionable guidance.
         """
         parts = ["═══ SUB-AGENT RESULTS ═══\n"]
         has_errors = False
@@ -1722,6 +1737,13 @@ class OrchestratorManager:
             f"Successful: {', '.join(successful_agents) or 'none'} | "
             f"Failed: {', '.join(failed_agents) or 'none'}\n"
         )
+
+        # Show round history so orchestrator knows what's been done
+        if completed_rounds:
+            parts.append(f"─── ROUNDS COMPLETED ({len(completed_rounds)}) ───")
+            for r in completed_rounds:
+                parts.append(f"  {r}")
+            parts.append("")
 
         # Include accumulated shared context so orchestrator sees the full picture
         if self.shared_context:
