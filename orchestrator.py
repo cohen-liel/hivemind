@@ -269,7 +269,7 @@ class OrchestratorManager:
         """Emit a structured event for the dashboard."""
         if self.on_event:
             try:
-                event = {"type": event_type, **data}
+                event = {"type": event_type, "timestamp": time.time(), **data}
                 await self.on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}")

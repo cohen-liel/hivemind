@@ -32,8 +32,7 @@ echo "  ✅ Frontend built"
 # 3. Start server
 if $BG; then
   echo "  🚀 Starting server (background)..."
-  source venv/bin/activate 2>/dev/null || true
-  python server.py > /tmp/claude-bot-server.log 2>&1 &
+  ./venv/bin/python3 server.py > /tmp/claude-bot-server.log 2>&1 &
   SERVER_PID=$!
 
   # Wait for server
