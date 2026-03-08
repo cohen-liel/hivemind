@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState } from '../api';
+import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState, clearHistory } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
 import ActivityFeed from '../components/ActivityFeed';
@@ -14,6 +14,7 @@ import NetworkTrace from '../components/NetworkTrace';
 import ApprovalModal from '../components/ApprovalModal';
 import Controls from '../components/Controls';
 import CodeBrowser from '../components/CodeBrowser';
+import ConductorMode from '../components/ConductorMode';
 import type { Project, ProjectMessage, FileChanges, WSEvent, ActivityEntry, AgentState as AgentStateType, LoopProgress } from '../types';
 
 let activityIdCounter = 0;
@@ -336,6 +337,20 @@ export default function ProjectView() {
         }
         break;
 
+      case 'history_cleared' as WSEvent['type']:
+        // Real-time clear — reset all frontend state
+        setActivities([]);
+        setAgentStates({});
+        setLoopProgress(null);
+        setLastTicker('');
+        setSdkCalls([]);
+        setFiles(null);
+        setMessageOffset(0);
+        setHasMoreMessages(false);
+        setApprovalRequest(null);
+        loadProject();
+        break;
+
       default:
         break;
     }
@@ -399,6 +414,25 @@ export default function ProjectView() {
   const handlePause = async () => { await pauseProject(id); loadProject(); };
   const handleResume = async () => { await resumeProject(id); loadProject(); };
   const handleStop = async () => { await stopProject(id); loadProject(); };
+  const handleClearHistory = async () => {
+    if (!confirm('Clear all history and start fresh?')) return;
+    try {
+      await clearHistory(id);
+      // Reset ALL frontend state — agent has no memory after clear
+      setActivities([]);
+      setAgentStates({});
+      setLoopProgress(null);
+      setLastTicker('');
+      setSdkCalls([]);
+      setFiles(null);
+      setMessageOffset(0);
+      setHasMoreMessages(false);
+      setApprovalRequest(null);
+      loadProject();
+    } catch (e) {
+      console.error('Failed to clear history:', e);
+    }
+  };
 
   const agentStateList: AgentStateType[] = project.agents.map(name => (
     agentStates[name] ?? { name, state: 'idle', cost: 0, turns: 0, duration: 0 }
@@ -412,8 +446,8 @@ export default function ProjectView() {
   const mobileNavItems: { id: MobileView; icon: JSX.Element; label: string }[] = [
     {
       id: 'orchestra',
-      label: 'Agents',
-      icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0113 0"/></svg>,
+      label: 'Nexus',
+      icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>,
     },
     {
       id: 'activity',
@@ -443,15 +477,18 @@ export default function ProjectView() {
   ];
 
   return (
-    <div className="h-full flex flex-col" style={{ background: 'var(--bg-void)' }}>
+    <div className="h-full flex flex-col" style={{ background: 'var(--bg-void)', overflow: 'hidden', position: 'fixed', inset: 0 }}>
 
       {/* ===== MOBILE LAYOUT ===== */}
       <div
-        className="lg:hidden fixed inset-x-0 flex flex-col z-30"
+        className="lg:hidden flex flex-col z-30"
         style={{
-          height: 'var(--app-height, 100dvh)',
-          top: 'var(--app-offset, 0px)',
+          position: 'fixed',
+          inset: 0,
           background: 'var(--bg-void)',
+          paddingTop: 'env(safe-area-inset-top, 0px)',
+          overflow: 'hidden',
+          touchAction: 'none',
         }}
       >
 
@@ -467,16 +504,16 @@ export default function ProjectView() {
         />
 
         {/* Content (middle, flex-1 takes remaining space) */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div className="flex-1 overflow-y-auto min-h-0" style={{ overscrollBehavior: 'none', touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' }}>
           {mobileView === 'orchestra' && (
-            <div className="p-3">
-              <AgentStatusPanel
-                agents={agentStateList}
-                onSelectAgent={setSelectedAgent}
-                selectedAgent={selectedAgent}
-                layout="bubbles"
-              />
-            </div>
+            <ConductorMode
+              agents={agentStateList}
+              progress={loopProgress}
+              activities={activities}
+              totalCost={project.total_cost_usd}
+              status={project.status}
+              messageDraft={message}
+            />
           )}
 
           {mobileView === 'activity' && (
@@ -503,8 +540,8 @@ export default function ProjectView() {
         </div>
 
         {/* Bottom: ticker + tab nav + input */}
-        <div className="flex-shrink-0 safe-area-bottom"
-          style={{ borderTop: '1px solid var(--border-dim)', background: 'var(--bg-panel)', backdropFilter: 'blur(12px)' }}>
+        <div className="flex-shrink-0"
+          style={{ borderTop: '1px solid var(--border-dim)', background: 'var(--bg-panel)', backdropFilter: 'blur(12px)', touchAction: 'none' }}>
           {/* Live ticker */}
           {lastTicker && (
             <div className="px-3 pt-1.5 pb-0.5">
@@ -520,12 +557,23 @@ export default function ProjectView() {
             {mobileNavItems.map(item => (
               <button
                 key={item.id}
-                onClick={() => setMobileView(item.id)}
+                onClick={() => {
+                  setMobileView(item.id);
+                  // Haptic feedback on tab switch
+                  if ('vibrate' in navigator) {
+                    navigator.vibrate(8);
+                  }
+                }}
                 className="flex-1 flex flex-col items-center justify-center py-1.5 transition-colors"
                 style={{ color: mobileView === item.id ? 'var(--accent-blue)' : 'var(--text-muted)' }}
               >
                 {item.icon}
                 <span className="text-[9px] mt-0.5">{item.label}</span>
+                {/* Active tab indicator dot */}
+                {mobileView === item.id && (
+                  <div className="w-1 h-1 rounded-full mt-0.5"
+                    style={{ background: 'var(--accent-blue)', boxShadow: '0 0 4px var(--glow-blue)' }} />
+                )}
               </button>
             ))}
 
@@ -554,10 +602,19 @@ export default function ProjectView() {
                 </button>
               </div>
             )}
+            {/* Clear history button — visible when idle */}
+            {project.status === 'idle' && activities.length > 0 && (
+              <button onClick={handleClearHistory} className="p-1.5 ml-1" style={{ color: 'var(--text-muted)' }}
+                title="Clear history">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4"/>
+                </svg>
+              </button>
+            )}
           </div>
 
           {/* Input row (compact) */}
-          <div className="flex items-center gap-1.5 px-2 pb-2 pt-1">
+          <div className="flex items-center gap-1.5 px-2 pt-1" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 8px))' }}>
             <input
               type="text"
               value={message}

@@ -11,7 +11,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <WebSocketProvider>
-        <div className="flex h-screen bg-gray-950 overflow-hidden">
+        <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-void)' }}>
           {/* Sidebar: hidden on mobile, visible on desktop */}
           <div className="hidden lg:flex">
             <Sidebar />

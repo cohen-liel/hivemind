@@ -176,18 +176,95 @@ function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAv
   );
 }
 
-// ---------- Error bubble ----------
-function ErrorBubble({ entry }: { entry: ActivityEntry }) {
+// ---------- Error translation ----------
+function translateError(raw: string): { title: string; detail: string; actions: ('retry' | 'dismiss')[] } {
+  const lower = raw.toLowerCase();
+  if (lower.includes('timeout') || lower.includes('timed out')) {
+    return { title: 'Agent Timed Out', detail: 'The agent took too long to respond. This often happens with complex tasks.', actions: ['retry', 'dismiss'] };
+  }
+  if (lower.includes('rate limit') || lower.includes('429') || lower.includes('too many')) {
+    return { title: 'Rate Limited', detail: 'Too many requests. The system will automatically retry shortly.', actions: ['dismiss'] };
+  }
+  if (lower.includes('connection') || lower.includes('network') || lower.includes('fetch')) {
+    return { title: 'Connection Lost', detail: 'Could not reach the server. Check your network connection.', actions: ['retry', 'dismiss'] };
+  }
+  if (lower.includes('budget') || lower.includes('cost') || lower.includes('limit exceeded')) {
+    return { title: 'Budget Exceeded', detail: 'The session has reached its spending limit. Adjust in Settings.', actions: ['dismiss'] };
+  }
+  if (lower.includes('permission') || lower.includes('denied') || lower.includes('access')) {
+    return { title: 'Permission Denied', detail: 'The agent doesn\'t have access to perform this action.', actions: ['retry', 'dismiss'] };
+  }
+  if (lower.includes('exit code') || lower.match(/exit\s*\d+/)) {
+    const code = lower.match(/exit\s*(?:code\s*)?(\d+)/);
+    const codeNum = code ? parseInt(code[1]) : 0;
+    const codeMsg = codeNum === 1 ? 'General error' : codeNum === 127 ? 'Command not found' : codeNum === 137 ? 'Killed (out of memory)' : codeNum === 139 ? 'Segfault' : `Code ${codeNum}`;
+    return { title: `Process Failed: ${codeMsg}`, detail: raw, actions: ['retry', 'dismiss'] };
+  }
+  if (lower.includes('failed to send')) {
+    return { title: 'Send Failed', detail: 'The message could not be delivered to the agent.', actions: ['retry', 'dismiss'] };
+  }
+  return { title: 'Error', detail: raw, actions: ['retry', 'dismiss'] };
+}
+
+// ---------- Error bubble (Decision Card) ----------
+function ErrorBubble({ entry, onRetry }: { entry: ActivityEntry; onRetry?: () => void }) {
+  const translated = translateError(entry.content || 'Unknown error');
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+
   return (
-    <div className="flex justify-center animate-[fadeSlideIn_0.3s_ease-out_both]">
-      <div className="rounded-2xl px-4 py-2 text-xs inline-flex items-center gap-2"
+    <div className="flex justify-center animate-[fadeSlideIn_0.3s_ease-out_both] px-4">
+      <div className="rounded-2xl w-full max-w-sm overflow-hidden"
         style={{
-          background: 'var(--glow-red)',
+          background: 'var(--bg-card)',
           border: '1px solid rgba(245,71,91,0.2)',
-          color: 'var(--accent-red)',
+          boxShadow: '0 4px 20px rgba(245,71,91,0.08)',
         }}>
-        <span>⚠</span>
-        <span>{entry.content}</span>
+        {/* Header stripe */}
+        <div className="h-1 w-full" style={{ background: 'linear-gradient(90deg, var(--accent-red), var(--accent-amber))' }} />
+        <div className="px-4 py-3">
+          <div className="flex items-start gap-2.5">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm flex-shrink-0"
+              style={{ background: 'var(--glow-red)' }}>
+              ⚠️
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="text-sm font-semibold" style={{ color: 'var(--accent-red)' }}>
+                {translated.title}
+              </h4>
+              <p className="text-xs mt-0.5 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                {translated.detail.length > 150 ? translated.detail.slice(0, 150) + '…' : translated.detail}
+              </p>
+            </div>
+          </div>
+          {/* Action buttons */}
+          <div className="flex gap-2 mt-3 justify-end">
+            {translated.actions.includes('dismiss') && (
+              <button onClick={() => setDismissed(true)}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95"
+                style={{ color: 'var(--text-muted)' }}
+                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
+              >
+                Dismiss
+              </button>
+            )}
+            {translated.actions.includes('retry') && onRetry && (
+              <button onClick={onRetry}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95"
+                style={{
+                  background: 'var(--glow-red)',
+                  color: 'var(--accent-red)',
+                  border: '1px solid rgba(245,71,91,0.2)',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,71,91,0.2)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'var(--glow-red)'; }}
+              >
+                ↻ Retry
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

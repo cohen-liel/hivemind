@@ -578,6 +578,41 @@ def create_app() -> FastAPI:
 
         return {"ok": True}
 
+    @app.post("/api/projects/{project_id}/clear-history")
+    async def clear_project_history(project_id: str):
+        """Clear all messages and task history for a project, starting fresh."""
+        manager, _ = _find_manager(project_id)
+        if manager and manager.is_running:
+            return JSONResponse({"error": "Cannot clear history while project is running"}, status_code=400)
+
+        if state.session_mgr:
+            await state.session_mgr.clear_messages(project_id)
+            # Clear sessions so agents start fresh
+            async with state.session_mgr._get_db() as db:
+                await db.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
+                await db.execute("DELETE FROM task_history WHERE project_id = ?", (project_id,))
+                await db.commit()
+
+        # Reset live state on active manager
+        if manager:
+            manager._shared_context = []
+            manager._turn_count = 0
+            manager._total_cost = 0.0
+            manager.agent_states = {}
+
+        # Notify connected clients so UI updates in real-time
+        await event_bus.publish({
+            "type": "project_status",
+            "project_id": project_id,
+            "status": "idle",
+        })
+        await event_bus.publish({
+            "type": "history_cleared",
+            "project_id": project_id,
+        })
+
+        return {"ok": True}
+
     @app.post("/api/projects/{project_id}/start")
     async def start_project(project_id: str):
         """Start/activate a dormant project."""

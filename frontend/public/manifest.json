@@ -1,0 +1,17 @@
+{
+  "name": "Nexus — Agent OS",
+  "short_name": "Nexus",
+  "description": "Autonomous Multi-Agent Orchestration Platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0b0f",
+  "theme_color": "#0a0b0f",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230a0b0f' width='100' height='100' rx='20'/><text y='68' x='50' text-anchor='middle' font-size='55'>⚡</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

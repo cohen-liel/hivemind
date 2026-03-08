@@ -106,15 +106,30 @@ export default function ConductorBar({
           </div>
 
           {/* Orchestrator status line */}
-          {isActive && orchestrator?.current_tool && (
-            <div className="text-[10px] truncate text-fade-right"
-              style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
-              {orchestrator.current_tool}
+          {isActive && (orchestrator?.current_tool || orchestrator?.task) && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-1 h-1 rounded-full animate-pulse flex-shrink-0"
+                style={{ background: 'var(--accent-blue)' }} />
+              <div className="text-[10px] truncate"
+                style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
+                {orchestrator?.task || orchestrator?.current_tool}
+              </div>
+              {orchestrator?.current_tool && orchestrator.current_tool.includes('(') && (
+                <span className="text-[9px] flex-shrink-0"
+                  style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  {orchestrator.current_tool.match(/\((\d+s)\)/)?.[1] || ''}
+                </span>
+              )}
             </div>
           )}
-          {isActive && !orchestrator?.current_tool && orchestrator?.task && (
-            <div className="text-[10px] truncate" style={{ color: 'var(--accent-blue)', opacity: 0.7 }}>
-              {orchestrator.task}
+          {isActive && !orchestrator?.current_tool && !orchestrator?.task && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-1 h-1 rounded-full animate-pulse flex-shrink-0"
+                style={{ background: 'var(--accent-blue)' }} />
+              <div className="text-[10px]"
+                style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
+                orchestrating...
+              </div>
             </div>
           )}
           {!isActive && status === 'idle' && (

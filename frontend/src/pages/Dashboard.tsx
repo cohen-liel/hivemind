@@ -115,7 +115,7 @@ export default function Dashboard() {
   const totalCost = projects.reduce((sum, p) => sum + (p.total_cost_usd || 0), 0);
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--bg-void)' }}>
+    <div className="min-h-screen safe-area-top" style={{ background: 'var(--bg-void)' }}>
       {/* Hero Header */}
       <header className="relative overflow-hidden" style={{ borderBottom: '1px solid var(--border-dim)' }}>
         {/* Gradient mesh background */}
@@ -132,10 +132,10 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
-                    Mission Control
+                    Nexus
                   </h1>
                   <p className="text-xs" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                    Agent Orchestration Dashboard
+                    Agent OS
                   </p>
                 </div>
               </div>

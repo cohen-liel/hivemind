@@ -82,6 +82,10 @@ export async function stopProject(id: string): Promise<void> {
   await fetchJSON(`/projects/${id}/stop`, { method: 'POST' });
 }
 
+export async function clearHistory(id: string): Promise<void> {
+  await fetchJSON(`/projects/${id}/clear-history`, { method: 'POST' });
+}
+
 export async function getStats(): Promise<Stats> {
   return fetchJSON<Stats>('/stats');
 }

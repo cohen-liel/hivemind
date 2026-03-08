@@ -532,6 +532,17 @@ class OrchestratorManager:
         # Build initial prompt with conversation history for context
         workspace = self._get_workspace_context()
 
+        # Pre-flight check: verify project directory exists
+        if not Path(self.project_dir).exists():
+            logger.error(f"[{self.project_id}] Project directory does not exist: {self.project_dir}")
+            await self._send_final(
+                f"❌ Project directory not found: `{self.project_dir}`\n\n"
+                f"Create the directory or update the project settings."
+            )
+            self.is_running = False
+            await self._emit_event("project_status", status="idle")
+            return
+
         # Include recent conversation history so the orchestrator has context
         # even without session resume
         recent_msgs = await self.session_mgr.get_recent_messages(self.project_id, count=10)
@@ -633,7 +644,45 @@ class OrchestratorManager:
                     task="planning & delegating" if self.multi_agent else "working",
                 )
                 agent_start = time.monotonic()
-                response = await self._query_agent("orchestrator", orchestrator_input)
+
+                # Orchestrator heartbeat — emit periodic updates while it's thinking
+                # so the UI knows it's not stuck (it has no tools, so no tool_use events)
+                async def _orch_heartbeat():
+                    phases = [
+                        "analyzing request...",
+                        "reviewing context...",
+                        "deciding delegation strategy...",
+                        "composing agent instructions...",
+                        "finalizing plan...",
+                    ]
+                    tick = 0
+                    while True:
+                        await asyncio.sleep(4)
+                        tick += 1
+                        elapsed = int(time.monotonic() - agent_start)
+                        phase = phases[min(tick - 1, len(phases) - 1)]
+                        self.agent_states["orchestrator"] = {
+                            "state": "working",
+                            "task": phase,
+                            "current_tool": f"thinking ({elapsed}s)",
+                        }
+                        await self._emit_event(
+                            "agent_update",
+                            agent="orchestrator",
+                            text=f"🎯 {phase} ({elapsed}s)",
+                            timestamp=time.time(),
+                        )
+
+                orch_hb = asyncio.create_task(_orch_heartbeat())
+                try:
+                    response = await self._query_agent("orchestrator", orchestrator_input)
+                finally:
+                    orch_hb.cancel()
+                    try:
+                        await orch_hb
+                    except asyncio.CancelledError:
+                        pass
+
                 agent_duration = time.monotonic() - agent_start
                 logger.info(
                     f"[{self.project_id}] Orchestrator response: "
@@ -670,6 +719,15 @@ class OrchestratorManager:
                             "The Claude agent can't authenticate.\n"
                             "Make sure `ANTHROPIC_API_KEY` is set in your `.env` file.\n\n"
                             "Get your key at: https://console.anthropic.com/"
+                        )
+                    elif "exit code 71" in error_msg or "exit code: 71" in error_msg:
+                        await self._send_result(
+                            "🔒 *macOS Sandbox Restriction (Exit Code 71)*\n\n"
+                            "macOS is blocking the agent from accessing files in this directory.\n"
+                            "This commonly happens with ~/Downloads.\n\n"
+                            "Fix: Move the project folder:\n"
+                            "  mv ~/Downloads/web-claude-bot ~/web-claude-bot\n\n"
+                            "Then restart the server from the new location."
                         )
                     else:
                         await self._send_result(
@@ -956,15 +1014,30 @@ class OrchestratorManager:
                     await self._notify(
                         f"🔄 *{agent_role}* failed, retrying with more context..."
                     )
+                    # Emit agent_started again so frontend shows the retry
+                    await self._emit_event(
+                        "agent_started",
+                        agent=agent_role,
+                        task=f"[RETRY] {delegation.task[:250]}",
+                    )
                     # Invalidate stale session and retry with error context
                     await self.session_mgr.invalidate_session(
                         self.user_id, self.project_id, agent_role
                     )
+                    # Build enriched retry prompt with workspace state
+                    workspace_now = self._get_workspace_context()
                     retry_prompt = (
-                        f"[RETRY — previous attempt failed with: {error_msg}]\n\n"
-                        f"{sub_prompt}\n\n"
-                        f"Please try a different approach if the previous one didn't work."
+                        f"[RETRY — previous attempt failed]\n"
+                        f"Error: {error_msg}\n\n"
+                        f"IMPORTANT: Try a different approach. The previous method did not work.\n"
+                        f"If a command failed, check if the tool/binary exists first.\n"
+                        f"If a file operation failed, verify the path exists.\n\n"
+                        f"Original task: {delegation.task}\n"
                     )
+                    if delegation.context:
+                        retry_prompt += f"\nContext: {delegation.context}\n"
+                    if workspace_now:
+                        retry_prompt += f"\n{workspace_now}\n"
                     response = await self._query_agent(agent_role, retry_prompt, skill_names=delegation.skills)
 
                 async with lock:
@@ -1153,57 +1226,82 @@ class OrchestratorManager:
 
         Called under lock. Creates structured context entries that help
         other agents and the orchestrator understand what was done.
+        Uses git diff --stat for reliable file tracking instead of regex.
         """
         text = response.text
 
-        # Detect file operations
-        files_created = []
-        files_modified = []
-        files_read = []
+        # Use git for reliable file change detection instead of fragile regex
+        files_changed_git = []
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "HEAD"],
+                cwd=self.project_dir,
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.stdout.strip():
+                files_changed_git = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
+            # Also check untracked (new) files
+            result2 = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                cwd=self.project_dir,
+                capture_output=True, text=True, timeout=5,
+            )
+            if result2.stdout.strip():
+                files_changed_git.extend([f"(new) {f.strip()}" for f in result2.stdout.strip().split('\n') if f.strip()])
+        except Exception:
+            pass
+
+        # Fallback: parse text for file operations if git didn't find anything
+        files_from_text = []
         commands_run = []
+        test_results = []
         for line in text.split('\n'):
             lower = line.lower().strip()
             if any(w in lower for w in ('created file', 'wrote to', 'writing:', '✏️ writing', 'created:')):
                 for token in line.split():
                     if '/' in token or ('.' in token and len(token) > 3):
                         cleaned = token.strip('`"\',;:()[]')
-                        if cleaned:
-                            files_created.append(cleaned)
+                        if cleaned and not cleaned.startswith('http'):
+                            files_from_text.append(cleaned)
             elif any(w in lower for w in ('edited', 'modified', 'updated', '🔧 editing')):
                 for token in line.split():
                     if '/' in token or ('.' in token and len(token) > 3):
                         cleaned = token.strip('`"\',;:()[]')
-                        if cleaned:
-                            files_modified.append(cleaned)
-            elif any(w in lower for w in ('reading:', '📄 reading', 'read file')):
-                for token in line.split():
-                    if '/' in token or ('.' in token and len(token) > 3):
-                        cleaned = token.strip('`"\',;:()[]')
-                        if cleaned:
-                            files_read.append(cleaned)
-            elif any(w in lower for w in ('running:', '💻 running', 'executed:')):
+                        if cleaned and not cleaned.startswith('http'):
+                            files_from_text.append(cleaned)
+            elif any(w in lower for w in ('running:', '💻 running', 'executed:', '$ ')):
                 cmd = line.strip()[:80]
                 if cmd:
                     commands_run.append(cmd)
+            # Capture test outcomes
+            elif any(w in lower for w in ('test passed', 'tests passed', 'all tests', 'test failed', 'tests failed', 'assertion')):
+                test_results.append(line.strip()[:120])
 
         # Build structured context entry
-        ctx_parts = [f"[{agent_role}] Task: {task[:150]}"]
+        ctx_parts = [f"[{agent_role}] Task: {task[:200]}"]
         if response.is_error:
-            ctx_parts.append(f"  Status: FAILED — {response.error_message[:150]}")
+            ctx_parts.append(f"  Status: FAILED — {response.error_message[:200]}")
         else:
             ctx_parts.append(f"  Status: SUCCESS ({response.num_turns} turns, ${response.cost_usd:.4f})")
 
-        if files_created:
-            ctx_parts.append(f"  Created: {', '.join(files_created[:8])}")
-        if files_modified:
-            ctx_parts.append(f"  Modified: {', '.join(files_modified[:8])}")
-        if files_read:
-            ctx_parts.append(f"  Read: {', '.join(files_read[:8])}")
+        # Prefer git-based file info (more reliable)
+        files_info = files_changed_git if files_changed_git else files_from_text
+        if files_info:
+            ctx_parts.append(f"  Files changed: {', '.join(files_info[:12])}")
         if commands_run:
-            ctx_parts.append(f"  Commands: {'; '.join(commands_run[:3])}")
+            ctx_parts.append(f"  Commands: {'; '.join(commands_run[:5])}")
+        if test_results:
+            ctx_parts.append(f"  Test results: {'; '.join(test_results[:3])}")
 
-        # Include a more detailed summary of the output
-        summary = text[:500].strip()
+        # Include key output summary — look for structured sections first
+        summary = ""
+        for marker in ["## Summary", "### Summary", "## Result", "### Changes"]:
+            idx = text.find(marker)
+            if idx >= 0:
+                summary = text[idx:idx+400].strip()
+                break
+        if not summary:
+            summary = text[:400].strip()
         if summary:
             ctx_parts.append(f"  Output: {summary}")
 
@@ -1452,7 +1550,7 @@ class OrchestratorManager:
     def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]]) -> str:
         """Build a structured prompt for the orchestrator to review sub-agent results.
 
-        Includes clear status, cost, shared context, and actionable guidance.
+        Includes clear status, cost, workspace changes, and actionable guidance.
         """
         parts = ["═══ SUB-AGENT RESULTS ═══\n"]
         has_errors = False
@@ -1498,10 +1596,10 @@ class OrchestratorManager:
                     f"{content}\n"
                 )
 
-        # File changes summary
+        # ALWAYS show current file changes — most reliable way to see what happened
         file_changes = self._detect_file_changes()
         if file_changes and "(no file" not in file_changes:
-            parts.append(f"─── WORKSPACE CHANGES ───\n{file_changes}\n")
+            parts.append(f"─── WORKSPACE CHANGES (git diff --stat) ───\n{file_changes}\n")
 
         # Cost summary
         parts.append(
@@ -1521,20 +1619,22 @@ class OrchestratorManager:
 
         if has_errors:
             parts.append(
-                "\nSome agents encountered errors. You MUST:\n"
-                "1. Analyze each error carefully\n"
-                "2. Retry failed tasks with the error details in 'context'\n"
-                "3. If a different agent is better suited, delegate to them\n"
-                "4. ONLY say TASK_COMPLETE if ALL critical work is done despite errors\n"
-                "\nDo NOT give up after one failed attempt — retry with a different approach."
+                "\n⚠️ SOME AGENTS FAILED. You MUST:\n"
+                "1. Analyze each error carefully — read the error message\n"
+                "2. Retry failed tasks with error details in 'context' field\n"
+                "3. If the same approach keeps failing, try a DIFFERENT strategy\n"
+                "4. If a different agent is better suited, delegate to them instead\n"
+                "5. Do NOT say TASK_COMPLETE until all critical work is done\n"
+                "\nIMPORTANT: Do NOT give up after one failed attempt — adapt and retry."
             )
         else:
             parts.append(
-                "\nAll agents completed successfully. Now:\n"
-                "- If ALL tasks are done and verified → respond with TASK_COMPLETE\n"
-                "- If you need verification → delegate to reviewer or tester\n"
+                "\n✅ ALL AGENTS COMPLETED SUCCESSFULLY. Now decide:\n"
+                "- If ALL tasks are done AND verified → respond with TASK_COMPLETE\n"
+                "- If you need to verify the work → delegate to reviewer or tester\n"
                 "- If more work is needed → delegate with specific instructions\n"
-                "- Pass relevant results from this round as 'context' to the next agent\n"
+                "- Always pass relevant results from this round as 'context' to next agent\n"
+                "\nTip: If the developer made changes, consider sending the reviewer to check."
             )
         return "\n".join(parts)
 

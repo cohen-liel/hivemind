@@ -33,7 +33,13 @@
 
 /* ===== BASE ===== */
 
-html {
+html, body {
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
   touch-action: manipulation;
   -ms-touch-action: manipulation;
 }
@@ -42,6 +48,12 @@ body {
   font-family: var(--font-display);
   background: var(--bg-void);
   color: var(--text-primary);
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
 }
 
 input, textarea, select {
@@ -139,6 +151,9 @@ input, textarea, select {
 
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
 .h-dvh {

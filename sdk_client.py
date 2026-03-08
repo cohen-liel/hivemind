@@ -94,6 +94,9 @@ def classify_error(error_message: str) -> ErrorCategory:
 
     # Process spawn errors — transient (CLI binary might be busy)
     if any(kw in lower for kw in ("process", "spawn", "enoent", "exited with")):
+        # Exit code 71 = macOS sandbox restriction — permanent, not transient
+        if "exit code 71" in lower or "exit code: 71" in lower:
+            return ErrorCategory.PERMANENT
         return ErrorCategory.TRANSIENT
 
     # Content/validation errors — permanent
