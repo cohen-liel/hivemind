@@ -28,7 +28,7 @@ from config import (
 )
 from sdk_client import ClaudeSDKManager, SDKResponse
 from session_manager import SessionManager
-from skills_registry import get_skill_content, get_skills_for_agent, build_skill_prompt, scan_skills
+from skills_registry import get_skills_for_agent, build_skill_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -572,16 +572,18 @@ class OrchestratorManager:
         )
 
         if not self.is_running:
-            # Not running — send directly to orchestrator
-            await self._notify(f"📨 Sending to *orchestrator*...")
-            response = await self._query_agent("orchestrator", message)
-            self._record_response("orchestrator", "Orchestrator", response)
+            # Not running — send directly to the requested agent (or orchestrator if unknown)
+            target = agent_name if (agent_name in SUB_AGENT_PROMPTS or agent_name == "orchestrator") else "orchestrator"
+            await self._notify(f"📨 Sending to *{target}*...")
+            response = await self._query_agent(target, message)
+            self._record_response(target, target.title(), response)
+            self.turn_count += 1  # Track this turn for cost/limit accounting
 
             summary = response.text[:3000]
             if len(response.text) > 3000:
                 summary += "\n... (truncated)"
             cost_str = f" | ${response.cost_usd:.4f}" if response.cost_usd > 0 else ""
-            await self._send_final(f"💬 *orchestrator*{cost_str}\n\n{summary}")
+            await self._send_final(f"💬 *{target}*{cost_str}\n\n{summary}")
         else:
             # Enqueue — the orchestrator loop will drain all pending messages
             await self._message_queue.put((agent_name, message))
@@ -791,6 +793,7 @@ class OrchestratorManager:
             max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
             self._completed_rounds = []  # Track what has been done each round (instance-level for final summary)
             self.shared_context = []  # Reset shared context for new session (prevents leaking from previous task)
+            self._budget_warning_sent = False  # Reset budget warning flag for new session
 
             while self.is_running and loop_count < max_loops:
                 if self._stop_event.is_set():
@@ -1023,6 +1026,19 @@ class OrchestratorManager:
                     )
                     await self._self_pause("budget limit")
                     continue
+
+                # Progressive budget warning at BUDGET_WARNING_THRESHOLD (default 80%)
+                warning_threshold = effective_budget * BUDGET_WARNING_THRESHOLD
+                if (
+                    self.total_cost_usd >= warning_threshold
+                    and not getattr(self, "_budget_warning_sent", False)
+                ):
+                    self._budget_warning_sent = True
+                    pct = int(self.total_cost_usd / effective_budget * 100)
+                    await self._notify(
+                        f"⚠️ Budget at {pct}% — ${self.total_cost_usd:.4f} of ${effective_budget:.2f} used.\n"
+                        f"Will auto-pause at 100%. Use /stop to end early."
+                    )
 
                 # Check turn limit
                 if self.turn_count >= MAX_TURNS_PER_CYCLE:
@@ -1821,11 +1837,17 @@ class OrchestratorManager:
         tools = None  # None = default tool set; [] = disable ALL tools
 
         if agent_role == "orchestrator" and self.multi_agent:
-            # Build orchestrator prompt with available skills info
+            # Build orchestrator prompt with available skills summary + actual skill content
             system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
             available_skills = self._get_available_skills_summary()
             if available_skills:
                 system_prompt += f"\n\n{available_skills}"
+            # Also inject full content of orchestrator-mapped skills (planning, summarize, etc.)
+            orch_skills = get_skills_for_agent("orchestrator")
+            if orch_skills:
+                skill_content = build_skill_prompt(orch_skills)
+                if skill_content:
+                    system_prompt += skill_content
             max_turns = 1
             max_budget = 5.0  # Orchestrator processes large context across many rounds — needs headroom
             permission_mode = "bypassPermissions"

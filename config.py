@@ -47,7 +47,7 @@ except OSError:
 MAX_TURNS_PER_CYCLE = _get("MAX_TURNS_PER_CYCLE", "200", int)
 MAX_BUDGET_USD = _get("MAX_BUDGET_USD", "100.0", float)
 AGENT_TIMEOUT_SECONDS = _get("AGENT_TIMEOUT_SECONDS", "300", int)
-SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "28800"))  # 8h default
+SESSION_TIMEOUT_SECONDS = _get("SESSION_TIMEOUT_SECONDS", "28800", int)  # 8h default
 
 # SDK settings
 SDK_MAX_RETRIES = 2
@@ -55,25 +55,25 @@ SDK_MAX_TURNS_PER_QUERY = _get("SDK_MAX_TURNS_PER_QUERY", "30", int)
 SDK_MAX_BUDGET_PER_QUERY = _get("SDK_MAX_BUDGET_PER_QUERY", "20.0", float)
 
 # Session persistence
-SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "24"))
+SESSION_EXPIRY_HOURS = _get("SESSION_EXPIRY_HOURS", "24", int)
 
 # Stuck detection
 STUCK_SIMILARITY_THRESHOLD = 0.85
 STUCK_WINDOW_SIZE = 4
 MAX_ORCHESTRATOR_LOOPS = _get("MAX_ORCHESTRATOR_LOOPS", "50", int)
-RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "3.0"))
+RATE_LIMIT_SECONDS = _get("RATE_LIMIT_SECONDS", "3.0", float)
 
-# Budget warning threshold (percentage of MAX_BUDGET_USD)
-BUDGET_WARNING_THRESHOLD = float(os.getenv("BUDGET_WARNING_THRESHOLD", "0.8"))
+# Budget warning threshold (fraction of MAX_BUDGET_USD, e.g. 0.8 = warn at 80%)
+BUDGET_WARNING_THRESHOLD = _get("BUDGET_WARNING_THRESHOLD", "0.8", float)
 
 # Stall detection for proactive alerts (seconds)
-STALL_ALERT_SECONDS = int(os.getenv("STALL_ALERT_SECONDS", "60"))
+STALL_ALERT_SECONDS = _get("STALL_ALERT_SECONDS", "60", int)
 
 # Pipeline settings
-PIPELINE_MAX_STEPS = int(os.getenv("PIPELINE_MAX_STEPS", "10"))
+PIPELINE_MAX_STEPS = _get("PIPELINE_MAX_STEPS", "10", int)
 
 # Scheduler check interval (seconds)
-SCHEDULER_CHECK_INTERVAL = int(os.getenv("SCHEDULER_CHECK_INTERVAL", "30"))
+SCHEDULER_CHECK_INTERVAL = _get("SCHEDULER_CHECK_INTERVAL", "30", int)
 
 # Conversation store / session DB
 STORE_DIR = Path(os.getenv("CONVERSATION_STORE_DIR", str(_PROJECT_ROOT / "data"))).expanduser()
