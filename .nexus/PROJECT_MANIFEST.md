@@ -92,4 +92,27 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 
 ## Test Coverage
 - tests/: conftest, test_store, test_state, test_config_full, test_orchestrator, test_skills_registry, test_proof
+- **131 tests**, all passing in ~0.36s
 - **Gap**: No API endpoint tests, no WebSocket tests, no integration tests
+
+## Next Steps — see `.nexus/IMPROVEMENT_PLAN.md`
+- **3 P0 security fixes**: message length validation, symlink-safe path traversal, project dir restriction
+- **11 P1 items**: WebSocket auth, connection pool init, scheduler dedup, blocking I/O, git caching, refactors
+- **14 P2 items**: code quality, performance, maintainability improvements
+
+## Code Review — Quality Audit (2026-03-08)
+Full report: `.nexus/CODE_REVIEW.md`
+
+| Severity | Count | Key Findings |
+|----------|-------|--------------|
+| CRITICAL | 0 | — |
+| HIGH | 3 | Missing validation on settings/budget endpoints, dynamic SQL field names |
+| MEDIUM | 5 | Lock contention in orchestrator, unvalidated persist values, scheduler edge cases |
+| LOW | 10+ | f-string logging, missing type hints, naming, unbounded lists |
+
+### Top Quick Wins:
+1. Add Pydantic validators to `UpdateSettingsRequest` and `SetBudgetRequest` — prevent invalid config values
+2. Add field name whitelist to `session_manager.update_project_fields()` — prevent SQL column injection
+3. Move git subprocess calls outside `asyncio.Lock` in orchestrator — reduce agent contention
+4. Extract API routers from monolithic `create_app()` in api.py — improve maintainability
+5. Add request_id middleware for API traceability
