@@ -25,10 +25,12 @@ from config import (
     STUCK_SIMILARITY_THRESHOLD,
     STUCK_WINDOW_SIZE,
     SUB_AGENT_PROMPTS,
+    RATE_LIMIT_SECONDS,
+    BUDGET_WARNING_THRESHOLD,
 )
 from sdk_client import ClaudeSDKManager, SDKResponse
 from session_manager import SessionManager
-from skills_registry import get_skills_for_agent, build_skill_prompt
+from skills_registry import get_skills_for_agent, select_skills_for_task, build_skill_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -867,6 +869,14 @@ class OrchestratorManager:
                     task="planning & delegating" if self.multi_agent else "working",
                 )
                 agent_start = time.monotonic()
+
+                # Rate limiting: enforce minimum gap between orchestrator calls
+                # to avoid overwhelming the API on fast loops (stuck detection may be slow)
+                _last = getattr(self, "_last_orch_call_time", 0.0)
+                _gap = time.monotonic() - _last
+                if _gap < RATE_LIMIT_SECONDS and loop_count > 0:
+                    await asyncio.sleep(RATE_LIMIT_SECONDS - _gap)
+                self._last_orch_call_time = time.monotonic()
 
                 # Orchestrator heartbeat — emit periodic updates while it's thinking
                 # so the UI knows it's not stuck (it has no tools, so no tool_use events)
@@ -1865,7 +1875,10 @@ class OrchestratorManager:
         else:
             system_prompt = SUB_AGENT_PROMPTS.get(agent_role, "You are a helpful coding assistant.")
             # Append skill content if requested or auto-mapped
-            all_skills = list(skill_names or []) + get_skills_for_agent(agent_role)
+            # Smart skill selection: pick top 5 relevant skills from task text (not all ~48)
+            task_hint = prompt[:1000]  # Use first 1000 chars of prompt as task signal
+            auto_skills = select_skills_for_task(agent_role, task_hint, max_skills=5)
+            all_skills = list(dict.fromkeys(list(skill_names or []) + auto_skills))  # explicit first, then auto
             if all_skills:
                 skill_suffix = build_skill_prompt(list(dict.fromkeys(all_skills)))  # deduplicate
                 if skill_suffix:

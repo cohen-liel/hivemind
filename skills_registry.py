@@ -188,6 +188,70 @@ def get_skills_for_agent(agent_role: str) -> list[str]:
     ]
 
 
+def select_skills_for_task(agent_role: str, task: str, max_skills: int = 5) -> list[str]:
+    """Select the most relevant skills for a task using keyword + description matching.
+
+    Instead of injecting ALL skills for a role (e.g. 48 developer skills = ~43K tokens),
+    this picks only the top N most relevant skills based on the task text.
+    Falls back to all skills if the role has <= max_skills total.
+
+    Args:
+        agent_role: The agent role (developer, tester, reviewer, etc.)
+        task: The task description to match against.
+        max_skills: Maximum number of skills to inject (default 5 → ~5K tokens).
+    """
+    if not _skills_cache:
+        scan_skills()
+
+    all_skills = get_skills_for_agent(agent_role)
+    if len(all_skills) <= max_skills:
+        return all_skills  # Small enough — inject all
+
+    task_lower = task.lower()
+    # Tokenise task into words (strip punctuation)
+    import re as _re
+    task_words = set(_re.sub(r"[^a-z0-9 ]", " ", task_lower).split())
+
+    scores: dict[str, int] = {}
+    for skill_name in all_skills:
+        content = _skills_cache.get(skill_name, "")
+
+        # 1. Score from skill name (highest signal)
+        name_words = set(skill_name.replace("-", " ").split())
+        name_score = len(name_words & task_words) * 3
+
+        # 2. Score from frontmatter description line
+        desc_score = 0
+        for line in content.splitlines()[:10]:
+            if line.lower().startswith("description:"):
+                desc = _re.sub(r"[^a-z0-9 ]", " ", line[12:].lower())
+                desc_words = set(desc.split())
+                desc_score = len(desc_words & task_words) * 2
+                break
+
+        # 3. Bonus: skill name appears verbatim as substring in task
+        verbatim_bonus = 4 if skill_name.replace("-", " ") in task_lower else 0
+
+        scores[skill_name] = name_score + desc_score + verbatim_bonus
+
+    # Sort by score descending; tie-break alphabetically for determinism
+    ranked = sorted(all_skills, key=lambda s: (-scores[s], s))
+
+    # Always include skills with a positive score; fill up to max_skills with top-ranked
+    relevant = [s for s in ranked if scores[s] > 0]
+    if len(relevant) < max_skills:
+        # Add highest-ranked skills to fill the quota even if score==0
+        extras = [s for s in ranked if s not in relevant]
+        relevant.extend(extras[: max_skills - len(relevant)])
+
+    result = relevant[:max_skills]
+    logger.debug(
+        f"select_skills_for_task({agent_role}): {len(all_skills)} total → {result} selected "
+        f"(scores: {[(s, scores[s]) for s in result]})"
+    )
+    return result
+
+
 def build_skill_prompt(skill_names: list[str]) -> str:
     """Build a skill context string to append to a sub-agent's system prompt."""
     if not _skills_cache:
