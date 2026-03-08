@@ -479,6 +479,21 @@ class OrchestratorManager:
             except Exception:
                 pass  # Don't block completion on detection failure
 
+        # For any non-trivial task, require at least developer + reviewer to have run
+        if complexity != "SIMPLE":
+            if "developer" not in self._agents_used:
+                return "Developer agent has not been used yet. Delegate implementation work."
+            if "reviewer" not in self._agents_used:
+                return "Reviewer agent has not been used yet. Delegate a code review before completing."
+
+        # For all tasks: require at least 2 different agents to have been used
+        if len(self._agents_used) < 2:
+            return (
+                f"Only {len(self._agents_used)} agent(s) used ({', '.join(self._agents_used) or 'none'}). "
+                f"A proper workflow requires at least 2 agents (e.g., developer + reviewer). "
+                f"Delegate more work before completing."
+            )
+
         # Any agents blocked or needing followup? (check shared_context — most recent)
         outstanding = [
             ctx for ctx in self.shared_context
@@ -2455,14 +2470,38 @@ class OrchestratorManager:
                 "You MUST delegate retry tasks NOW. Failure is normal — diagnose, adapt, retry. Never give up."
             )
         else:
+            # Check which agents have NEVER been used across all rounds
+            all_agents = {"developer", "reviewer", "tester", "devops", "researcher"}
+            unused_agents = all_agents - self._agents_used
+            # Suggest work for unused agents
+            unused_suggestions = []
+            if "reviewer" in unused_agents:
+                unused_suggestions.append("- reviewer: Has NOT reviewed any code yet → delegate a code review")
+            if "tester" in unused_agents:
+                unused_suggestions.append("- tester: Has NOT run any tests yet → delegate test writing + execution")
+            if "devops" in unused_agents:
+                unused_suggestions.append("- devops: Has NOT been used yet → consider deployment/config tasks")
+
+            unused_section = ""
+            if unused_suggestions:
+                unused_section = (
+                    "\n\n⚠️ IDLE AGENTS (never used this session):\n"
+                    + "\n".join(unused_suggestions)
+                    + "\n\nIDLE AGENTS = WASTED CAPACITY. Assign them work before considering TASK_COMPLETE."
+                )
+
             parts.append(
-                "\n✅ ALL AGENTS COMPLETED. Now reason through these questions:\n"
+                "\n✅ ALL AGENTS COMPLETED THIS ROUND. Now reason through these questions:\n"
                 "1. Was the task FULLY implemented? Check FILES CHANGED above.\n"
-                "2. Has the code been REVIEWED? If not, delegate reviewer now.\n"
-                "3. Have TESTS been run and passed? If not, delegate tester now.\n"
-                "4. Are there any ISSUES FOUND sections that need fixing?\n"
-                "5. Only if all 4 are yes → respond with TASK_COMPLETE\n"
-                "\nIf any answer is no → delegate the missing work before completing."
+                "2. Has the code been REVIEWED by the reviewer agent? If not → delegate reviewer NOW.\n"
+                "3. Have TESTS been written and run by the tester agent? If not → delegate tester NOW.\n"
+                "4. Are there any ISSUES FOUND sections that need fixing? If yes → delegate developer to fix.\n"
+                "5. Are there idle agents that could do useful work? If yes → delegate them NOW.\n"
+                "6. ONLY if ALL of the above are satisfied → respond with TASK_COMPLETE.\n"
+                "\n🚨 IMPORTANT: After round 1, you almost ALWAYS need more rounds.\n"
+                "Round 1 = implement. Round 2 = review + test. Round 3 = fix issues. Round 4+ = polish.\n"
+                "If this is round 1 or 2, you should NOT say TASK_COMPLETE unless the task is trivially simple."
+                f"{unused_section}"
             )
 
         # --- Synthesize a concrete RECOMMENDED NEXT ACTION ---
@@ -2489,7 +2528,14 @@ class OrchestratorManager:
             elif "tester" not in roles_done:
                 rna_parts.append("Code changed but tests NOT run → delegate tester.")
             else:
-                rna_parts.append("All checks done → evaluate if TASK_COMPLETE is appropriate.")
+                # Even if all checks done, push to use idle agents
+                if unused_agents - {"researcher", "devops"}:  # reviewer or tester unused
+                    rna_parts.append(
+                        f"Code was reviewed and tested, but agents {', '.join(unused_agents - {'researcher', 'devops'})} "
+                        f"were never used. Consider assigning them work or say TASK_COMPLETE if truly done."
+                    )
+                else:
+                    rna_parts.append("All checks done → evaluate if TASK_COMPLETE is appropriate.")
         else:
             rna_parts.append(
                 "No file changes detected — verify agents actually completed their work. "
