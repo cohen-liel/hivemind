@@ -46,23 +46,7 @@ else:
     SYSTEM_CLI_PATH = _shutil.which("claude") or "/usr/local/bin/claude"
     logger.info(f"Using Claude CLI from PATH: {SYSTEM_CLI_PATH}")
 
-# Set up proxy environment for Meta-internal x2p network.
-# Skip if ANTHROPIC_BASE_URL is already set (custom/standard environment).
-if "ANTHROPIC_BASE_URL" not in os.environ:
-    import platform as _platform
-    if _platform.system() == "Darwin":
-        os.environ["ANTHROPIC_BASE_URL"] = "http://plugboard.x2p.facebook.net"
-        os.environ.setdefault("HTTP_PROXY", "http://localhost:10054")
-        os.environ.setdefault("HTTPS_PROXY", "http://localhost:10054")
-        os.environ.setdefault("X2P_SUPPORTS_VPNLESS", "1")
-        os.environ.setdefault("CPE_RUST_X2P_SUPPORTS_VPNLESS", "1")
-        # CAT injection for x2p authentication — require env var
-        _CAT_B64 = os.environ.get("CLAUDE_AUTH_TOKEN", "")
-        if _CAT_B64:
-            os.environ.setdefault("ANTHROPIC_CUSTOM_HEADERS", f"x-x2pagentd-inject-cat: {_CAT_B64}")
-    else:
-        # Non-macOS Meta environment (Linux devserver)
-        os.environ["ANTHROPIC_BASE_URL"] = "https://plugboard.x2p.facebook.net"
+
 
 
 # ============================================================
