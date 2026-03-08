@@ -332,6 +332,25 @@ class OrchestratorManager:
 
         return False
 
+    def _read_project_manifest(self) -> str:
+        """Read .nexus/PROJECT_MANIFEST.md — the team's persistent shared memory.
+
+        Returns the manifest content (truncated to 3000 chars) or empty string if not found.
+        Called in every review round so the orchestrator always has the current project state.
+        """
+        manifest_path = Path(self.project_dir) / ".nexus" / "PROJECT_MANIFEST.md"
+        if manifest_path.exists():
+            try:
+                content = manifest_path.read_text(encoding="utf-8").strip()
+                if content:
+                    truncated = content[:3000]
+                    if len(content) > 3000:
+                        truncated += "\n... (manifest truncated — read the full file for details)"
+                    return truncated
+            except Exception:
+                pass
+        return ""
+
     def _estimate_task_complexity(self, task: str) -> str:
         """Classify task complexity to set the right orchestrator expectations.
 
@@ -1617,8 +1636,8 @@ class OrchestratorManager:
             elif any(w in lower for w in ('test passed', 'tests passed', 'all tests', 'test failed', 'tests failed', 'assertion')):
                 test_results.append(line.strip()[:120])
 
-        # Build structured context entry
-        ctx_parts = [f"[{agent_role}] Task: {task[:200]}"]
+        # Build structured context entry — tagged with round number for temporal tracking
+        ctx_parts = [f"[{agent_role}] Round {self._current_loop} | Task: {task[:200]}"]
         if response.is_error:
             ctx_parts.append(f"  Status: FAILED — {response.error_message[:200]}")
         else:
@@ -1732,7 +1751,19 @@ class OrchestratorManager:
                     essential.append(line)
             compressed.append('\n'.join(essential))
 
-        return "Context from previous rounds:\n" + "\n---\n".join(compressed)
+        # Build the context block — manifest first (persistent truth), then round history
+        sections: list[str] = []
+        manifest = self._read_project_manifest()
+        if manifest:
+            sections.append(
+                "─── PROJECT MANIFEST (team's persistent memory) ───\n"
+                + manifest +
+                "\n───────────────────────────────────────────────────"
+            )
+        if compressed:
+            sections.append("Context from previous rounds:\n" + "\n---\n".join(compressed))
+
+        return "\n\n".join(sections) if sections else ""
 
     async def _query_agent(self, agent_role: str, prompt: str, skill_names: list[str] | None = None) -> SDKResponse:
         """Query a specific agent (orchestrator or sub-agent) using the SDK."""
@@ -1923,9 +1954,28 @@ class OrchestratorManager:
     def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]], completed_rounds: list[str] | None = None) -> str:
         """Build a structured prompt for the orchestrator to review sub-agent results.
 
-        Includes clear status, cost, workspace changes, round history, and actionable guidance.
+        Includes manifest state, agent results, workspace changes, round history,
+        budget/round estimate, and a concrete recommended next action.
         """
         parts = ["═══ SUB-AGENT RESULTS ═══\n"]
+
+        # Always inject manifest at the top — this is the team's ground truth
+        manifest = self._read_project_manifest()
+        if manifest:
+            parts.append(f"─── 📋 PROJECT MANIFEST (.nexus/PROJECT_MANIFEST.md) ───\n{manifest}\n")
+
+        # Budget + rounds estimate so orchestrator can prioritize ruthlessly
+        budget_used = self.total_cost_usd
+        budget_cap = self._effective_budget
+        budget_left = max(0.0, budget_cap - budget_used)
+        loops_done = self._current_loop
+        loops_max = MAX_ORCHESTRATOR_LOOPS
+        loops_left = max(0, loops_max - loops_done)
+        parts.append(
+            f"─── 📊 SESSION PROGRESS ───\n"
+            f"Rounds: {loops_done}/{loops_max} ({loops_left} remaining) | "
+            f"Budget: ${budget_used:.2f}/${budget_cap:.0f} (${budget_left:.2f} left)\n"
+        )
         has_errors = False
         total_sub_cost = 0.0
         total_sub_turns = 0
