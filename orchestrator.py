@@ -890,6 +890,17 @@ class OrchestratorManager:
         }
         prompt += f"\n\n{complexity_hints.get(complexity, '')}\n\nUser request:\n{user_message}"
 
+        # Initialize the task ledger (todo.md) — persistent file-system context
+        self._init_todo(user_message, complexity)
+        todo_content = self._read_todo()
+        if todo_content:
+            prompt += (
+                f"\n\n📋 TASK LEDGER (.nexus/todo.md):\n"
+                f"This file tracks your progress. You can read it with your tools. "
+                f"Update it by delegating developer to edit .nexus/todo.md when phases complete.\n\n"
+                f"{todo_content[:2000]}\n"
+            )
+
         task_history_id = None  # Guard: prevents NameError in except blocks
         _anyio_retries = 0
         _MAX_ANYIO_RETRIES = 3  # Max times to auto-retry on spurious CancelledError
@@ -1330,6 +1341,16 @@ class OrchestratorManager:
                     await self._self_pause("stuck detection")
                     continue
 
+                # ═══ EVALUATOR-REFLECT-REFINE LOOP ═══
+                # Before sending results to the orchestrator, automatically run
+                # verification (tests/build) if code was changed. If tests fail,
+                # send the developer back to fix WITHOUT wasting an orchestrator turn.
+                eval_result = await self._auto_evaluate(sub_results, loop_count)
+                if eval_result and eval_result.get("auto_fixed"):
+                    # Developer was auto-retried and the fix results are in sub_results
+                    sub_results = eval_result["updated_results"]
+                    logger.info(f"[{self.project_id}] Evaluator auto-fix applied in round {loop_count}")
+
                 # Track what was done this round
                 _round_summary = ", ".join(
                     f"{role}({'OK' if all(not r.is_error for r in resps) else 'ERR'})"
@@ -1337,8 +1358,29 @@ class OrchestratorManager:
                 )
                 self._completed_rounds.append(f"Round {loop_count}: {_round_summary}")
 
+                # Update the persistent task ledger with this round's results
+                self._update_todo_after_round(loop_count, _round_summary)
+
+                # Inject evaluation results into the review prompt context
+                eval_context = ""
+                if eval_result:
+                    eval_context = eval_result.get("summary", "")
+
                 # Feed results back to orchestrator with round history
                 orchestrator_input = await self._build_review_prompt(sub_results, self._completed_rounds)
+
+                # Add evaluation results if available
+                if eval_context:
+                    orchestrator_input += f"\n\n═══ AUTO-EVALUATION RESULTS ═══\n{eval_context}\n"
+
+                # Inject current task ledger into the review prompt so the
+                # orchestrator always has the persistent goal + progress visible
+                todo_content = self._read_todo()
+                if todo_content:
+                    orchestrator_input += (
+                        f"\n\n📋 TASK LEDGER (.nexus/todo.md):\n"
+                        f"{todo_content[:2000]}\n"
+                    )
 
         except asyncio.CancelledError:
             # Distinguish real cancellation (user pressed Stop) from spurious
@@ -1440,9 +1482,12 @@ class OrchestratorManager:
             return await self._run_orchestrator(user_message)
 
     async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, list[SDKResponse]]:
-        """Execute sub-agent tasks, running different agent roles in parallel.
+        """Execute sub-agent tasks with smart scheduling.
 
-        Agents with different roles run concurrently via asyncio.gather().
+        Code-modifying agents (developer, devops) run SEQUENTIALLY to avoid
+        conflicting file changes (the Cognition/Devin insight). Read-only
+        agents (reviewer, tester, researcher) run in PARALLEL after writers finish.
+
         If the orchestrator delegates multiple tasks to the same role,
         those run sequentially (they share a session).
 
@@ -1656,7 +1701,21 @@ class OrchestratorManager:
                     f"{summary}"
                 )
 
-        # Run different roles in parallel, with proper exception handling
+        # ═══ SMART SCHEDULING: Sequential writers, then parallel readers ═══
+        # Code-modifying agents (developer, devops) run FIRST and SEQUENTIALLY
+        # to avoid conflicting file changes. Read-only agents (reviewer, tester,
+        # researcher) run AFTER in PARALLEL.
+        _WRITER_ROLES = {"developer", "devops"}  # Agents that modify files
+        _READER_ROLES = {"reviewer", "tester", "researcher"}  # Agents that read/verify
+
+        writer_roles = {r: d for r, d in by_role.items() if r in _WRITER_ROLES}
+        reader_roles = {r: d for r, d in by_role.items() if r in _READER_ROLES}
+        # Any unknown roles go to readers (safer default)
+        for r, d in by_role.items():
+            if r not in _WRITER_ROLES and r not in _READER_ROLES:
+                reader_roles[r] = d
+
+        # Run different roles with proper exception handling
         # Also run a heartbeat task that emits periodic status events
         async def _heartbeat():
             """Emit periodic status events with REAL info about what each agent is doing."""
@@ -1702,169 +1761,151 @@ class OrchestratorManager:
                         cost=self.total_cost_usd, max_budget=MAX_BUDGET_USD,
                     )
 
-        role_tasks: dict[str, asyncio.Task] = {}
+        async def _isolated_run_role(role, dels):
+            """Run a role with full isolation from sibling failures."""
+            try:
+                await run_role(role, dels)
+            except asyncio.CancelledError:
+                # Only propagate if we were explicitly stopped
+                if self._stop_event.is_set():
+                    raise
+                logger.warning(
+                    f"[{self.project_id}] Agent '{role}' was cancelled "
+                    f"(not by stop). Treating as error."
+                )
+                async with lock:
+                    results.setdefault(role, []).append(SDKResponse(
+                        text=f"Agent '{role}' was cancelled unexpectedly.",
+                        is_error=True,
+                        error_message="Cancelled unexpectedly",
+                    ))
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.warning(
+                        f"[{self.project_id}] Agent '{role}' hit anyio "
+                        f"cancel scope bug (contained by isolation): {e}"
+                    )
+                    # Don't crash — the agent may have produced results
+                else:
+                    raise
+
+        async def _run_roles_parallel(roles_dict: dict[str, list[Delegation]]):
+            """Run multiple roles in parallel using independent tasks."""
+            if not roles_dict:
+                return
+            if len(roles_dict) == 1:
+                role, dels = next(iter(roles_dict.items()))
+                await _isolated_run_role(role, dels)
+                return
+
+            _role_tasks: dict[str, asyncio.Task] = {}
+            for role, dels in roles_dict.items():
+                task = asyncio.create_task(
+                    _isolated_run_role(role, dels),
+                    name=f"agent-{role}",
+                )
+                _role_tasks[role] = task
+
+            _wait_timeout = AGENT_TIMEOUT_SECONDS + 60
+            remaining = set(_role_tasks.values())
+            still_pending = set()
+            while remaining:
+                try:
+                    done, still_pending = await asyncio.wait(
+                        remaining,
+                        return_when=asyncio.ALL_COMPLETED,
+                        timeout=_wait_timeout,
+                    )
+                    remaining = set()
+                except asyncio.CancelledError:
+                    if self._stop_event.is_set():
+                        raise
+                    remaining = {t for t in remaining if not t.done()}
+                    if not remaining:
+                        break
+                    logger.warning(
+                        f"[{self.project_id}] Spurious CancelledError in asyncio.wait — "
+                        f"{len(remaining)} agent(s) still running, re-waiting..."
+                    )
+                    continue
+
+            if still_pending:
+                logger.warning(
+                    f"[{self.project_id}] {len(still_pending)} agent task(s) timed out "
+                    f"after {_wait_timeout}s — cancelling"
+                )
+                for t in still_pending:
+                    t.cancel()
+                await asyncio.wait(still_pending, timeout=5.0)
+
+            for role_name, task in _role_tasks.items():
+                if task.cancelled():
+                    logger.warning(
+                        f"[{self.project_id}] Agent role '{role_name}' was cancelled"
+                    )
+                    async with lock:
+                        results.setdefault(role_name, []).append(SDKResponse(
+                            text=f"Agent '{role_name}' was cancelled.",
+                            is_error=True,
+                            error_message="Task cancelled",
+                        ))
+                elif task.exception() is not None:
+                    exc = task.exception()
+                    logger.error(
+                        f"[{self.project_id}] Agent role '{role_name}' raised exception: {exc}",
+                        exc_info=exc,
+                    )
+                    await self._send_result(
+                        f"⚠️ *{role_name}* crashed unexpectedly: {exc}\n"
+                        f"The orchestrator will be notified to handle this."
+                    )
+                    async with lock:
+                        results.setdefault(role_name, []).append(SDKResponse(
+                            text=f"Agent crashed with exception: {exc}",
+                            is_error=True,
+                            error_message=str(exc),
+                        ))
+
+        role_tasks: dict[str, asyncio.Task] = {}  # Keep for compatibility
         heartbeat_task = asyncio.create_task(_heartbeat())
         try:
-            if len(by_role) > 1:
-                # Run each role as a fully independent asyncio.Task.
-                # Each sub-agent's SDK query runs in an isolated event loop
-                # (via isolated_query in _query_agent), so the anyio cancel-
-                # scope bug cannot poison the main loop or sibling agents.
-                # We still use asyncio.wait() for robustness — if anything
-                # unexpected happens, tasks remain independent.
-                async def _isolated_run_role(role, dels):
-                    """Run a role with full isolation from sibling failures."""
-                    try:
-                        await run_role(role, dels)
-                    except asyncio.CancelledError:
-                        # Only propagate if we were explicitly stopped
-                        if self._stop_event.is_set():
-                            raise
-                        logger.warning(
-                            f"[{self.project_id}] Agent '{role}' was cancelled "
-                            f"(not by stop). Treating as error."
-                        )
-                        async with lock:
-                            results.setdefault(role, []).append(SDKResponse(
-                                text=f"Agent '{role}' was cancelled unexpectedly.",
-                                is_error=True,
-                                error_message="Cancelled unexpectedly",
-                            ))
-                    except RuntimeError as e:
-                        if "cancel scope" in str(e):
-                            logger.warning(
-                                f"[{self.project_id}] Agent '{role}' hit anyio "
-                                f"cancel scope bug (contained by isolation): {e}"
-                            )
-                            # Don't crash — the agent may have produced results
-                        else:
-                            raise
+            # Phase 1: Run WRITER agents SEQUENTIALLY
+            # This prevents file conflicts (the Cognition/Devin insight)
+            if writer_roles:
+                writer_count = sum(len(d) for d in writer_roles.values())
+                await self._notify(
+                    f"📝 Running {writer_count} code-modifying task(s) sequentially "
+                    f"({', '.join(writer_roles.keys())})..."
+                )
+                for role, dels in writer_roles.items():
+                    if self._stop_event.is_set():
+                        break
+                    await _isolated_run_role(role, dels)
 
-                # Create independent tasks (not linked via gather)
-                for role, dels in by_role.items():
-                    task = asyncio.create_task(
-                        _isolated_run_role(role, dels),
-                        name=f"agent-{role}",
-                    )
-                    role_tasks[role] = task
+            # Phase 2: Run READER agents IN PARALLEL
+            # They only read/verify — safe to run concurrently
+            if reader_roles and not self._stop_event.is_set():
+                reader_count = sum(len(d) for d in reader_roles.values())
+                await self._notify(
+                    f"🔍 Running {reader_count} verification task(s) in parallel "
+                    f"({', '.join(reader_roles.keys())})..."
+                )
+                await _run_roles_parallel(reader_roles)
 
-                # Wait for all tasks to complete — with timeout to prevent infinite hangs
-                if role_tasks:
-                    _wait_timeout = AGENT_TIMEOUT_SECONDS + 60  # agent timeout + buffer
-                    remaining = set(role_tasks.values())
-                    still_pending = set()  # Initialize — may not be set if loop exits via break
-                    _cancel_retries = 0
-                    while remaining:
-                        try:
-                            done, still_pending = await asyncio.wait(
-                                remaining,
-                                return_when=asyncio.ALL_COMPLETED,
-                                timeout=_wait_timeout,
-                            )
-                            remaining = set()  # All done
-                        except asyncio.CancelledError:
-                            if self._stop_event.is_set():
-                                raise  # Real cancellation — propagate
-                            # Spurious anyio cancel-scope leak — DON'T kill children!
-                            # The current task is marked as cancelled — we MUST uncancel
-                            # it, otherwise asyncio.wait() will immediately raise again.
-                            ct = asyncio.current_task()
-                            if ct is not None and hasattr(ct, 'uncancel'):
-                                ct.uncancel()
-                            _cancel_retries += 1
-                            if _cancel_retries > 5:
-                                # Too many spurious cancels — bail out and let caller handle
-                                logger.error(
-                                    f"[{self.project_id}] Too many spurious CancelledErrors "
-                                    f"({_cancel_retries}) — giving up on asyncio.wait"
-                                )
-                                break
-                            remaining = {t for t in remaining if not t.done()}
-                            if not remaining:
-                                break
-                            logger.warning(
-                                f"[{self.project_id}] Spurious CancelledError in asyncio.wait — "
-                                f"{len(remaining)} agent(s) still running, re-waiting "
-                                f"(attempt {_cancel_retries})..."
-                            )
-                            continue
 
-                    if still_pending:
-                        logger.warning(
-                            f"[{self.project_id}] {len(still_pending)} agent task(s) timed out "
-                            f"after {_wait_timeout}s — cancelling"
-                        )
-                        for t in still_pending:
-                            t.cancel()
-                        await asyncio.wait(still_pending, timeout=5.0)
-                    # Check for unexpected exceptions
-                    for role_name, task in role_tasks.items():
-                        if task.cancelled():
-                            logger.warning(
-                                f"[{self.project_id}] Agent role '{role_name}' was cancelled"
-                            )
-                            async with lock:
-                                results.setdefault(role_name, []).append(SDKResponse(
-                                    text=f"Agent '{role_name}' was cancelled.",
-                                    is_error=True,
-                                    error_message="Task cancelled",
-                                ))
-                        elif task.exception() is not None:
-                            exc = task.exception()
-                            logger.error(
-                                f"[{self.project_id}] Agent role '{role_name}' raised exception: {exc}",
-                                exc_info=exc,
-                            )
-                            await self._send_result(
-                                f"⚠️ *{role_name}* crashed unexpectedly: {exc}\n"
-                                f"The orchestrator will be notified to handle this."
-                            )
-                            async with lock:
-                                results.setdefault(role_name, []).append(SDKResponse(
-                                    text=f"Agent crashed with exception: {exc}",
-                                    is_error=True,
-                                    error_message=str(exc),
-                                ))
-            elif by_role:
-                # Single role — run directly (no overhead)
-                role, dels = next(iter(by_role.items()))
-                await run_role(role, dels)
         except asyncio.CancelledError:
-            # Check if this is a REAL cancellation (user pressed Stop) or a
-            # spurious anyio cancel-scope leak from generator GC.
             if self._stop_event.is_set():
-                # Real cancellation — kill running agent tasks
-                if role_tasks:
-                    for task in role_tasks.values():
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.wait(role_tasks.values(), timeout=5.0)
                 raise
             else:
-                # Spurious cancellation — DON'T kill children.
-                # Uncancel our task so we can keep awaiting.
+                # Spurious cancellation — uncancel so we don't re-raise.
                 ct = asyncio.current_task()
                 if ct is not None and hasattr(ct, 'uncancel'):
                     ct.uncancel()
                 logger.warning(
                     f"[{self.project_id}] _run_sub_agents got SPURIOUS CancelledError "
-                    f"(anyio cancel-scope leak). Waiting for agents to finish..."
+                    f"(anyio cancel-scope leak). Continuing..."
                 )
-                if role_tasks:
-                    pending_tasks = {t for t in role_tasks.values() if not t.done()}
-                    if pending_tasks:
-                        try:
-                            await asyncio.wait(pending_tasks, timeout=AGENT_TIMEOUT_SECONDS)
-                        except asyncio.CancelledError:
-                            if self._stop_event.is_set():
-                                for t in pending_tasks:
-                                    if not t.done():
-                                        t.cancel()
-                                raise
-                            # Another spurious cancel — uncancel again and continue
-                            ct2 = asyncio.current_task()
-                            if ct2 is not None and hasattr(ct2, 'uncancel'):
-                                ct2.uncancel()
+
         finally:
             heartbeat_task.cancel()
             try:
@@ -2135,11 +2176,30 @@ class OrchestratorManager:
                 skill_content = build_skill_prompt(orch_skills)
                 if skill_content:
                     system_prompt += skill_content
-            max_turns = 1
+            max_turns = 3  # Allow orchestrator to think, read files, and then respond
             max_budget = 5.0  # Orchestrator processes large context across many rounds — needs headroom
             permission_mode = "bypassPermissions"
-            tools = []  # Disable ALL tools — text-only coordinator
-            logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, no tools, max_turns=1)")
+            # Read-only tools: orchestrator can inspect the project but NOT modify it
+            allowed_tools = [
+                "Read",       # Read file contents
+                "Glob",       # List/find files by pattern
+                "Grep",       # Search file contents
+                "LS",         # List directory
+                "Bash(git log*)",   # Git history (read-only)
+                "Bash(git diff*)",  # Git diff (read-only)
+                "Bash(git status*)",  # Git status (read-only)
+                "Bash(cat *)",       # Cat files (read-only)
+                "Bash(head *)",      # Head files (read-only)
+                "Bash(tail *)",      # Tail files (read-only)
+                "Bash(wc *)",        # Word count (read-only)
+                "Bash(find *)",      # Find files (read-only)
+                "Bash(pytest*)",     # Run tests (read-only verification)
+                "Bash(python*-m*pytest*)",  # Run tests via python
+                "Bash(npm test*)",   # Run JS tests
+                "Bash(npx jest*)",   # Run Jest tests
+            ]
+            tools = None  # Use default tool set (filtered by allowed_tools)
+            logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, read-only tools, max_turns=3)")
         elif agent_role == "orchestrator" and not self.multi_agent:
             system_prompt = SOLO_AGENT_PROMPT
             max_turns = SDK_MAX_TURNS_PER_QUERY
@@ -2794,5 +2854,287 @@ class OrchestratorManager:
             return status_out.strip() or "(no file changes detected)"
         except Exception:
             return "(unable to detect changes)"
+
+    # ── Evaluator-Reflect-Refine Loop ──
+    # Automatically runs verification (tests/build/lint) after code changes.
+    # If tests fail, auto-retries the developer with the error output—
+    # saving an entire orchestrator round.
+
+    async def _auto_evaluate(self, sub_results: dict[str, list[SDKResponse]], round_num: int) -> dict | None:
+        """Run automatic evaluation after a round of sub-agent work.
+
+        Detects if code was changed, runs tests/build if available,
+        and optionally auto-retries the developer if tests fail.
+
+        Returns:
+            None if no evaluation was needed or possible.
+            dict with keys:
+                - summary: str — human-readable evaluation result
+                - tests_passed: bool | None
+                - auto_fixed: bool — whether developer was auto-retried
+                - updated_results: dict — updated sub_results if auto-fixed
+        """
+        # Only evaluate if developer was in this round (code changes likely)
+        if "developer" not in sub_results:
+            return None
+
+        # Check if there are actual file changes
+        file_changes = await self._detect_file_changes()
+        if not file_changes or "(no file" in file_changes:
+            return None
+
+        # Detect test framework and run tests
+        test_output = await self._run_project_tests()
+        if test_output is None:
+            # No test framework detected
+            return {"summary": "No test framework detected — skipping auto-evaluation.", "tests_passed": None, "auto_fixed": False, "updated_results": sub_results}
+
+        test_passed = test_output["passed"]
+        test_summary = test_output["output"][:1500]
+
+        if test_passed:
+            return {
+                "summary": f"✅ Auto-evaluation: Tests PASSED\n{test_summary[:500]}",
+                "tests_passed": True,
+                "auto_fixed": False,
+                "updated_results": sub_results,
+            }
+
+        # Tests failed — auto-retry developer with the error
+        await self._notify(
+            f"🔄 Auto-evaluator detected test failures in round {round_num}. "
+            f"Sending developer back to fix..."
+        )
+        logger.info(f"[{self.project_id}] Auto-evaluator: tests failed, auto-retrying developer")
+
+        # Build a focused fix prompt with the test output
+        fix_prompt = (
+            f"Project: {self.project_name}\n"
+            f"Working directory: {self.project_dir}\n\n"
+            f"URGENT: Tests are failing after your changes. Fix the code to make tests pass.\n\n"
+            f"Test output:\n```\n{test_summary}\n```\n\n"
+            f"Instructions:\n"
+            f"1. Read the test output carefully to understand what's failing\n"
+            f"2. Fix the SOURCE CODE (not the tests) to resolve the failures\n"
+            f"3. Run the tests again to verify your fix works\n"
+            f"4. Report what you changed\n"
+        )
+
+        try:
+            fix_response = await self._query_agent("developer", fix_prompt)
+            await self._accumulate_context("developer", "Auto-fix: resolve test failures", fix_response)
+
+            # Run tests again to verify
+            retest = await self._run_project_tests()
+            retest_passed = retest["passed"] if retest else False
+            retest_summary = retest["output"][:500] if retest else "(retest failed)"
+
+            # Update sub_results with the fix response
+            updated = dict(sub_results)
+            updated.setdefault("developer", []).append(fix_response)
+
+            return {
+                "summary": (
+                    f"🔄 Auto-evaluator: Tests failed after round {round_num}.\n"
+                    f"Developer was auto-retried to fix.\n"
+                    f"Retest result: {'PASSED ✅' if retest_passed else 'STILL FAILING ❌'}\n"
+                    f"Retest output: {retest_summary}"
+                ),
+                "tests_passed": retest_passed,
+                "auto_fixed": True,
+                "updated_results": updated,
+            }
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] Auto-fix failed: {e}")
+            return {
+                "summary": f"❌ Auto-evaluator: Tests failed. Auto-fix attempt also failed: {str(e)[:200]}",
+                "tests_passed": False,
+                "auto_fixed": False,
+                "updated_results": sub_results,
+            }
+
+    async def _run_project_tests(self) -> dict | None:
+        """Detect and run the project's test suite.
+
+        Returns:
+            None if no test framework detected.
+            dict with keys: passed (bool), output (str)
+        """
+        project = Path(self.project_dir)
+
+        # Detect test framework by checking for config files and test directories
+        test_commands = []
+
+        # Python: pytest
+        if (project / "pytest.ini").exists() or (project / "setup.cfg").exists() or \
+           (project / "pyproject.toml").exists() or (project / "tests").is_dir() or \
+           (project / "test").is_dir():
+            # Check if pytest is available
+            test_commands.append(["python3", "-m", "pytest", "--tb=short", "-q", "--no-header", "--timeout=30"])
+
+        # Node.js: npm test / jest
+        if (project / "package.json").exists():
+            try:
+                pkg = json.loads((project / "package.json").read_text())
+                scripts = pkg.get("scripts", {})
+                if "test" in scripts and scripts["test"] != 'echo "Error: no test specified" && exit 1':
+                    test_commands.append(["npm", "test", "--", "--watchAll=false"])
+            except Exception:
+                pass
+
+        if not test_commands:
+            return None
+
+        # Try each test command until one works
+        for cmd in test_commands:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    cwd=self.project_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    env={**os.environ, "CI": "true", "FORCE_COLOR": "0"},
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+                output = stdout.decode("utf-8", errors="replace")
+                passed = proc.returncode == 0
+                return {"passed": passed, "output": output}
+            except asyncio.TimeoutError:
+                return {"passed": False, "output": f"Tests timed out after 120s (command: {' '.join(cmd)})"}
+            except FileNotFoundError:
+                continue  # Try next command
+            except Exception as e:
+                return {"passed": False, "output": f"Test execution error: {str(e)}"}
+
+        return None
+
+    # ── File-System Context: Task Ledger (.nexus/todo.md) ──
+    # Instead of relying solely on shared_context (which grows and gets trimmed),
+    # we maintain a persistent todo.md file that tracks the current task state.
+    # This is inspired by Manus's context engineering approach: the file system
+    # IS the memory, and the todo.md keeps goals inside the model's "attention window".
+
+    def _get_todo_path(self) -> Path:
+        """Get the path to the task ledger file."""
+        nexus_dir = Path(self.project_dir) / ".nexus"
+        nexus_dir.mkdir(parents=True, exist_ok=True)
+        return nexus_dir / "todo.md"
+
+    def _read_todo(self) -> str:
+        """Read the current task ledger. Returns empty string if not found."""
+        todo_path = self._get_todo_path()
+        if todo_path.exists():
+            try:
+                return todo_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+        return ""
+
+    def _write_todo(self, content: str):
+        """Write the task ledger. Creates .nexus/ dir if needed."""
+        try:
+            todo_path = self._get_todo_path()
+            todo_path.write_text(content, encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] Failed to write todo.md: {e}")
+
+    def _init_todo(self, user_message: str, complexity: str):
+        """Initialize the task ledger at the start of a new session.
+
+        Creates a structured todo.md with the original goal, phases,
+        and a checklist that the orchestrator updates each round.
+        """
+        existing = self._read_todo()
+        if existing:
+            # Don't overwrite — this is a continuation
+            return
+
+        phase_templates = {
+            "SIMPLE": (
+                "- [ ] Phase 1: Implement the fix/change\n"
+                "- [ ] Phase 2: Verify it works\n"
+            ),
+            "MEDIUM": (
+                "- [ ] Phase 1: Understand the codebase and plan\n"
+                "- [ ] Phase 2: Implement the changes\n"
+                "- [ ] Phase 3: Review the code\n"
+                "- [ ] Phase 4: Test and verify\n"
+            ),
+            "LARGE": (
+                "- [ ] Phase 1: Architecture and planning\n"
+                "- [ ] Phase 2: Core implementation\n"
+                "- [ ] Phase 3: Feature implementation\n"
+                "- [ ] Phase 4: Integration\n"
+                "- [ ] Phase 5: Review and testing\n"
+                "- [ ] Phase 6: Polish and deployment\n"
+            ),
+            "EPIC": (
+                "- [ ] Phase 1: Architecture + read existing code + plan file structure (rounds 1-3)\n"
+                "- [ ] Phase 2: Core foundation — models, DB, config (rounds 4-8)\n"
+                "- [ ] Phase 3: Feature implementation — one feature at a time (rounds 9-13)\n"
+                "- [ ] Phase 4: Integration — connect all pieces, error handling (rounds 14-17)\n"
+                "- [ ] Phase 5: Testing — comprehensive tests, fix failures (rounds 18-22)\n"
+                "- [ ] Phase 6: Polish — error handling, docs, deployment config (rounds 23+)\n"
+            ),
+        }
+
+        phases = phase_templates.get(complexity, phase_templates["MEDIUM"])
+        content = (
+            f"# Task Ledger\n\n"
+            f"## Goal\n{user_message[:1000]}\n\n"
+            f"## Complexity\n{complexity}\n\n"
+            f"## Phases\n{phases}\n"
+            f"## Current Phase\nPhase 1\n\n"
+            f"## Completed Work\n(none yet)\n\n"
+            f"## Open Issues\n(none yet)\n\n"
+            f"## Blocked Items\n(none yet)\n"
+        )
+        self._write_todo(content)
+
+    def _update_todo_after_round(self, round_num: int, round_summary: str, findings: list[dict] | None = None):
+        """Update the task ledger after a round completes.
+
+        Appends the round summary to 'Completed Work' and updates
+        'Open Issues' based on findings from the review prompt.
+        """
+        current = self._read_todo()
+        if not current:
+            return  # No ledger to update
+
+        # Append to Completed Work section
+        completed_marker = "## Completed Work"
+        if completed_marker in current:
+            idx = current.find(completed_marker) + len(completed_marker)
+            # Find the next section
+            next_section = current.find("\n## ", idx)
+            before = current[:idx]
+            existing_work = current[idx:next_section].strip() if next_section > idx else current[idx:].strip()
+            after = current[next_section:] if next_section > idx else ""
+
+            if existing_work == "(none yet)":
+                existing_work = ""
+            new_entry = f"- Round {round_num}: {round_summary[:200]}"
+            updated_work = f"{existing_work}\n{new_entry}".strip()
+            current = f"{before}\n{updated_work}\n{after}"
+
+        # Update Open Issues if we have findings
+        if findings:
+            issues_marker = "## Open Issues"
+            if issues_marker in current:
+                idx = current.find(issues_marker) + len(issues_marker)
+                next_section = current.find("\n## ", idx)
+                before = current[:idx]
+                after = current[next_section:] if next_section > idx else ""
+
+                issue_lines = []
+                for f in findings[:10]:  # Cap at 10 issues
+                    severity = f.get("severity", "MEDIUM")
+                    desc = f.get("description", "")[:150]
+                    file_hint = f" in {f['file']}" if f.get("file") else ""
+                    issue_lines.append(f"- [{severity}] {desc}{file_hint}")
+                issues_text = "\n".join(issue_lines) if issue_lines else "(none)"
+                current = f"{before}\n{issues_text}\n{after}"
+
+        self._write_todo(current)
 
     # _detect_stuck is defined earlier in the class (line ~245)
