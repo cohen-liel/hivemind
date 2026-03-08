@@ -1022,15 +1022,20 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": "Schedule not found"}, status_code=404)
         return {"ok": True}
 
+    class SetBudgetRequest(BaseModel):
+        budget_usd: float
+
     @app.put("/api/projects/{project_id}/budget")
-    async def set_project_budget(project_id: str, request: Request):
-        """Set per-project budget."""
-        data = await request.json()
-        budget = float(data.get("budget_usd", 0))
+    async def set_project_budget(project_id: str, req: SetBudgetRequest):
+        """Set per-project budget with validation."""
+        if req.budget_usd < 0:
+            return JSONResponse({"error": "Budget cannot be negative"}, status_code=400)
+        if req.budget_usd > 10_000:
+            return JSONResponse({"error": "Budget exceeds maximum ($10,000)"}, status_code=400)
         if not state.session_mgr:
             return JSONResponse({"error": "DB not ready"}, status_code=500)
-        await state.session_mgr.set_project_budget(project_id, budget)
-        return {"ok": True, "budget_usd": budget}
+        await state.session_mgr.set_project_budget(project_id, req.budget_usd)
+        return {"ok": True, "budget_usd": req.budget_usd}
 
     @app.get("/api/stats")
     async def get_stats():

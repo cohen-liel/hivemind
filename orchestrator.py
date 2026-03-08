@@ -28,6 +28,7 @@ from config import (
     BUDGET_WARNING_THRESHOLD,
 )
 from sdk_client import ClaudeSDKManager, SDKResponse
+from isolated_query import isolated_query
 from session_manager import SessionManager
 from skills_registry import get_skills_for_agent, select_skills_for_task, build_skill_prompt
 
@@ -1158,13 +1159,17 @@ class OrchestratorManager:
                     "state": "idle",
                     "task": f"waiting for {len(delegations)} sub-agent(s)",
                 }
-                # Execute sub-agents — wrapped in retry for spurious anyio CancelledError
+                # Execute sub-agents.  Each sub-agent query runs in an
+                # isolated event loop (via isolated_query), so the anyio
+                # cancel-scope bug is contained.  We still keep the retry
+                # guard as a safety net for edge cases.
                 try:
                     sub_results = await self._run_sub_agents(delegations)
                 except asyncio.CancelledError:
                     if self._stop_event.is_set():
                         raise  # Real cancellation — propagate up
-                    # Spurious anyio cancel-scope leak — uncancel and retry
+                    # Spurious anyio cancel-scope leak (should be rare now
+                    # with event-loop isolation) — uncancel and retry
                     ct = asyncio.current_task()
                     if ct is not None and hasattr(ct, 'uncancel'):
                         ct.uncancel()
@@ -1182,6 +1187,42 @@ class OrchestratorManager:
                     f"[{self.project_id}] Sub-agents finished: "
                     f"{', '.join(f'{k}({len(v)} tasks)' for k, v in sub_results.items())}"
                 )
+
+                # Auto-commit safety net: ensure agents' work is saved
+                # even if they forgot to commit (prevents work loss on crash)
+                try:
+                    commit_result = await asyncio.wait_for(
+                        asyncio.create_subprocess_exec(
+                            "git", "-C", self.project_dir,
+                            "diff", "--quiet",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        ),
+                        timeout=10.0,
+                    )
+                    await commit_result.wait()
+                    if commit_result.returncode != 0:
+                        # There are uncommitted changes — auto-commit them
+                        add_proc = await asyncio.create_subprocess_exec(
+                            "git", "-C", self.project_dir,
+                            "add", "-A",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await add_proc.wait()
+                        agents_in_round = ", ".join(sub_results.keys())
+                        commit_proc = await asyncio.create_subprocess_exec(
+                            "git", "-C", self.project_dir,
+                            "commit", "-m", f"auto: save work from round {loop_count} ({agents_in_round})",
+                            "--no-verify",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await commit_proc.wait()
+                        if commit_proc.returncode == 0:
+                            logger.info(f"[{self.project_id}] Auto-committed uncommitted changes after round {loop_count}")
+                except Exception as e:
+                    logger.debug(f"[{self.project_id}] Auto-commit check failed (non-critical): {e}")
 
                 # Check stuck detection
                 if self._detect_stuck():
@@ -1569,12 +1610,11 @@ class OrchestratorManager:
         try:
             if len(by_role) > 1:
                 # Run each role as a fully independent asyncio.Task.
-                # We use asyncio.wait() instead of asyncio.gather() because
-                # gather connects tasks — if the claude_agent_sdk's anyio
-                # cancel-scope cleanup leaks into a sibling task, gather
-                # propagates the cancellation to ALL tasks, killing them all.
-                # asyncio.wait() treats each task independently: if one crashes
-                # or gets cancelled, the others continue running unaffected.
+                # Each sub-agent's SDK query runs in an isolated event loop
+                # (via isolated_query in _query_agent), so the anyio cancel-
+                # scope bug cannot poison the main loop or sibling agents.
+                # We still use asyncio.wait() for robustness — if anything
+                # unexpected happens, tasks remain independent.
                 async def _isolated_run_role(role, dels):
                     """Run a role with full isolation from sibling failures."""
                     try:
@@ -1597,7 +1637,7 @@ class OrchestratorManager:
                         if "cancel scope" in str(e):
                             logger.warning(
                                 f"[{self.project_id}] Agent '{role}' hit anyio "
-                                f"cancel scope bug (suppressed): {e}"
+                                f"cancel scope bug (contained by isolation): {e}"
                             )
                             # Don't crash — the agent may have produced results
                         else:
@@ -2059,19 +2099,40 @@ class OrchestratorManager:
                 timestamp=time.time(),
             )
 
-        response = await self.sdk.query_with_retry(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            cwd=self.project_dir,
-            session_id=session_id,
-            max_turns=max_turns,
-            max_budget_usd=max_budget,
-            permission_mode=permission_mode,
-            on_stream=on_stream,
-            on_tool_use=on_tool_use,
-            allowed_tools=allowed_tools,
-            tools=tools,
-        )
+        # Use isolated_query for sub-agents (they run in parallel and are
+        # vulnerable to the anyio cancel-scope bug).  The orchestrator itself
+        # runs alone, so it can use the direct SDK call safely.
+        use_isolation = (agent_role != "orchestrator")
+
+        if use_isolation:
+            response = await isolated_query(
+                self.sdk,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                cwd=self.project_dir,
+                session_id=session_id,
+                max_turns=max_turns,
+                max_budget_usd=max_budget,
+                permission_mode=permission_mode,
+                on_stream=on_stream,
+                on_tool_use=on_tool_use,
+                allowed_tools=allowed_tools,
+                tools=tools,
+            )
+        else:
+            response = await self.sdk.query_with_retry(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                cwd=self.project_dir,
+                session_id=session_id,
+                max_turns=max_turns,
+                max_budget_usd=max_budget,
+                permission_mode=permission_mode,
+                on_stream=on_stream,
+                on_tool_use=on_tool_use,
+                allowed_tools=allowed_tools,
+                tools=tools,
+            )
 
         # Save session for future resume
         if response.session_id and not response.is_error:
