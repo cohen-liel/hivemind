@@ -1186,6 +1186,130 @@ def create_app() -> FastAPI:
             "latest_sequence": event_bus.get_latest_sequence(project_id),
         }
 
+    # --- Agent Performance & Cost Analytics ---
+
+    @app.get("/api/agent-stats")
+    async def get_agent_stats(project_id: str | None = None):
+        """Get aggregated agent performance statistics."""
+        if not state.session_mgr:
+            return {"stats": []}
+        stats = await state.session_mgr.get_agent_stats(project_id)
+        return {"stats": stats}
+
+    @app.get("/api/agent-stats/{agent_role}/recent")
+    async def get_agent_recent(agent_role: str, limit: int = 10):
+        """Get recent performance entries for a specific agent."""
+        if not state.session_mgr:
+            return {"entries": []}
+        entries = await state.session_mgr.get_agent_recent_performance(agent_role, limit)
+        return {"entries": entries}
+
+    @app.get("/api/cost-breakdown")
+    async def get_cost_breakdown(project_id: str | None = None, days: int = 30):
+        """Get cost breakdown by agent and by day."""
+        if not state.session_mgr:
+            return {"by_agent": [], "by_day": [], "total_cost": 0, "total_runs": 0}
+        return await state.session_mgr.get_cost_breakdown(project_id, days)
+
+    @app.get("/api/cost-summary")
+    async def get_cost_summary():
+        """Get per-project cost summary for dashboard overview."""
+        if not state.session_mgr:
+            return {"projects": []}
+        projects = await state.session_mgr.get_project_cost_summary()
+        return {"projects": projects}
+
+    # --- Interrupted Task Resume ---
+
+    @app.get("/api/projects/{project_id}/resumable")
+    async def get_resumable_task(project_id: str):
+        """Check if a project has an interrupted task that can be resumed."""
+        if not state.session_mgr:
+            return {"resumable": False}
+        task = await state.session_mgr.get_resumable_task(project_id)
+        if task:
+            return {
+                "resumable": True,
+                "task": {
+                    "last_message": task.get("last_user_message", ""),
+                    "current_loop": task.get("current_loop", 0),
+                    "turn_count": task.get("turn_count", 0),
+                    "total_cost_usd": task.get("total_cost_usd", 0),
+                    "status": task.get("status", "interrupted"),
+                },
+            }
+        return {"resumable": False}
+
+    @app.post("/api/projects/{project_id}/resume-interrupted")
+    async def resume_interrupted_task(project_id: str):
+        """Resume an interrupted task from where it left off."""
+        if not state.session_mgr:
+            return JSONResponse({"error": "Session manager not available"}, 500)
+
+        task = await state.session_mgr.get_resumable_task(project_id)
+        if not task:
+            return JSONResponse({"error": "No resumable task found"}, 404)
+
+        last_message = task.get("last_user_message", "")
+        if not last_message:
+            return JSONResponse({"error": "No task message to resume"}, 400)
+
+        # Find or create manager
+        manager, user_id = _find_manager(project_id)
+        if not manager:
+            # Try to create from DB
+            project = await state.session_mgr.load_project(project_id)
+            if not project:
+                return JSONResponse({"error": "Project not found"}, 404)
+            manager = _create_web_manager(
+                project_id=project_id,
+                project_name=project["name"],
+                project_dir=project["project_dir"],
+                user_id=project["user_id"],
+                agents_count=2,
+            )
+            if manager:
+                await state.register_manager(project["user_id"], project_id, manager)
+                user_id = project["user_id"]
+
+        if not manager:
+            return JSONResponse({"error": "Failed to create manager"}, 500)
+
+        if manager.is_running:
+            return JSONResponse({"error": "Project is already running"}, 409)
+
+        # Clear the interrupted state
+        await state.session_mgr.clear_orchestrator_state(project_id)
+
+        # Resume with a continuation message
+        resume_msg = (
+            f"RESUME INTERRUPTED TASK — Continue from where you left off.\n\n"
+            f"Original task: {last_message}\n\n"
+            f"Previous progress: {task.get('current_loop', 0)} rounds completed, "
+            f"${task.get('total_cost_usd', 0):.4f} spent.\n\n"
+            f"Check the .nexus/todo.md and git log to understand current state, "
+            f"then continue working."
+        )
+
+        # Start the task
+        manager.is_running = True
+        await event_bus.publish({
+            "type": "project_status",
+            "project_id": project_id,
+            "status": "running",
+        })
+        asyncio.create_task(manager._run_orchestrator(resume_msg))
+
+        return {"ok": True, "message": f"Resuming interrupted task: {last_message[:100]}"}
+
+    @app.post("/api/projects/{project_id}/discard-interrupted")
+    async def discard_interrupted_task(project_id: str):
+        """Discard an interrupted task (user chose not to resume)."""
+        if not state.session_mgr:
+            return JSONResponse({"error": "Session manager not available"}, 500)
+        await state.session_mgr.mark_task_discarded(project_id)
+        return {"ok": True}
+
     # --- WebSocket ---
 
     @app.websocket("/ws")

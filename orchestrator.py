@@ -1100,10 +1100,24 @@ class OrchestratorManager:
                             "Then restart the server from the new location."
                         )
                     else:
-                        await self._send_result(
-                            f"⚠️ Orchestrator error: {response.error_message}\n\n"
-                            f"Use /resume to retry or /stop to end."
-                        )
+                        # Transient error — retry with exponential backoff (up to 3 times)
+                        _orch_retries = getattr(self, '_orch_error_retries', 0)
+                        if _orch_retries < 3:
+                            self._orch_error_retries = _orch_retries + 1
+                            wait_time = min(5 * (2 ** _orch_retries), 30)
+                            await self._notify(
+                                f"⚠️ Orchestrator error (attempt {_orch_retries + 1}/3): "
+                                f"{response.error_message[:200]}\n"
+                                f"Retrying in {wait_time}s..."
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            self._orch_error_retries = 0
+                            await self._send_result(
+                                f"⚠️ Orchestrator error after 3 retries: {response.error_message}\n\n"
+                                f"Use /resume to retry or /stop to end."
+                            )
                     await self._self_pause("orchestrator error")
                     continue
 
@@ -1776,6 +1790,22 @@ class OrchestratorManager:
                     if changed:
                         summary += f"\n\nFiles changed:\n{changed}"
 
+                # ── Record agent performance for analytics ──
+                try:
+                    await self.session_mgr.record_agent_performance(
+                        project_id=self.project_id,
+                        agent_role=agent_role,
+                        status="error" if response.is_error else "success",
+                        duration_seconds=agent_duration,
+                        cost_usd=response.cost_usd,
+                        turns_used=response.num_turns,
+                        task_description=delegation.task[:500],
+                        error_message=response.error_message[:500] if response.is_error else "",
+                        round_number=self._current_loop,
+                    )
+                except Exception as perf_err:
+                    logger.debug(f"[{self.project_id}] Failed to record agent perf: {perf_err}")
+
                 status_icon = "✅" if not response.is_error else "⚠️"
                 emoji = AGENT_EMOJI.get(agent_role, "🔧")
                 dur_str = f" ({response.duration_ms // 1000}s)" if response.duration_ms > 0 else ""
@@ -2169,9 +2199,31 @@ class OrchestratorManager:
 
         self.shared_context.append("\n".join(ctx_parts))
 
-        # Keep shared_context from growing too large (max 20 entries)
+        # Smart context compression: instead of just truncating, compress older entries
         if len(self.shared_context) > 20:
-            self.shared_context = self.shared_context[-15:]
+            # Keep last 10 entries full, compress older ones into a summary
+            old_entries = self.shared_context[:-10]
+            recent_entries = self.shared_context[-10:]
+
+            # Compress old entries: extract just role, status, and key findings
+            compressed_lines = []
+            for entry in old_entries:
+                lines = entry.split('\n')
+                # Keep only the header line (role + status) and issues
+                for line in lines:
+                    ls = line.strip()
+                    if ls.startswith('[') or 'FAILED' in ls or 'Issues:' in ls or 'Status:' in ls:
+                        compressed_lines.append(f"  {ls[:150]}")
+                        break
+
+            if compressed_lines:
+                summary = (
+                    f"[COMPRESSED HISTORY] Rounds 1-{len(old_entries)} summary:\n"
+                    + "\n".join(compressed_lines)
+                )
+                self.shared_context = [summary] + recent_entries
+            else:
+                self.shared_context = recent_entries
 
     def _get_context_for_agent(self, agent_role: str) -> str:
         """Build a smart context summary for a sub-agent.

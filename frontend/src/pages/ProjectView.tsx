@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState, clearHistory } from '../api';
+import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState, clearHistory, getResumableTask, resumeInterruptedTask, discardInterruptedTask } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
 import ActivityFeed from '../components/ActivityFeed';
@@ -54,6 +54,7 @@ export default function ProjectView() {
   const [messageOffset, setMessageOffset] = useState(0);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
+  const [resumableTask, setResumableTask] = useState<{ last_message: string; current_loop: number; total_cost_usd: number } | null>(null);
 
   const loadProject = useCallback(async () => {
     if (!id) return;
@@ -126,6 +127,13 @@ export default function ProjectView() {
       setMessageOffset(100);
     }).catch(() => {});
     loadFiles().catch(() => {});
+
+    // Check for interrupted/resumable tasks
+    getResumableTask(id).then((data) => {
+      if (data.resumable && data.task) {
+        setResumableTask(data.task);
+      }
+    }).catch(() => {});
 
     // Full live state recovery — restores loop progress, agent states, approval on refresh
     getLiveState(id).then((live) => {
@@ -551,6 +559,46 @@ export default function ProjectView() {
 
   return (
     <div className="h-full flex flex-col" style={{ background: 'var(--bg-void)', overflow: 'hidden', position: 'fixed', inset: 0 }}>
+
+      {/* Resume interrupted task banner */}
+      {resumableTask && (
+        <div className="bg-amber-900/40 border-b border-amber-500/30 px-4 py-3 flex items-center justify-between gap-3 z-50">
+          <div className="flex-1 min-w-0">
+            <div className="text-amber-200 text-sm font-medium">⚠️ Interrupted Task Found</div>
+            <div className="text-amber-200/60 text-xs truncate">
+              {resumableTask.last_message.slice(0, 100)}
+              {' — '}{resumableTask.current_loop} rounds, ${resumableTask.total_cost_usd.toFixed(4)}
+            </div>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs rounded-md transition-colors"
+              onClick={async () => {
+                if (!id) return;
+                try {
+                  await resumeInterruptedTask(id);
+                  setResumableTask(null);
+                  loadProject();
+                } catch (e: unknown) {
+                  console.error('Resume failed:', e);
+                }
+              }}
+            >
+              Resume
+            </button>
+            <button
+              className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded-md transition-colors"
+              onClick={async () => {
+                if (!id) return;
+                await discardInterruptedTask(id);
+                setResumableTask(null);
+              }}
+            >
+              Discard
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ===== MOBILE LAYOUT ===== */}
       <div

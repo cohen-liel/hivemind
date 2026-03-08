@@ -152,6 +152,26 @@ CREATE INDEX IF NOT EXISTS idx_activity_project_seq
 CREATE INDEX IF NOT EXISTS idx_activity_project_ts
     ON activity_log(project_id, timestamp);
 
+CREATE TABLE IF NOT EXISTS agent_performance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    agent_role TEXT NOT NULL,
+    task_description TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'success',
+    duration_seconds REAL DEFAULT 0.0,
+    cost_usd REAL DEFAULT 0.0,
+    turns_used INTEGER DEFAULT 0,
+    error_message TEXT DEFAULT '',
+    round_number INTEGER DEFAULT 0,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_perf_project
+    ON agent_performance(project_id, agent_role, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_agent_perf_role
+    ON agent_performance(agent_role, status);
+
 CREATE TABLE IF NOT EXISTS orchestrator_state (
     project_id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -1158,3 +1178,194 @@ class SessionManager:
                     entry["agent_states"] = {}
                 result.append(entry)
             return result
+
+    # ── Agent Performance Tracking ────────────────────────────────────
+
+    @_retry_on_db_error()
+    async def record_agent_performance(
+        self,
+        project_id: str,
+        agent_role: str,
+        status: str = "success",
+        duration_seconds: float = 0.0,
+        cost_usd: float = 0.0,
+        turns_used: int = 0,
+        task_description: str = "",
+        error_message: str = "",
+        round_number: int = 0,
+    ) -> None:
+        """Record a single agent execution for performance tracking."""
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO agent_performance
+                   (project_id, agent_role, task_description, status,
+                    duration_seconds, cost_usd, turns_used, error_message,
+                    round_number, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (project_id, agent_role, task_description[:500], status,
+                 duration_seconds, cost_usd, turns_used, error_message[:500],
+                 round_number, time.time()),
+            )
+            await db.commit()
+
+    @_retry_on_db_error()
+    async def get_agent_stats(self, project_id: str | None = None) -> list[dict]:
+        """Get aggregated performance stats per agent role.
+
+        If project_id is provided, stats are scoped to that project.
+        Returns: [{agent_role, total_runs, success_rate, avg_duration, avg_cost, total_cost}]
+        """
+        where = "WHERE project_id = ?" if project_id else ""
+        params = (project_id,) if project_id else ()
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"""SELECT
+                        agent_role,
+                        COUNT(*) as total_runs,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes,
+                        AVG(duration_seconds) as avg_duration,
+                        AVG(cost_usd) as avg_cost,
+                        SUM(cost_usd) as total_cost,
+                        MAX(created_at) as last_run
+                    FROM agent_performance
+                    {where}
+                    GROUP BY agent_role
+                    ORDER BY total_runs DESC""",
+                params,
+            )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "agent_role": row["agent_role"],
+                    "total_runs": row["total_runs"],
+                    "success_rate": round(row["successes"] / max(row["total_runs"], 1) * 100, 1),
+                    "avg_duration": round(row["avg_duration"] or 0, 1),
+                    "avg_cost": round(row["avg_cost"] or 0, 4),
+                    "total_cost": round(row["total_cost"] or 0, 4),
+                    "last_run": row["last_run"],
+                }
+                for row in rows
+            ]
+
+    @_retry_on_db_error()
+    async def get_agent_recent_performance(
+        self, agent_role: str, limit: int = 10
+    ) -> list[dict]:
+        """Get recent performance entries for a specific agent role."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT * FROM agent_performance
+                   WHERE agent_role = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (agent_role, limit),
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+    # ── Cost Analytics ────────────────────────────────────────────────
+
+    @_retry_on_db_error()
+    async def get_cost_breakdown(
+        self, project_id: str | None = None, days: int = 30
+    ) -> dict:
+        """Get cost breakdown by agent, by day, and totals.
+
+        Returns: {by_agent: [...], by_day: [...], total_cost, total_runs}
+        """
+        since = time.time() - (days * 86400)
+        where = "WHERE created_at >= ?"
+        params: list = [since]
+        if project_id:
+            where += " AND project_id = ?"
+            params.append(project_id)
+
+        async with self._connect() as db:
+            # By agent
+            cursor = await db.execute(
+                f"""SELECT agent_role, SUM(cost_usd) as cost, COUNT(*) as runs
+                    FROM agent_performance {where}
+                    GROUP BY agent_role ORDER BY cost DESC""",
+                params,
+            )
+            by_agent = [dict(r) for r in await cursor.fetchall()]
+
+            # By day
+            cursor = await db.execute(
+                f"""SELECT date(created_at, 'unixepoch') as day,
+                           SUM(cost_usd) as cost, COUNT(*) as runs
+                    FROM agent_performance {where}
+                    GROUP BY day ORDER BY day DESC LIMIT 30""",
+                params,
+            )
+            by_day = [dict(r) for r in await cursor.fetchall()]
+
+            # Totals
+            cursor = await db.execute(
+                f"""SELECT SUM(cost_usd) as total_cost, COUNT(*) as total_runs
+                    FROM agent_performance {where}""",
+                params,
+            )
+            totals = dict(await cursor.fetchone())
+
+            return {
+                "by_agent": by_agent,
+                "by_day": by_day,
+                "total_cost": round(totals.get("total_cost") or 0, 4),
+                "total_runs": totals.get("total_runs") or 0,
+            }
+
+    @_retry_on_db_error()
+    async def get_project_cost_summary(self) -> list[dict]:
+        """Get cost summary per project (for dashboard overview)."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT ap.project_id, p.name as project_name,
+                          SUM(ap.cost_usd) as total_cost,
+                          COUNT(*) as total_runs,
+                          MAX(ap.created_at) as last_activity
+                   FROM agent_performance ap
+                   JOIN projects p ON ap.project_id = p.project_id
+                   GROUP BY ap.project_id
+                   ORDER BY total_cost DESC""",
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
+    # ── Interrupted Task Resume ───────────────────────────────────────
+
+    @_retry_on_db_error()
+    async def get_resumable_task(self, project_id: str) -> dict | None:
+        """Get the interrupted task state for a project, if any.
+
+        Returns the full orchestrator state dict or None.
+        """
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT os.*, p.name as project_name, p.project_dir
+                   FROM orchestrator_state os
+                   JOIN projects p ON os.project_id = p.project_id
+                   WHERE os.project_id = ? AND os.status IN ('running', 'interrupted')""",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            entry = dict(row)
+            try:
+                entry["shared_context"] = json.loads(entry.get("shared_context", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                entry["shared_context"] = []
+            try:
+                entry["agent_states"] = json.loads(entry.get("agent_states", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                entry["agent_states"] = {}
+            return entry
+
+    @_retry_on_db_error()
+    async def mark_task_discarded(self, project_id: str) -> None:
+        """Mark an interrupted task as discarded (user chose not to resume)."""
+        async with self._connect() as db:
+            await db.execute(
+                """UPDATE orchestrator_state SET status = 'discarded', updated_at = ?
+                   WHERE project_id = ?""",
+                (time.time(), project_id),
+            )
+            await db.commit()
