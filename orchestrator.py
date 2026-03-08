@@ -444,6 +444,9 @@ class OrchestratorManager:
             logger.info("Session resumed")
 
     async def stop(self):
+        import traceback
+        caller = ''.join(traceback.format_stack(limit=4))
+        logger.info(f"[{self.project_id}] stop() called. Caller:\n{caller}")
         self._stop_event.set()
         self.is_running = False
         self.is_paused = False
@@ -1136,8 +1139,45 @@ class OrchestratorManager:
         heartbeat_task = asyncio.create_task(_heartbeat())
         try:
             if len(by_role) > 1:
+                # Run each role in an isolated asyncio.Task to prevent
+                # anyio cancel-scope leaks from cascading across roles.
+                # asyncio.gather with return_exceptions=True catches errors
+                # from individual tasks, but the claude_agent_sdk uses anyio
+                # TaskGroups internally whose cancel scopes are task-specific.
+                # If one query fails, its cleanup (GeneratorExit → aclose)
+                # can raise RuntimeError("Attempted to exit cancel scope in
+                # a different task") which cascades and kills all siblings.
+                # By wrapping each role in a shielded helper, we isolate them.
+                async def _isolated_run_role(role, dels):
+                    """Run a role with isolation from sibling cancellations."""
+                    try:
+                        await run_role(role, dels)
+                    except asyncio.CancelledError:
+                        # Only propagate if we were explicitly stopped
+                        if self._stop_event.is_set():
+                            raise
+                        logger.warning(
+                            f"[{self.project_id}] Agent '{role}' was cancelled "
+                            f"(not by stop). Treating as error."
+                        )
+                        async with lock:
+                            results.setdefault(role, []).append(SDKResponse(
+                                text=f"Agent '{role}' was cancelled unexpectedly.",
+                                is_error=True,
+                                error_message="Cancelled unexpectedly",
+                            ))
+                    except RuntimeError as e:
+                        if "cancel scope" in str(e):
+                            logger.warning(
+                                f"[{self.project_id}] Agent '{role}' hit anyio "
+                                f"cancel scope bug (suppressed): {e}"
+                            )
+                            # Don't crash — the agent may have produced results
+                        else:
+                            raise
+
                 gather_results = await asyncio.gather(
-                    *(run_role(role, dels) for role, dels in by_role.items()),
+                    *(_isolated_run_role(role, dels) for role, dels in by_role.items()),
                     return_exceptions=True,
                 )
                 # Log any unexpected exceptions from parallel execution

@@ -339,7 +339,22 @@ class ClaudeSDKManager:
             )
         except asyncio.CancelledError:
             logger.info(f"[{request_id}] SDK query CANCELLED")
-            raise  # Let cancellation propagate
+            # Suppress the anyio cancel-scope RuntimeError that can occur
+            # when the async generator cleanup runs in a different task.
+            # This happens when multiple queries run via asyncio.gather().
+            try:
+                raise  # Let cancellation propagate
+            except RuntimeError as cleanup_err:
+                if "cancel scope" in str(cleanup_err):
+                    logger.warning(f"[{request_id}] Suppressed anyio cancel scope error during cleanup")
+                    return SDKResponse(
+                        text="Agent was cancelled.",
+                        session_id=session_id or "",
+                        is_error=True,
+                        error_message="Cancelled (anyio cleanup error)",
+                        error_category=ErrorCategory.TRANSIENT,
+                    )
+                raise
         except Exception as e:
             elapsed = time.monotonic() - query_start
             category = classify_error(str(e))
@@ -520,6 +535,24 @@ class ClaudeSDKManager:
 
         except asyncio.CancelledError:
             raise  # Propagate cancellation
+        except RuntimeError as e:
+            if "cancel scope" in str(e):
+                # anyio cancel-scope leak — suppress and return partial results
+                logger.warning(
+                    f"[{request_id}] anyio cancel scope error after {message_count} messages (suppressed)"
+                )
+                combined = "\n\n".join(text_parts).strip()
+                return SDKResponse(
+                    text=combined or "Agent interrupted (anyio cleanup error).",
+                    session_id=result_session_id,
+                    cost_usd=cost_usd,
+                    duration_ms=duration_ms,
+                    num_turns=num_turns,
+                    is_error=True,
+                    error_message="anyio cancel scope error",
+                    error_category=ErrorCategory.TRANSIENT,
+                )
+            raise
         except Exception as e:
             # Stream processing error (not a timeout — that's caught in query())
             logger.error(

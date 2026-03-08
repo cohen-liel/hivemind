@@ -12,11 +12,13 @@ pkill -f "python.*server\.py" 2>/dev/null || true
 pkill -f "node.*vite" 2>/dev/null || true
 sleep 0.5
 
-# Activate venv
-if [ -d ".venv" ]; then
-  source .venv/bin/activate
-elif [ -d "venv" ]; then
-  source venv/bin/activate
+# Find the right Python with dependencies
+if [ -x "venv/bin/python3" ]; then
+  PYTHON=venv/bin/python3
+elif [ -x ".venv/bin/python3" ]; then
+  PYTHON=.venv/bin/python3
+else
+  PYTHON=python3
 fi
 
 # Build frontend (produces frontend/dist/ served by FastAPI)
@@ -29,5 +31,6 @@ cd ..
 echo ""
 echo "Starting server on http://localhost:8080"
 echo "Open in browser or on your phone: http://$(ipconfig getifaddr en0 2>/dev/null || echo localhost):8080"
+echo "Logs: /tmp/web-claude-bot.log"
 echo ""
-python server.py
+$PYTHON server.py 2>&1 | tee /tmp/web-claude-bot.log

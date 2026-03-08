@@ -4,11 +4,9 @@ import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProje
 import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
 import ActivityFeed from '../components/ActivityFeed';
-import ActivityDrawer from '../components/ActivityDrawer';
 import AgentStatusPanel from '../components/AgentStatusPanel';
 import ConductorBar from '../components/ConductorBar';
 import FileDiff from '../components/FileDiff';
-import FlowGraph from '../components/FlowGraph';
 import PlanView from '../components/PlanView';
 import NetworkTrace from '../components/NetworkTrace';
 import ApprovalModal from '../components/ApprovalModal';
@@ -34,6 +32,7 @@ function messagesToActivities(messages: ProjectMessage[]): ActivityEntry[] {
 }
 
 type MobileView = 'orchestra' | 'activity' | 'code' | 'changes' | 'plan' | 'trace';
+type DesktopTab = 'nexus' | 'agents' | 'plan' | 'code' | 'diff' | 'trace';
 
 export default function ProjectView() {
   const { id } = useParams<{ id: string }>();
@@ -48,7 +47,7 @@ export default function ProjectView() {
   const [message, setMessage] = useState('');
   const [lastTicker, setLastTicker] = useState('');
   const [sending, setSending] = useState(false);
-  const [desktopAgentView, setDesktopAgentView] = useState<'cards' | 'flow'>('cards');
+  const [desktopTab, setDesktopTab] = useState<DesktopTab>('nexus');
   const [sdkCalls, setSdkCalls] = useState<Array<{
     agent: string; startTime: number; endTime?: number; cost?: number; status: string;
   }>>([]);
@@ -440,8 +439,6 @@ export default function ProjectView() {
 
   const orchestratorState = agentStateList.find(a => a.name === 'orchestrator') ?? null;
   const subAgentStates = agentStateList.filter(a => a.name !== 'orchestrator');
-  const hasEverWorked = subAgentStates.some(a => a.state !== 'idle' || a.cost > 0 || a.turns > 0);
-  const allIdle = project.status === 'idle' && !hasEverWorked;
 
   const mobileNavItems: { id: MobileView; icon: JSX.Element; label: string }[] = [
     {
@@ -473,6 +470,39 @@ export default function ProjectView() {
       id: 'trace',
       label: 'Trace',
       icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
+    },
+  ];
+
+  const desktopTabItems: { id: DesktopTab; icon: JSX.Element; label: string }[] = [
+    {
+      id: 'nexus',
+      label: 'Nexus',
+      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>,
+    },
+    {
+      id: 'agents',
+      label: 'Agents',
+      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>,
+    },
+    {
+      id: 'plan',
+      label: 'Plan',
+      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>,
+    },
+    {
+      id: 'code',
+      label: 'Code',
+      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
+    },
+    {
+      id: 'diff',
+      label: 'Diff',
+      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3v18M3 12h18"/></svg>,
+    },
+    {
+      id: 'trace',
+      label: 'Trace',
+      icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
     },
   ];
 
@@ -683,93 +713,78 @@ export default function ProjectView() {
           agentSummary={subAgentStates}
         />
 
-        {/* MAIN: Agent Orchestra - takes center stage */}
-        <div className="flex-1 overflow-y-auto">
-          {allIdle ? (
-            <div className="flex flex-col items-center justify-center h-full px-6 text-center">
-              <div className="text-5xl mb-5">🚀</div>
-              <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>Ready to perform</h2>
-              <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
-                {subAgentStates.length} agents standing by
-              </p>
-              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                Send a task below to start the orchestra
-              </p>
-            </div>
-          ) : (
-            <div className="max-w-5xl mx-auto w-full px-6 py-6">
-              {/* Cards / Flow toggle */}
-              <div className="flex items-center gap-2 mb-4">
-                <div className="rounded-full p-0.5 flex gap-0.5"
-                  style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-dim)' }}>
-                  <button
-                    onClick={() => setDesktopAgentView('cards')}
-                    className="px-3 py-1 rounded-full text-xs font-medium transition-colors"
-                    style={{
-                      background: desktopAgentView === 'cards' ? 'var(--bg-elevated)' : 'transparent',
-                      color: desktopAgentView === 'cards' ? 'var(--text-primary)' : 'var(--text-muted)',
-                    }}
-                  >
-                    Cards
-                  </button>
-                  <button
-                    onClick={() => setDesktopAgentView('flow')}
-                    className="px-3 py-1 rounded-full text-xs font-medium transition-colors"
-                    style={{
-                      background: desktopAgentView === 'flow' ? 'var(--bg-elevated)' : 'transparent',
-                      color: desktopAgentView === 'flow' ? 'var(--text-primary)' : 'var(--text-muted)',
-                    }}
-                  >
-                    Flow
-                  </button>
-                </div>
-              </div>
+        {/* Desktop tab bar */}
+        <div className="flex-shrink-0 px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-panel)' }}>
+          <div className="flex items-center gap-1">
+            {desktopTabItems.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setDesktopTab(tab.id)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors"
+                style={{
+                  background: desktopTab === tab.id ? 'var(--bg-elevated)' : 'transparent',
+                  color: desktopTab === tab.id ? 'var(--text-primary)' : 'var(--text-muted)',
+                }}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
 
-              {desktopAgentView === 'cards' ? (
+        {/* Split view: tab content (left) + activity log (right) */}
+        <div className="flex-1 flex min-h-0">
+          {/* Left panel: selected tab content */}
+          <div className="overflow-y-auto" style={{ flex: '0 0 65%' }}>
+            {desktopTab === 'nexus' && (
+              <ConductorMode
+                agents={agentStateList}
+                progress={loopProgress}
+                activities={activities}
+                totalCost={project.total_cost_usd}
+                status={project.status}
+                messageDraft={message}
+              />
+            )}
+            {desktopTab === 'agents' && (
+              <div className="p-6">
                 <AgentStatusPanel
                   agents={agentStateList}
                   onSelectAgent={setSelectedAgent}
                   selectedAgent={selectedAgent}
                   layout="grid"
                 />
-              ) : (
-                <FlowGraph
-                  agents={agentStateList}
-                  onSelectAgent={setSelectedAgent}
-                />
-              )}
-
-              {/* Plan + Network side-by-side */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
-                <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
-                  <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)' }}>
-                    <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Plan</h3>
-                  </div>
-                  <div className="max-h-[300px] overflow-y-auto">
-                    <PlanView activities={activities} />
-                  </div>
-                </div>
-                <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
-                  <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)' }}>
-                    <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Network Trace</h3>
-                  </div>
-                  <div className="max-h-[300px] overflow-y-auto">
-                    <NetworkTrace calls={sdkCalls} />
-                  </div>
-                </div>
               </div>
-
-              {files && (files.stat || files.status || files.diff) && (
-                <div className="mt-6 rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+            )}
+            {desktopTab === 'plan' && (
+              <PlanView activities={activities} />
+            )}
+            {desktopTab === 'code' && (
+              <CodeBrowser projectId={id} />
+            )}
+            {desktopTab === 'diff' && (
+              <div className="p-6">
+                <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
                   <FileDiff files={files} />
                 </div>
-              )}
-            </div>
-          )}
-        </div>
+              </div>
+            )}
+            {desktopTab === 'trace' && (
+              <div className="p-6">
+                <NetworkTrace calls={sdkCalls} />
+              </div>
+            )}
+          </div>
 
-        {/* Activity Drawer (collapsible from bottom) */}
-        <ActivityDrawer activities={activities} />
+          {/* Right panel: permanent activity log */}
+          <div className="overflow-y-auto" style={{ flex: '0 0 35%', borderLeft: '1px solid var(--border-dim)', background: 'var(--bg-panel)' }}>
+            <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)', position: 'sticky', top: 0, background: 'var(--bg-panel)', zIndex: 10 }}>
+              <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Activity Log</h3>
+            </div>
+            <ActivityFeed activities={activities} hasMore={hasMoreMessages} onLoadMore={loadEarlierMessages} />
+          </div>
+        </div>
 
         {/* Controls bar */}
         <Controls

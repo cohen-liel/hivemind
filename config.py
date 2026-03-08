@@ -93,13 +93,13 @@ if _env_projects:
         PREDEFINED_PROJECTS: dict = json.loads(_env_projects)
     except Exception:
         PREDEFINED_PROJECTS = {
-            "web-claude-bot": "~/Downloads/web-claude-bot",
-            "family-finance": "~/Downloads/family-finance",
+            "web-claude-bot": "~/claude-projects/web-claude-bot",
+            "family-finance": "~/claude-projects/family-finance",
         }
 else:
     PREDEFINED_PROJECTS = {
-        "web-claude-bot": "~/Downloads/web-claude-bot",
-        "family-finance": "~/Downloads/family-finance",
+        "web-claude-bot": "~/claude-projects/web-claude-bot",
+        "family-finance": "~/claude-projects/family-finance",
     }
 
 # Default agent roles (kept for display/reference)
