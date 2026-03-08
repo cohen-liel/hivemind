@@ -777,25 +777,26 @@ export default function ProjectView() {
             )}
           </div>
 
-          {/* Right panel: permanent activity log */}
-          <div className="overflow-y-auto" style={{ flex: '0 0 35%', borderLeft: '1px solid var(--border-dim)', background: 'var(--bg-panel)' }}>
-            <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)', position: 'sticky', top: 0, background: 'var(--bg-panel)', zIndex: 10 }}>
+          {/* Right panel: permanent activity log + chat input */}
+          <div className="flex flex-col" style={{ flex: '0 0 35%', borderLeft: '1px solid var(--border-dim)', background: 'var(--bg-panel)' }}>
+            <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-panel)', zIndex: 10 }}>
               <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Activity Log</h3>
             </div>
-            <ActivityFeed activities={activities} hasMore={hasMoreMessages} onLoadMore={loadEarlierMessages} />
+            <div className="flex-1 overflow-y-auto min-h-0">
+              <ActivityFeed activities={activities} hasMore={hasMoreMessages} onLoadMore={loadEarlierMessages} />
+            </div>
+            {/* Chat input — anchored to bottom of activity panel */}
+            <Controls
+              projectId={id}
+              status={project.status}
+              agents={project.agents}
+              onPause={handlePause}
+              onResume={handleResume}
+              onStop={handleStop}
+              onSend={handleSend}
+            />
           </div>
         </div>
-
-        {/* Controls bar */}
-        <Controls
-          projectId={id}
-          status={project.status}
-          agents={project.agents}
-          onPause={handlePause}
-          onResume={handleResume}
-          onStop={handleStop}
-          onSend={handleSend}
-        />
       </div>
 
       {/* Approval Modal */}

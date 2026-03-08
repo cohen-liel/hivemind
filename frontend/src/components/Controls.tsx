@@ -18,12 +18,14 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-resize textarea
+  // Auto-resize textarea (grows up to 5 lines, then scrolls)
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    // Cap at 5 lines: 15px font × 1.625 line-height ≈ 24.4px/line × 5 = ~122px
+    const maxH = 5 * 24.4;
+    el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
   }, [message]);
 
   const handleSend = async () => {
@@ -170,7 +172,7 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
             placeholder={status === 'idle' ? 'Describe a task for your agents…' : 'Send a message…'}
             rows={1}
             className="w-full px-4 py-2.5 text-[15px] resize-none focus:outline-none bg-transparent leading-relaxed"
-            style={{ color: 'var(--text-primary)', maxHeight: '120px' }}
+            style={{ color: 'var(--text-primary)', maxHeight: '122px' }}
           />
         </div>
 
