@@ -24,12 +24,40 @@ from config import AGENT_TIMEOUT_SECONDS, SDK_MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
-# Force the SDK to use the system-installed Claude CLI wrapper (/usr/local/bin/claude)
-# instead of the bundled binary.  The wrapper sets up Meta-specific authentication
-# (x2p proxy, CAT tokens, ANTHROPIC_BASE_URL, etc.) which the bundled binary skips.
+# Use the native Claude binary directly, bypassing the bash wrapper.
+# The wrapper (/usr/local/bin/claude) runs sandbox-exec which can fail with
+# "unsupported syntax: kleene star" on some macOS versions.
+# The native binary at /usr/local/bin/claude_code/claude works without sandbox issues.
+# We still need the Meta environment (x2p proxy, CAT tokens, ANTHROPIC_BASE_URL)
+# so we set those up in the environment before spawning.
 import shutil as _shutil
 
-SYSTEM_CLI_PATH = _shutil.which("claude") or "/usr/local/bin/claude"
+_NATIVE_BINARY = "/usr/local/bin/claude_code/claude"
+_WRAPPER_BINARY = _shutil.which("claude") or "/usr/local/bin/claude"
+
+# Prefer native binary if it exists (avoids sandbox-exec issues)
+if os.path.isfile(_NATIVE_BINARY) and os.access(_NATIVE_BINARY, os.X_OK):
+    SYSTEM_CLI_PATH = _NATIVE_BINARY
+    logger.info(f"Using native Claude binary: {_NATIVE_BINARY}")
+else:
+    SYSTEM_CLI_PATH = _WRAPPER_BINARY
+    logger.info(f"Using Claude wrapper: {_WRAPPER_BINARY}")
+
+# Set up Meta environment that the wrapper normally provides
+# (needed when using native binary directly)
+if "ANTHROPIC_BASE_URL" not in os.environ:
+    import platform as _platform
+    if _platform.system() == "Darwin":
+        os.environ["ANTHROPIC_BASE_URL"] = "http://plugboard.x2p.facebook.net"
+        os.environ.setdefault("HTTP_PROXY", "http://localhost:10054")
+        os.environ.setdefault("HTTPS_PROXY", "http://localhost:10054")
+        os.environ.setdefault("X2P_SUPPORTS_VPNLESS", "1")
+        os.environ.setdefault("CPE_RUST_X2P_SUPPORTS_VPNLESS", "1")
+        # CAT injection for x2p authentication
+        _CAT_B64 = "eyJ2ZXJpZmllciI6ICJtZXRhbWF0ZV9wbGF0Zm9ybS5wbHVnYm9hcmQiLCAidG9rZW5UaW1lb3V0U2Vjb25kcyI6IDMwMCwgImlzTG93Qm94IjogdHJ1ZX0="
+        os.environ.setdefault("ANTHROPIC_CUSTOM_HEADERS", f"x-x2pagentd-inject-cat: {_CAT_B64}")
+    else:
+        os.environ["ANTHROPIC_BASE_URL"] = "https://plugboard.x2p.facebook.net"
 
 
 # ============================================================
