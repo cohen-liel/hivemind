@@ -443,14 +443,15 @@ export default function ProjectView() {
   ];
 
   return (
-    <div className="h-full bg-gray-950 flex flex-col">
+    <div className="h-full flex flex-col" style={{ background: 'var(--bg-void)' }}>
 
       {/* ===== MOBILE LAYOUT ===== */}
       <div
-        className="lg:hidden fixed inset-x-0 flex flex-col bg-gray-950 z-30"
+        className="lg:hidden fixed inset-x-0 flex flex-col z-30"
         style={{
           height: 'var(--app-height, 100dvh)',
           top: 'var(--app-offset, 0px)',
+          background: 'var(--bg-void)',
         }}
       >
 
@@ -488,7 +489,7 @@ export default function ProjectView() {
 
           {mobileView === 'changes' && (
             <div className="p-3">
-              <div className="bg-gray-900/60 border border-gray-800/50 rounded-xl p-3">
+              <div className="rounded-xl p-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
                 <FileDiff files={files} />
               </div>
             </div>
@@ -502,11 +503,13 @@ export default function ProjectView() {
         </div>
 
         {/* Bottom: ticker + tab nav + input */}
-        <div className="flex-shrink-0 border-t border-gray-800/50 bg-gray-900/95 backdrop-blur-md safe-area-bottom">
+        <div className="flex-shrink-0 safe-area-bottom"
+          style={{ borderTop: '1px solid var(--border-dim)', background: 'var(--bg-panel)', backdropFilter: 'blur(12px)' }}>
           {/* Live ticker */}
           {lastTicker && (
             <div className="px-3 pt-1.5 pb-0.5">
-              <div className="text-[10px] text-blue-300/70 font-mono truncate">
+              <div className="text-[10px] truncate"
+                style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
                 {lastTicker}
               </div>
             </div>
@@ -518,8 +521,8 @@ export default function ProjectView() {
               <button
                 key={item.id}
                 onClick={() => setMobileView(item.id)}
-                className={`flex-1 flex flex-col items-center justify-center py-1.5 transition-colors
-                  ${mobileView === item.id ? 'text-blue-400' : 'text-gray-600'}`}
+                className="flex-1 flex flex-col items-center justify-center py-1.5 transition-colors"
+                style={{ color: mobileView === item.id ? 'var(--accent-blue)' : 'var(--text-muted)' }}
               >
                 {item.icon}
                 <span className="text-[9px] mt-0.5">{item.label}</span>
@@ -528,9 +531,9 @@ export default function ProjectView() {
 
             {/* Inline action buttons */}
             {(project.status === 'running' || project.status === 'paused') && (
-              <div className="flex items-center gap-0.5 pl-1 border-l border-gray-800/50 ml-1">
+              <div className="flex items-center gap-0.5 pl-1 ml-1" style={{ borderLeft: '1px solid var(--border-dim)' }}>
                 {project.status === 'running' && (
-                  <button onClick={handlePause} className="p-1.5 text-yellow-500">
+                  <button onClick={handlePause} className="p-1.5" style={{ color: 'var(--accent-amber)' }}>
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                       <rect x="4" y="3" width="3" height="10" rx="0.5"/>
                       <rect x="9" y="3" width="3" height="10" rx="0.5"/>
@@ -538,13 +541,13 @@ export default function ProjectView() {
                   </button>
                 )}
                 {project.status === 'paused' && (
-                  <button onClick={handleResume} className="p-1.5 text-green-500">
+                  <button onClick={handleResume} className="p-1.5" style={{ color: 'var(--accent-green)' }}>
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                       <path d="M4 3l9 5-9 5V3z"/>
                     </svg>
                   </button>
                 )}
-                <button onClick={handleStop} className="p-1.5 text-red-500">
+                <button onClick={handleStop} className="p-1.5" style={{ color: 'var(--accent-red)' }}>
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                     <rect x="3" y="3" width="10" height="10" rx="1"/>
                   </svg>
@@ -572,9 +575,12 @@ export default function ProjectView() {
               }}
               disabled={sending}
               placeholder={project.status === 'idle' ? 'Send a task...' : 'Message...'}
-              className="flex-1 bg-gray-800/80 border border-gray-700/50 text-gray-200 text-base rounded-full px-4 py-2
-                         focus:border-blue-500/50 focus:outline-none min-w-0 placeholder-gray-600
-                         disabled:opacity-50"
+              className="flex-1 text-base rounded-full px-4 py-2 focus:outline-none min-w-0 disabled:opacity-50 transition-colors"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-subtle)',
+                color: 'var(--text-primary)',
+              }}
             />
             <button
               onClick={() => {
@@ -586,10 +592,12 @@ export default function ProjectView() {
                 }
               }}
               disabled={!message.trim() || sending}
-              className={`p-2 rounded-full transition-all flex-shrink-0
-                ${message.trim() && !sending
-                  ? 'bg-blue-600 text-white shadow-[0_0_12px_rgba(59,130,246,0.3)]'
-                  : 'bg-gray-800/50 text-gray-600'}`}
+              className="p-2 rounded-full transition-all flex-shrink-0"
+              style={{
+                background: message.trim() && !sending ? 'var(--accent-blue)' : 'var(--bg-elevated)',
+                color: message.trim() && !sending ? 'white' : 'var(--text-muted)',
+                boxShadow: message.trim() && !sending ? '0 0 12px var(--glow-blue)' : 'none',
+              }}
             >
               {sending ? (
                 <svg className="w-4 h-4 animate-spin" viewBox="0 0 16 16" fill="none">
@@ -622,31 +630,38 @@ export default function ProjectView() {
         <div className="flex-1 overflow-y-auto">
           {allIdle ? (
             <div className="flex flex-col items-center justify-center h-full px-6 text-center">
-              <div className="text-5xl mb-5">{'\u{1F3B6}'}</div>
-              <h2 className="text-xl font-bold text-gray-300 mb-2">Ready to perform</h2>
-              <p className="text-sm text-gray-500 mb-1">
+              <div className="text-5xl mb-5">🚀</div>
+              <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>Ready to perform</h2>
+              <p className="text-sm mb-1" style={{ color: 'var(--text-secondary)' }}>
                 {subAgentStates.length} agents standing by
               </p>
-              <p className="text-xs text-gray-700">
-                Send a task below to start the concert
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Send a task below to start the orchestra
               </p>
             </div>
           ) : (
             <div className="max-w-5xl mx-auto w-full px-6 py-6">
               {/* Cards / Flow toggle */}
               <div className="flex items-center gap-2 mb-4">
-                <div className="bg-gray-900/80 rounded-full p-0.5 flex gap-0.5 border border-gray-800/50">
+                <div className="rounded-full p-0.5 flex gap-0.5"
+                  style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-dim)' }}>
                   <button
                     onClick={() => setDesktopAgentView('cards')}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
-                      ${desktopAgentView === 'cards' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+                    className="px-3 py-1 rounded-full text-xs font-medium transition-colors"
+                    style={{
+                      background: desktopAgentView === 'cards' ? 'var(--bg-elevated)' : 'transparent',
+                      color: desktopAgentView === 'cards' ? 'var(--text-primary)' : 'var(--text-muted)',
+                    }}
                   >
                     Cards
                   </button>
                   <button
                     onClick={() => setDesktopAgentView('flow')}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
-                      ${desktopAgentView === 'flow' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+                    className="px-3 py-1 rounded-full text-xs font-medium transition-colors"
+                    style={{
+                      background: desktopAgentView === 'flow' ? 'var(--bg-elevated)' : 'transparent',
+                      color: desktopAgentView === 'flow' ? 'var(--text-primary)' : 'var(--text-muted)',
+                    }}
                   >
                     Flow
                   </button>
@@ -669,17 +684,17 @@ export default function ProjectView() {
 
               {/* Plan + Network side-by-side */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
-                <div className="bg-gray-900/60 border border-gray-800/50 rounded-xl overflow-hidden">
-                  <div className="px-4 py-2 border-b border-gray-800/30">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Plan</h3>
+                <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+                  <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)' }}>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Plan</h3>
                   </div>
                   <div className="max-h-[300px] overflow-y-auto">
                     <PlanView activities={activities} />
                   </div>
                 </div>
-                <div className="bg-gray-900/60 border border-gray-800/50 rounded-xl overflow-hidden">
-                  <div className="px-4 py-2 border-b border-gray-800/30">
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Network Trace</h3>
+                <div className="rounded-xl overflow-hidden" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+                  <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)' }}>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Network Trace</h3>
                   </div>
                   <div className="max-h-[300px] overflow-y-auto">
                     <NetworkTrace calls={sdkCalls} />
@@ -688,7 +703,7 @@ export default function ProjectView() {
               </div>
 
               {files && (files.stat || files.status || files.diff) && (
-                <div className="mt-6 bg-gray-900/60 border border-gray-800/50 rounded-xl p-4">
+                <div className="mt-6 rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
                   <FileDiff files={files} />
                 </div>
               )}
