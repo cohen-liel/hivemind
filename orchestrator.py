@@ -1485,19 +1485,23 @@ class OrchestratorManager:
         priority_entries = []
         recent_entries = []
         error_entries = []
+        followup_entries = []
 
         for ctx in self.shared_context:
-            if "FAILED" in ctx or "ERROR" in ctx:
+            if "FAILED" in ctx or "ERROR" in ctx or "BLOCKED" in ctx:
                 error_entries.append(ctx)
+            elif "NEEDS_FOLLOWUP" in ctx:
+                followup_entries.append(ctx)
             elif f"[{agent_role}]" in ctx:
                 # Same agent's previous work — always relevant
                 priority_entries.append(ctx)
             else:
                 recent_entries.append(ctx)
 
-        # Build context: errors first, then own history, then recent others
+        # Build context: errors + followups first, then own history, then recent
         selected = []
         selected.extend(error_entries[-3:])
+        selected.extend(followup_entries[-2:])
         selected.extend(priority_entries[-3:])
         remaining_slots = max(0, 8 - len(selected))
         selected.extend(recent_entries[-remaining_slots:])
