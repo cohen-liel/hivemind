@@ -100,6 +100,31 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 - **11 P1 items**: WebSocket auth, connection pool init, scheduler dedup, blocking I/O, git caching, refactors
 - **14 P2 items**: code quality, performance, maintainability improvements
 
+## Security Audit — 2026-03-08
+Full report: `.nexus/SECURITY_AUDIT.md`
+
+| Severity | Count | Key Findings |
+|----------|-------|--------------|
+| CRITICAL | 2 | SPA path traversal (S1), bypassPermissions RCE (S2) |
+| HIGH | 5 | Timing attack (S3), settings DoS (S4), CORS wildcard (S5), unbounded recursion (S6), API key in URL (S7) |
+| MEDIUM | 8 | 0.0.0.0 bind (S8), persist validation (S9), unbounded limit (S10), error leaks (S11), shared mutable event (S12), timezone (S13), TOCTOU race (S14), global env mutation (S15) |
+| LOW | 5 | Unbounded queue, dead import, debug traceback, uninitialized attr, inconsistent constants |
+
+### Top Priority Fixes:
+1. **S1**: SPA `serve_spa()` path traversal — 5-line fix with `.resolve()` + `is_relative_to()`
+2. **S3**: `hmac.compare_digest()` for API key — 2-line fix
+3. **S8**: Default `host="127.0.0.1"` — 1-line fix
+4. **S5**: CORS default to localhost — 1-line fix
+5. **S4**: Pydantic Field validators on `UpdateSettingsRequest` — 7-line fix
+
+### Previously Fixed (Verified ✅):
+- SQL column injection → `_UPDATABLE_PROJECT_FIELDS` whitelist
+- Budget endpoint → Pydantic `SetBudgetRequest` with bounds
+- `get_manager()` race → inner dict snapshot
+- Path traversal in `read_file` → `.resolve()` + `is_relative_to()`
+- Browse-dirs traversal → home dir restriction
+- Persist settings → `_ALLOWED_PERSIST_KEYS` whitelist
+
 ## Code Review — Quality Audit (2026-03-08)
 Full report: `.nexus/CODE_REVIEW.md`
 
@@ -112,7 +137,7 @@ Full report: `.nexus/CODE_REVIEW.md`
 
 ### Top Quick Wins:
 1. Add Pydantic validators to `UpdateSettingsRequest` and `SetBudgetRequest` — prevent invalid config values
-2. Add field name whitelist to `session_manager.update_project_fields()` — prevent SQL column injection
+2. Add field name whitelist to `session_manager.update_project_fields()` — prevent SQL column injection ✅ Done
 3. Move git subprocess calls outside `asyncio.Lock` in orchestrator — reduce agent contention
 4. Extract API routers from monolithic `create_app()` in api.py — improve maintainability
-5. Add request_id middleware for API traceability
+5. Add request_id middleware for API traceability ✅ Done
