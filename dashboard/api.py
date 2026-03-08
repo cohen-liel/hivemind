@@ -113,7 +113,7 @@ def _create_web_manager(
     user_id: int,
     agents_count: int = 2,
 ):
-    """Create an OrchestratorManager with web-only callbacks (EventBus, no Telegram)."""
+    """Create an OrchestratorManager with web-only callbacks (EventBus)."""
     sdk = state.sdk_client
     smgr = state.session_mgr
 

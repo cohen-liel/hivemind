@@ -1,5 +1,5 @@
 """
-Simulate: User selects telegram-claude-bot project with orchestrator,
+Simulate: User selects web-claude-bot project with orchestrator,
 then sends "find improvement opportunities in this project"
 """
 import asyncio
@@ -12,17 +12,17 @@ from orchestrator import OrchestratorManager
 from sdk_client import ClaudeSDKManager
 from session_manager import SessionManager
 
-PROJECT_DIR = "/Users/lielcohen/Downloads/telegram-claude-bot"
-PROJECT_NAME = "telegram-claude-bot"
+PROJECT_DIR = "/Users/lielcohen/Downloads/web-claude-bot"
+PROJECT_NAME = "web-claude-bot"
 
 messages_received = []
 
 
 async def on_update(text: str):
-    """Simulate Telegram — just print to console."""
+    """Simulate web client — just print to console."""
     messages_received.append(text)
     print(f"\n{'='*60}")
-    print(f"📱 TELEGRAM UPDATE:")
+    print(f"UPDATE:")
     print(f"{'='*60}")
     print(text[:2000])
     if len(text) > 2000:
@@ -46,13 +46,13 @@ async def main():
         sdk=sdk,
         session_mgr=session_mgr,
         user_id=12345,
-        project_id="telegram-claude-bot",
+        project_id="web-claude-bot",
         on_update=on_update,
         multi_agent=True,
     )
 
     user_message = (
-        "Review this Telegram bot project and find improvement opportunities. "
+        "Review this project and find improvement opportunities. "
         "Focus on: code quality, error handling, architecture, and missing features. "
         "Give specific actionable suggestions."
     )

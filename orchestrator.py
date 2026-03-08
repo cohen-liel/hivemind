@@ -233,7 +233,7 @@ class OrchestratorManager:
                 asyncio.ensure_future(self.start_session(combined))
 
     async def _notify(self, text: str):
-        """Send a progress/status update (edited in-place in Telegram)."""
+        """Send a progress/status update to the client."""
         if self.on_update:
             try:
                 await self.on_update(text)
@@ -241,7 +241,7 @@ class OrchestratorManager:
                 logger.error(f"Update callback error: {e}")
 
     async def _send_result(self, text: str):
-        """Send a final result message (new Telegram message, not edited)."""
+        """Send a final result message to the client."""
         if self.on_result:
             try:
                 await self.on_result(text)
