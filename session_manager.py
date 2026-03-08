@@ -136,6 +136,35 @@ CREATE INDEX IF NOT EXISTS idx_lessons_project
 CREATE INDEX IF NOT EXISTS idx_lessons_user
     ON lessons(user_id, created_at);
 
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    sequence_id INTEGER NOT NULL DEFAULT 0,
+    event_type TEXT NOT NULL,
+    agent TEXT DEFAULT '',
+    data TEXT DEFAULT '{}',
+    timestamp REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_project_seq
+    ON activity_log(project_id, sequence_id);
+
+CREATE INDEX IF NOT EXISTS idx_activity_project_ts
+    ON activity_log(project_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS orchestrator_state (
+    project_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    status TEXT DEFAULT 'idle',
+    current_loop INTEGER DEFAULT 0,
+    turn_count INTEGER DEFAULT 0,
+    total_cost_usd REAL DEFAULT 0.0,
+    shared_context TEXT DEFAULT '[]',
+    agent_states TEXT DEFAULT '{}',
+    last_user_message TEXT DEFAULT '',
+    updated_at REAL NOT NULL
+);
+
 -- Trigger: auto-increment message_count on projects when a message is inserted
 CREATE TRIGGER IF NOT EXISTS trg_messages_insert_count
     AFTER INSERT ON messages
@@ -932,3 +961,200 @@ class SessionManager:
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ── Activity Log (cross-device sync) ─────────────────────────────────
+
+    async def log_activity(
+        self,
+        project_id: str,
+        event_type: str,
+        agent: str = "",
+        data: dict | None = None,
+        timestamp: float | None = None,
+    ) -> int:
+        """Persist an activity event and return its sequence_id.
+
+        The sequence_id is a monotonically increasing integer per project,
+        enabling clients to request missed events after a reconnect.
+        """
+        ts = timestamp or time.time()
+        data_json = json.dumps(data or {}, default=str)
+
+        async with self._connect() as db:
+            # Get next sequence_id for this project
+            cursor = await db.execute(
+                "SELECT COALESCE(MAX(sequence_id), 0) + 1 FROM activity_log WHERE project_id = ?",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+            seq_id = row[0] if row else 1
+
+            await db.execute(
+                """INSERT INTO activity_log (project_id, sequence_id, event_type, agent, data, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (project_id, seq_id, event_type, agent, data_json, ts),
+            )
+            await db.commit()
+            return seq_id
+
+    async def get_activity_since(
+        self,
+        project_id: str,
+        since_sequence: int = 0,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Retrieve activity events after a given sequence_id.
+
+        Used by clients on reconnect to catch up on missed events.
+        Returns events in chronological order.
+        """
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT sequence_id, event_type, agent, data, timestamp
+                   FROM activity_log
+                   WHERE project_id = ? AND sequence_id > ?
+                   ORDER BY sequence_id ASC
+                   LIMIT ?""",
+                (project_id, since_sequence, limit),
+            )
+            rows = await cursor.fetchall()
+            result = []
+            for row in rows:
+                entry = dict(row)
+                # Parse the JSON data field back into a dict
+                try:
+                    entry["data"] = json.loads(entry.get("data", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    entry["data"] = {}
+                result.append(entry)
+            return result
+
+    async def get_latest_sequence(self, project_id: str) -> int:
+        """Get the latest sequence_id for a project (0 if no events)."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT COALESCE(MAX(sequence_id), 0) FROM activity_log WHERE project_id = ?",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def cleanup_old_activity(self, project_id: str, keep_last: int = 1000):
+        """Remove old activity entries, keeping only the most recent N per project."""
+        async with self._connect() as db:
+            await db.execute(
+                """DELETE FROM activity_log
+                   WHERE project_id = ? AND id NOT IN (
+                       SELECT id FROM activity_log
+                       WHERE project_id = ?
+                       ORDER BY sequence_id DESC
+                       LIMIT ?
+                   )""",
+                (project_id, project_id, keep_last),
+            )
+            await db.commit()
+
+    # ── Orchestrator State Persistence ───────────────────────────────────
+
+    async def save_orchestrator_state(
+        self,
+        project_id: str,
+        user_id: int,
+        status: str = "idle",
+        current_loop: int = 0,
+        turn_count: int = 0,
+        total_cost_usd: float = 0.0,
+        shared_context: list | None = None,
+        agent_states: dict | None = None,
+        last_user_message: str = "",
+    ):
+        """Save or update the orchestrator state for crash recovery.
+
+        Called periodically during task execution and on graceful shutdown.
+        """
+        ctx_json = json.dumps(shared_context or [], default=str)
+        states_json = json.dumps(agent_states or {}, default=str)
+        ts = time.time()
+
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO orchestrator_state
+                       (project_id, user_id, status, current_loop, turn_count,
+                        total_cost_usd, shared_context, agent_states,
+                        last_user_message, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(project_id) DO UPDATE SET
+                       status = excluded.status,
+                       current_loop = excluded.current_loop,
+                       turn_count = excluded.turn_count,
+                       total_cost_usd = excluded.total_cost_usd,
+                       shared_context = excluded.shared_context,
+                       agent_states = excluded.agent_states,
+                       last_user_message = excluded.last_user_message,
+                       updated_at = excluded.updated_at""",
+                (project_id, user_id, status, current_loop, turn_count,
+                 total_cost_usd, ctx_json, states_json, last_user_message, ts),
+            )
+            await db.commit()
+
+    async def load_orchestrator_state(self, project_id: str) -> dict | None:
+        """Load saved orchestrator state for crash recovery.
+
+        Returns None if no saved state exists.
+        """
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT * FROM orchestrator_state WHERE project_id = ?",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            state = dict(row)
+            # Parse JSON fields
+            try:
+                state["shared_context"] = json.loads(state.get("shared_context", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                state["shared_context"] = []
+            try:
+                state["agent_states"] = json.loads(state.get("agent_states", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                state["agent_states"] = {}
+            return state
+
+    async def clear_orchestrator_state(self, project_id: str):
+        """Remove saved orchestrator state after successful task completion."""
+        async with self._connect() as db:
+            await db.execute(
+                "DELETE FROM orchestrator_state WHERE project_id = ?",
+                (project_id,),
+            )
+            await db.commit()
+
+    async def get_interrupted_tasks(self) -> list[dict]:
+        """Find all orchestrator states that were 'running' (interrupted by crash).
+
+        Used on startup to offer task resumption.
+        """
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT os.*, p.name as project_name, p.project_dir
+                   FROM orchestrator_state os
+                   JOIN projects p ON os.project_id = p.project_id
+                   WHERE os.status = 'running'
+                   ORDER BY os.updated_at DESC""",
+            )
+            rows = await cursor.fetchall()
+            result = []
+            for row in rows:
+                entry = dict(row)
+                try:
+                    entry["shared_context"] = json.loads(entry.get("shared_context", "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    entry["shared_context"] = []
+                try:
+                    entry["agent_states"] = json.loads(entry.get("agent_states", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    entry["agent_states"] = {}
+                result.append(entry)
+            return result

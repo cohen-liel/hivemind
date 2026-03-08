@@ -95,15 +95,54 @@ async def run():
                     await state.register_manager(0, project_id, manager)
                     logger.info(f"Registered manager for predefined project: {proj_name}")
 
+    # Connect EventBus to session manager for activity persistence
+    from dashboard.events import event_bus
+    if state.session_mgr:
+        event_bus.set_session_manager(state.session_mgr)
+        await event_bus.start_writer()
+        logger.info("EventBus DB writer connected")
+
+    # Check for interrupted tasks from previous crash
+    if state.session_mgr:
+        interrupted = await state.session_mgr.get_interrupted_tasks()
+        if interrupted:
+            logger.info(f"Found {len(interrupted)} interrupted task(s) from previous session")
+            for task_state in interrupted:
+                pid = task_state["project_id"]
+                pname = task_state.get("project_name", pid)
+                loop_num = task_state.get("current_loop", 0)
+                cost = task_state.get("total_cost_usd", 0)
+                logger.info(
+                    f"  Interrupted: {pname} (loop {loop_num}, ${cost:.2f}) "
+                    f"- last message: {task_state.get('last_user_message', '')[:80]}"
+                )
+                # Mark as interrupted (not running) so user can manually resume
+                await state.session_mgr.save_orchestrator_state(
+                    project_id=pid,
+                    user_id=task_state.get("user_id", 0),
+                    status="interrupted",
+                    current_loop=loop_num,
+                    turn_count=task_state.get("turn_count", 0),
+                    total_cost_usd=cost,
+                    last_user_message=task_state.get("last_user_message", ""),
+                )
+
     # Start periodic cleanup task
     async def _cleanup_loop():
-        """Run session cleanup every hour."""
+        """Run session cleanup and activity log trimming every hour."""
         while True:
             await asyncio.sleep(3600)  # 1 hour
             try:
                 if state.session_mgr:
                     await state.session_mgr.cleanup_expired()
-                    logger.info("Periodic cleanup: expired sessions cleaned up")
+                    # Trim old activity logs to prevent unbounded growth
+                    if state.session_mgr:
+                        all_projects = await state.session_mgr.list_projects()
+                        for proj in all_projects:
+                            await state.session_mgr.cleanup_old_activity(
+                                proj["project_id"], keep_last=2000
+                            )
+                    logger.info("Periodic cleanup: expired sessions + old activity cleaned up")
             except Exception as e:
                 logger.warning(f"Periodic cleanup error: {e}")
 
@@ -125,6 +164,29 @@ async def run():
     try:
         await server.serve()
     finally:
+        # Graceful shutdown: save state of all running orchestrators
+        logger.info("Graceful shutdown: saving orchestrator states...")
+        for user_id, project_id, manager in state.get_all_managers():
+            if manager.is_running and state.session_mgr:
+                try:
+                    await state.session_mgr.save_orchestrator_state(
+                        project_id=project_id,
+                        user_id=user_id,
+                        status="running",
+                        current_loop=getattr(manager, '_current_loop', 0),
+                        turn_count=manager.turn_count,
+                        total_cost_usd=manager.total_cost_usd,
+                        shared_context=getattr(manager, 'shared_context', []),
+                        agent_states=getattr(manager, 'agent_states', {}),
+                        last_user_message=getattr(manager, '_last_user_message', ''),
+                    )
+                    logger.info(f"  Saved state for {project_id}")
+                except Exception as e:
+                    logger.error(f"  Failed to save state for {project_id}: {e}")
+
+        # Stop EventBus writer (flushes pending events)
+        await event_bus.stop_writer()
+
         cleanup_task.cancel()
         scheduler_task.cancel()
         for task in (cleanup_task, scheduler_task):

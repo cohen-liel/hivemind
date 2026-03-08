@@ -70,12 +70,15 @@ export interface Stats {
 export interface WSEvent {
   type: 'agent_update' | 'agent_result' | 'agent_final' | 'project_status'
     | 'tool_use' | 'agent_started' | 'agent_finished' | 'delegation' | 'loop_progress'
-    | 'approval_request';
+    | 'approval_request' | 'replay_batch' | 'live_state_sync' | 'history_cleared'
+    | 'task_complete' | 'task_error';
   project_id: string;
   project_name?: string;
   text?: string;
   status?: string;
   timestamp: number;
+  // Sequence tracking for cross-device sync
+  sequence_id?: number;
   // tool_use fields
   agent?: string;
   tool_name?: string;

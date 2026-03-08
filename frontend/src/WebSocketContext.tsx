@@ -6,19 +6,41 @@ type Subscriber = (event: WSEvent) => void;
 interface WSContextValue {
   connected: boolean;
   subscribe: (callback: Subscriber) => () => void;
+  /** Request replay of missed events for a project since a given sequence */
+  requestReplay: (projectId: string, sinceSequence: number) => void;
 }
 
 const WSContext = createContext<WSContextValue>({
   connected: false,
   subscribe: () => () => {},
+  requestReplay: () => {},
 });
 
 /**
- * After a WebSocket reconnect, fetch live state for all active projects
- * and dispatch synthetic events so the UI catches up on anything missed
- * during the disconnect.
+ * Per-project sequence tracker.
+ * Tracks the latest sequence_id seen for each project so we can request
+ * only missed events on reconnect.
  */
-async function _syncStateOnReconnect(subscribers: Set<Subscriber>) {
+const _projectSequences: Record<string, number> = {};
+
+function _trackSequence(event: WSEvent) {
+  if (event.project_id && typeof (event as Record<string, unknown>).sequence_id === 'number') {
+    const seq = (event as Record<string, unknown>).sequence_id as number;
+    const current = _projectSequences[event.project_id] ?? 0;
+    if (seq > current) {
+      _projectSequences[event.project_id] = seq;
+    }
+  }
+}
+
+/**
+ * After a WebSocket reconnect, fetch live state for all active projects
+ * and request event replay for any missed events.
+ */
+async function _syncStateOnReconnect(
+  subscribers: Set<Subscriber>,
+  ws: WebSocket | null,
+) {
   try {
     const res = await fetch('/api/projects');
     if (!res.ok) return;
@@ -59,6 +81,16 @@ async function _syncStateOnReconnect(subscribers: Set<Subscriber>) {
           // Ignore per-project fetch errors
         }
       }
+
+      // Request event replay for missed events via WebSocket
+      const lastSeq = _projectSequences[project.project_id] ?? 0;
+      if (lastSeq > 0 && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'replay',
+          project_id: project.project_id,
+          since_sequence: lastSeq,
+        }));
+      }
     }
   } catch {
     // Network error during sync — will retry on next reconnect
@@ -88,7 +120,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
       // On reconnect, sync state so UI catches up on missed events
       if (isReconnect) {
-        _syncStateOnReconnect(subscribersRef.current);
+        _syncStateOnReconnect(subscribersRef.current, ws);
       }
     };
 
@@ -100,7 +132,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           ws.send(JSON.stringify({ type: 'pong' }));
           return;
         }
+
+        // Handle replay batch — dispatch each replayed event to subscribers
+        if (data.type === 'replay_batch') {
+          const events = data.events ?? [];
+          for (const evt of events) {
+            const event = evt as WSEvent;
+            _trackSequence(event);
+            for (const cb of subscribersRef.current) {
+              try { cb(event); } catch { /* subscriber error */ }
+            }
+          }
+          return;
+        }
+
         const event = data as WSEvent;
+        _trackSequence(event);
         for (const cb of subscribersRef.current) {
           try {
             cb(event);
@@ -145,8 +192,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const requestReplay = useCallback((projectId: string, sinceSequence: number) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'replay',
+        project_id: projectId,
+        since_sequence: sinceSequence,
+      }));
+    }
+  }, []);
+
   return (
-    <WSContext.Provider value={{ connected, subscribe }}>
+    <WSContext.Provider value={{ connected, subscribe, requestReplay }}>
       {children}
     </WSContext.Provider>
   );
@@ -154,10 +212,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
 /**
  * Subscribe to WebSocket events. The callback is called for every event.
- * Returns { connected } status.
+ * Returns { connected, requestReplay } for sync control.
  */
-export function useWSSubscribe(callback: Subscriber): { connected: boolean } {
-  const { connected, subscribe } = useContext(WSContext);
+export function useWSSubscribe(callback: Subscriber): {
+  connected: boolean;
+  requestReplay: (projectId: string, sinceSequence: number) => void;
+} {
+  const { connected, subscribe, requestReplay } = useContext(WSContext);
   const callbackRef = useRef(callback);
   callbackRef.current = callback;
 
@@ -165,5 +226,5 @@ export function useWSSubscribe(callback: Subscriber): { connected: boolean } {
     return subscribe((event) => callbackRef.current(event));
   }, [subscribe]);
 
-  return { connected };
+  return { connected, requestReplay };
 }

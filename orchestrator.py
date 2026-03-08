@@ -804,6 +804,7 @@ class OrchestratorManager:
     async def _run_orchestrator(self, user_message: str):
         """Main orchestrator loop."""
         start_time = time.monotonic()
+        self._last_user_message = user_message  # Track for state persistence
 
         # Log user message
         self.conversation_log.append(
@@ -1169,6 +1170,13 @@ class OrchestratorManager:
                     except Exception as e:
                         logger.warning(f"[{self.project_id}] Reflection step failed (non-fatal): {e}")
 
+                    # Clear persisted state (task completed successfully)
+                    try:
+                        if self.session_mgr:
+                            await self.session_mgr.clear_orchestrator_state(self.project_id)
+                    except Exception:
+                        pass
+
                     await self._send_final(
                         await self._build_final_summary(user_message, start_time)
                     )
@@ -1388,6 +1396,23 @@ class OrchestratorManager:
                 # Update the persistent task ledger with this round's results
                 self._update_todo_after_round(loop_count, _round_summary)
 
+                # Persist orchestrator state for crash recovery (every round)
+                try:
+                    if self.session_mgr:
+                        await self.session_mgr.save_orchestrator_state(
+                            project_id=self.project_id,
+                            user_id=self.user_id,
+                            status="running",
+                            current_loop=loop_count,
+                            turn_count=self.turn_count,
+                            total_cost_usd=self.total_cost_usd,
+                            shared_context=self.shared_context[-20:],  # last 20 entries
+                            agent_states=self.agent_states,
+                            last_user_message=getattr(self, '_last_user_message', ''),
+                        )
+                except Exception as e:
+                    logger.warning(f"[{self.project_id}] Failed to persist state: {e}")
+
                 # Inject evaluation results into the review prompt context
                 eval_context = ""
                 if eval_result:
@@ -1512,6 +1537,12 @@ class OrchestratorManager:
                     await self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
         finally:
+            # Clear persisted orchestrator state (task ended, regardless of outcome)
+            try:
+                if self.session_mgr:
+                    await self.session_mgr.clear_orchestrator_state(self.project_id)
+            except Exception:
+                pass
             if not self.is_paused:
                 self.is_running = False
             # Always emit project_status so frontend knows the state changed

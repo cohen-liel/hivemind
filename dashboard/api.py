@@ -1138,15 +1138,66 @@ def create_app() -> FastAPI:
 
         return {"content": content, "path": path, "size": size}
 
+    # --- Activity Replay (cross-device sync) ---
+
+    @app.get("/api/projects/{project_id}/activity")
+    async def get_activity(project_id: str, since: int = 0, limit: int = 200):
+        """Get activity events after a given sequence_id.
+
+        Used by clients on reconnect to catch up on missed events.
+        First tries the fast in-memory ring buffer, falls back to DB.
+        """
+        # Fast path: check in-memory ring buffer
+        buffered = event_bus.get_buffered_events(project_id, since_sequence=since)
+        if buffered:
+            return {
+                "events": buffered,
+                "latest_sequence": event_bus.get_latest_sequence(project_id),
+                "source": "memory",
+            }
+
+        # Slow path: query DB
+        if state.session_mgr:
+            events = await state.session_mgr.get_activity_since(project_id, since, limit)
+            # Reconstruct full event format from DB rows
+            full_events = []
+            for e in events:
+                evt = {
+                    "type": e["event_type"],
+                    "project_id": project_id,
+                    "agent": e.get("agent", ""),
+                    "timestamp": e["timestamp"],
+                    "sequence_id": e["sequence_id"],
+                    **(e.get("data", {})),
+                }
+                full_events.append(evt)
+            return {
+                "events": full_events,
+                "latest_sequence": await state.session_mgr.get_latest_sequence(project_id),
+                "source": "database",
+            }
+
+        return {"events": [], "latest_sequence": 0, "source": "none"}
+
+    @app.get("/api/projects/{project_id}/activity/latest")
+    async def get_latest_sequence(project_id: str):
+        """Get the latest sequence_id for a project (for sync protocol)."""
+        return {
+            "latest_sequence": event_bus.get_latest_sequence(project_id),
+        }
+
     # --- WebSocket ---
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
         """WebSocket for real-time event stream with ping/pong heartbeat.
 
+        Supports event replay on reconnect: client sends
+        {"type": "replay", "project_id": "...", "since_sequence": N}
+        and receives all missed events before switching to live mode.
+
         When DASHBOARD_API_KEY is set, the client must provide the key via
-        query parameter ``?api_key=...`` to connect. Unauthorized connections
-        are rejected before the handshake completes.
+        query parameter ``?api_key=...`` to connect.
         """
         # Security: enforce API key on WebSocket if configured
         if DASHBOARD_API_KEY:
@@ -1182,13 +1233,46 @@ def create_app() -> FastAPI:
                     break
 
         async def _receiver():
-            """Listen for client messages (pong, future commands)."""
+            """Listen for client messages (pong, replay requests, future commands)."""
             while True:
                 try:
                     data = await ws.receive_json()
-                    # Client can send pong or other commands
-                    if data.get("type") == "pong":
+                    msg_type = data.get("type", "")
+
+                    if msg_type == "pong":
                         pass  # Connection is alive
+
+                    elif msg_type == "replay":
+                        # Client requests missed events since a sequence_id
+                        project_id = data.get("project_id", "")
+                        since_seq = data.get("since_sequence", 0)
+                        if project_id:
+                            # Try in-memory first (fast)
+                            events = event_bus.get_buffered_events(project_id, since_seq)
+                            if not events and state.session_mgr:
+                                # Fall back to DB
+                                db_events = await state.session_mgr.get_activity_since(
+                                    project_id, since_seq, limit=200
+                                )
+                                events = [
+                                    {
+                                        "type": e["event_type"],
+                                        "project_id": project_id,
+                                        "agent": e.get("agent", ""),
+                                        "timestamp": e["timestamp"],
+                                        "sequence_id": e["sequence_id"],
+                                        **(e.get("data", {})),
+                                    }
+                                    for e in db_events
+                                ]
+                            # Send replay batch
+                            await ws.send_json({
+                                "type": "replay_batch",
+                                "project_id": project_id,
+                                "events": events,
+                                "latest_sequence": event_bus.get_latest_sequence(project_id),
+                            })
+
                 except Exception:
                     break
 
