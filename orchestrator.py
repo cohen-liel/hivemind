@@ -1383,16 +1383,40 @@ class OrchestratorManager:
             ctx_parts.append(f"  Test results: {'; '.join(test_results[:3])}")
 
         # Include key output summary — look for structured sections first
+        # Parse new ## SUMMARY/STATUS/ISSUES FOUND format (set by updated sub-agent prompts)
         summary = ""
-        for marker in ["## Summary", "### Summary", "## Result", "### Changes"]:
+        status_line = ""
+        issues = ""
+        for marker in ["## SUMMARY", "## Summary", "### Summary", "## Result", "### Changes"]:
             idx = text.find(marker)
             if idx >= 0:
-                summary = text[idx:idx+400].strip()
+                end = text.find("\n## ", idx + len(marker))
+                summary = text[idx: end if end > idx else idx + 400].strip()
+                break
+        for sm in ["## STATUS", "## Status"]:
+            idx = text.find(sm)
+            if idx >= 0:
+                for line in text[idx:idx + 200].strip().split("\n")[1:]:
+                    if line.strip():
+                        status_line = line.strip()[:150]
+                        break
+                break
+        for im in ["## ISSUES FOUND", "## Issues Found"]:
+            idx = text.find(im)
+            if idx >= 0:
+                lines = [l.strip() for l in text[idx:idx + 400].strip().split("\n")[1:]
+                         if l.strip() and l.strip() not in ("(or: none)", "none")]
+                if lines:
+                    issues = "; ".join(lines[:3])
                 break
         if not summary:
             summary = text[:400].strip()
         if summary:
-            ctx_parts.append(f"  Output: {summary}")
+            ctx_parts.append(f"  Output: {summary[:400]}")
+        if status_line:
+            ctx_parts.append(f"  Status: {status_line}")
+        if issues:
+            ctx_parts.append(f"  Issues: {issues}")
 
         self.shared_context.append("\n".join(ctx_parts))
 
