@@ -494,6 +494,34 @@ class OrchestratorManager:
                 f"Delegate more work before completing."
             )
 
+        # Check if agents found issues (CRITICAL/HIGH/BUG/FAIL) that haven't been addressed
+        # Look at the most recent round's context for unresolved action items
+        _issue_keywords = ("CRITICAL", "HIGH", "VULNERABILITY", "FAIL", "FAILED", "BROKEN")
+        recent_issues = []
+        for ctx in self.shared_context[-6:]:
+            if any(kw in ctx.upper() for kw in _issue_keywords):
+                # Check if this is from a reviewer/tester (finding issues) vs developer (fixing)
+                if any(role in ctx.lower() for role in ("reviewer", "tester", "researcher")):
+                    recent_issues.append(ctx[:100])
+        # Only block if there are recent unfixed issues AND we haven't done many rounds
+        if recent_issues and loop_count < required + 2:
+            return (
+                f"Agents reported {len(recent_issues)} issue(s) with CRITICAL/HIGH/FAIL severity "
+                f"in recent rounds. These must be FIXED (not just reported) before TASK_COMPLETE. "
+                f"Delegate developer to fix the issues found by reviewer/tester."
+            )
+
+        # Check if agents only wrote reports without actual code changes
+        report_only_agents = []
+        for ctx in self.shared_context[-6:]:
+            if "REPORTS ONLY" in ctx or "wrote REPORTS but did NOT modify" in ctx:
+                report_only_agents.append(ctx[:80])
+        if report_only_agents and loop_count < required + 2:
+            return (
+                "Agents produced reports/reviews but no actual code fixes were implemented. "
+                "Reports are INPUT for the next round — delegate developer to implement the fixes."
+            )
+
         # Any agents blocked or needing followup? (check shared_context — most recent)
         outstanding = [
             ctx for ctx in self.shared_context
@@ -2346,6 +2374,8 @@ class OrchestratorManager:
         total_sub_turns = 0
         successful_agents = []
         failed_agents = []
+        _agent_action_items: dict[str, list[str]] = {}  # agent -> keywords found
+        _agents_only_reports: list[str] = []  # agents that only wrote .md/.txt files
 
         # Crash indicators in agent output text (even if SDK didn't flag as error)
         _CRASH_INDICATORS = (
@@ -2393,6 +2423,35 @@ class OrchestratorManager:
                             "using tools (file writes, shell commands). Check the workspace files "
                             "to verify what was done before deciding if more work is needed.]"
                         )
+
+                # Extract action items from agent output for the orchestrator
+                _action_keywords = [
+                    "CRITICAL", "HIGH", "MEDIUM", "FAIL", "FAILED", "ERROR",
+                    "BUG", "VULNERABILITY", "ISSUE", "TODO", "FIX", "BROKEN",
+                ]
+                agent_text_upper = response.text.upper()
+                for kw in _action_keywords:
+                    if kw in agent_text_upper:
+                        _agent_action_items.setdefault(agent, []).append(kw)
+
+                # Detect if agent only wrote reports (.md files) vs actual code
+                _report_extensions = (".md", ".txt", ".log", ".json")
+                _code_extensions = (".py", ".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".yml", ".yaml", ".toml")
+                files_section = ""
+                for marker in ["## FILES CHANGED", "## Files Changed", "FILES CHANGED"]:
+                    idx_fc = response.text.find(marker)
+                    if idx_fc >= 0:
+                        files_section = response.text[idx_fc:idx_fc + 500]
+                        break
+                if files_section:
+                    has_code_files = any(ext in files_section for ext in _code_extensions)
+                    has_only_reports = all(
+                        any(ext in line for ext in _report_extensions)
+                        for line in files_section.split("\n")[1:]
+                        if line.strip().startswith("-") or line.strip().startswith("*")
+                    ) if files_section else False
+                    if has_only_reports and not has_code_files:
+                        _agents_only_reports.append(agent)
 
                 label = f"{agent}" if len(responses) == 1 else f"{agent} (task {idx + 1}/{len(responses)})"
                 cost_str = f"${response.cost_usd:.4f}" if response.cost_usd > 0 else "—"
@@ -2456,6 +2515,28 @@ class OrchestratorManager:
             for ctx in self.shared_context[-8:]:
                 parts.append(ctx)
             parts.append("")
+
+        # ── ACTION ITEMS EXTRACTED FROM AGENT OUTPUTS ──
+        if _agent_action_items:
+            parts.append("─── 📝 ACTION ITEMS FOUND IN AGENT OUTPUTS ───")
+            for ai_agent, keywords in _agent_action_items.items():
+                unique_kw = sorted(set(keywords))
+                parts.append(f"  {ai_agent}: mentioned {', '.join(unique_kw)}")
+            parts.append(
+                "\n⚠️ Agents found issues (CRITICAL/HIGH/BUG/FAIL etc.) that likely need FIXING.\n"
+                "These are NOT just informational — you MUST delegate developer to FIX them.\n"
+                "Read each agent's output above and extract the specific issues to fix.\n"
+            )
+
+        # ── REPORTS vs CODE CHANGES ──
+        if _agents_only_reports:
+            parts.append(
+                f"─── ⚠️ REPORTS ONLY (no code changes) ───\n"
+                f"These agents wrote REPORTS but did NOT modify source code: {', '.join(_agents_only_reports)}\n"
+                f"Reports are INPUT for the next round, NOT the final output.\n"
+                f"You MUST now delegate developer to IMPLEMENT the fixes/changes described in these reports.\n"
+                f"Do NOT say TASK_COMPLETE just because reports were written — the actual work hasn't been done yet.\n"
+            )
 
         if has_errors:
             parts.append(
