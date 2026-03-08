@@ -91,9 +91,20 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 | restart.sh | ✅ Build + restart (macOS local dev) |
 
 ## Test Coverage
-- tests/: conftest, test_store, test_state, test_config_full, test_orchestrator, test_skills_registry, test_proof
-- **131 tests**, all passing in ~0.36s
-- **Gap**: No API endpoint tests, no WebSocket tests, no integration tests
+- tests/: conftest, test_store, test_state, test_state_full, test_config_full, test_skills_registry, test_proof
+- tests/: test_session_manager_comprehensive, test_sdk_client, test_api_endpoints (NEW)
+- **292 tests**, all passing in ~1.20s
+- **Coverage areas**:
+  - API endpoints: 51 tests (health, projects CRUD, messages, lifecycle, settings, schedules, stats, browse/read, security)
+  - SDK client: 50 tests (error classification, SDKResponse, ConnectionPool, ErrorCategory, retry logic)
+  - Session manager: 47 tests (project/message/session/task CRUD, budget, notifications, schedules, away mode, lifecycle)
+  - State module: 38 tests (globals, project name regex, get/register/unregister manager)
+  - Config: 29 tests (int/float/path/collection configs, system prompts, get helper)
+  - Skills registry: 18 tests (scan, list, get content, get for agent, build prompt)
+  - Store: 5 tests (save/load, messages, list, session CRUD, status)
+  - Proof/smoke: 5 tests (imports, basic operations)
+- **Security tests included**: SEC-01 (message length), SEC-03 (project path restriction), browse_dirs traversal, read_file traversal, persist_settings whitelist
+- **Gap**: No WebSocket tests, no end-to-end integration tests
 
 ## Next Steps — see `.nexus/IMPROVEMENT_PLAN.md`
 - **3 P0 security fixes**: message length validation, symlink-safe path traversal, project dir restriction
