@@ -161,3 +161,30 @@ Full report: `.nexus/CODE_REVIEW.md`
 3. Move git subprocess calls outside `asyncio.Lock` in orchestrator — reduce agent contention
 4. Extract API routers from monolithic `create_app()` in api.py — improve maintainability
 5. Add request_id middleware for API traceability ✅ Done
+
+## Frontend Review — Competition Polish (2026-03-08)
+Full report: `.nexus/FRONTEND_REVIEW.md`
+
+**Current state**: 7/10 — Professional "Mission Control" design system, real-time WebSocket, dual mobile/desktop layouts
+**With recommended fixes**: 9/10
+
+| Priority | Count | Key Items |
+|----------|-------|-----------|
+| P0 (1 hour) | 4 | Loading skeletons, animated cost counter, empty states, error boundary |
+| P1 (5 hours) | 5 | Toast notifications, cost charts, sound effects, delegation animation, page transitions |
+| P2 (5 hours) | 4 | Keyboard shortcuts, mobile menu, a11y fixes, performance optimization |
+
+### What's Already Great:
+- "Mission Control" dark theme with glow effects, scanlines, custom animations
+- Real-time agent constellation/flow visualization (SVG, orbital animation)
+- WebSocket with event replay and reconnection backoff
+- Mobile-responsive with separate layouts, safe-area handling, haptic feedback
+- Chat-like activity feed with error translation and code block rendering
+- 14 well-structured components with proper separation of concerns
+
+### Top 5 Demo Fixes (~5 hours total):
+1. **Skeleton loading + empty states** (1h) — eliminates ugly "Loading..." and blank screens
+2. **Animated cost counter** (30m) — makes the dashboard feel alive during demos
+3. **Error boundary** (30m) — prevents demo crashes on unexpected data
+4. **Toast notifications** (1h) — app feels responsive to user actions
+5. **Cost analytics chart** (2h) — shows product depth beyond live view
