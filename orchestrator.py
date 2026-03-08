@@ -161,6 +161,9 @@ class OrchestratorManager:
         # Shared context accumulator — passes summary of previous rounds to sub-agents
         self.shared_context: list[str] = []
 
+        # Track completed rounds for summaries and final reporting
+        self._completed_rounds: list[str] = []
+
         # Track fire-and-forget tasks to prevent GC and log errors
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -278,30 +281,147 @@ class OrchestratorManager:
     def _detect_stuck(self) -> bool:
         """Detect if the orchestrator is repeating itself (stuck in a loop).
 
-        Compares the last STUCK_WINDOW_SIZE orchestrator responses using
-        SequenceMatcher. If all pairwise similarities exceed
-        STUCK_SIMILARITY_THRESHOLD, the agents are likely stuck.
+        Checks two signals:
+        1. Orchestrator text similarity: last N responses are nearly identical
+        2. Error-repeat: same agent failing with the same error 3+ consecutive times
         """
-        # Collect recent orchestrator responses
+        # --- Signal 1: orchestrator response similarity ---
         recent = [
             m.content for m in self.conversation_log[-STUCK_WINDOW_SIZE * 2:]
             if m.agent_name == "orchestrator" and m.content
         ][-STUCK_WINDOW_SIZE:]
 
-        if len(recent) < STUCK_WINDOW_SIZE:
-            return False  # Not enough data to detect a loop
+        if len(recent) >= STUCK_WINDOW_SIZE:
+            all_similar = True
+            for i in range(len(recent) - 1):
+                ratio = SequenceMatcher(None, recent[i], recent[i + 1]).ratio()
+                if ratio < STUCK_SIMILARITY_THRESHOLD:
+                    all_similar = False
+                    break
+            if all_similar:
+                logger.warning(
+                    f"[{self.project_id}] Stuck detected (text similarity): "
+                    f"last {len(recent)} orchestrator responses are >{STUCK_SIMILARITY_THRESHOLD:.0%} similar"
+                )
+                return True
 
-        # Check pairwise similarity between consecutive responses
-        for i in range(len(recent) - 1):
-            ratio = SequenceMatcher(None, recent[i], recent[i + 1]).ratio()
-            if ratio < STUCK_SIMILARITY_THRESHOLD:
-                return False  # Found a sufficiently different response
+        # --- Signal 2: repeated identical failures in shared context ---
+        # If the last 3+ context entries are all FAILUREs with nearly the same message,
+        # the team is stuck retrying the same broken approach.
+        if len(self.shared_context) >= 3:
+            recent_ctx = self.shared_context[-6:]
+            error_signatures: list[str] = []
+            for ctx in recent_ctx:
+                for line in ctx.split("\n"):
+                    stripped = line.strip()
+                    if stripped.startswith("Status: FAILED") or stripped.startswith("BLOCKED"):
+                        # Use first 80 chars of error as signature
+                        error_signatures.append(stripped[:80])
+                        break
+            if len(error_signatures) >= 3:
+                first = error_signatures[0]
+                if all(
+                    SequenceMatcher(None, first, sig).ratio() > 0.70
+                    for sig in error_signatures[1:]
+                ):
+                    logger.warning(
+                        f"[{self.project_id}] Stuck detected (repeated errors): "
+                        f"same failure appearing {len(error_signatures)} times in a row"
+                    )
+                    return True
 
-        logger.warning(
-            f"[{self.project_id}] Stuck detection triggered: "
-            f"last {len(recent)} orchestrator responses are >{STUCK_SIMILARITY_THRESHOLD:.0%} similar"
-        )
-        return True
+        return False
+
+    def _estimate_task_complexity(self, task: str) -> str:
+        """Classify task complexity to set the right orchestrator expectations.
+
+        Returns: 'SIMPLE' | 'MEDIUM' | 'LARGE' | 'EPIC'
+        """
+        t = task.lower()
+
+        # EPIC: building entire apps / systems / platforms
+        epic_patterns = [
+            "build an app", "build a app", "create an app", "develop an app",
+            "build a system", "create a system", "full application", "complete app",
+            "full stack", "fullstack", "from scratch", "entire system",
+            "build a website", "create a website", "build a platform",
+            "saas", "e-commerce", "ecommerce", "real-time app",
+            "microservice", "full implementation", "complete system",
+            "build me", "create me", "write me a complete",
+            # Hebrew
+            "תבנה אפליקציה", "צור אפליקציה", "פלטפורמה", "מערכת שלמה",
+            "תכתוב לי מערכת", "תבנה לי", "אפליקציה מאפס",
+        ]
+        if any(p in t for p in epic_patterns):
+            return "EPIC"
+
+        # LARGE: significant features / services
+        large_patterns = [
+            "authentication", "auth system", "new feature", "add feature",
+            "refactor", "add module", "create service", "implement",
+            "integrate", "database schema", "api endpoint", "rest api",
+            "graphql", "user management", "payment", "notification",
+        ]
+        # Long detailed task description also signals LARGE
+        word_count = len(task.split())
+        if word_count > 60 or any(p in t for p in large_patterns):
+            return "LARGE"
+
+        # MEDIUM: adding things, updates, moderate work
+        medium_patterns = [
+            "add", "update", "change", "modify", "improve", "enhance",
+            "create", "write", "make", "implement", "migrate",
+        ]
+        if any(p in t for p in medium_patterns):
+            return "MEDIUM"
+
+        # Default: simple bug fixes, config changes, explanations
+        return "SIMPLE"
+
+    def _check_premature_completion(self, loop_count: int, task: str) -> str | None:
+        """Validate whether TASK_COMPLETE is appropriate. Returns a reason string if premature.
+
+        Called before accepting TASK_COMPLETE from the orchestrator.
+        Returns None if completion is acceptable, or a non-empty string explaining why not.
+        """
+        complexity = self._estimate_task_complexity(task)
+
+        # Minimum rounds before TASK_COMPLETE is allowed (by complexity)
+        min_rounds = {"SIMPLE": 1, "MEDIUM": 2, "LARGE": 4, "EPIC": 8}
+        required = min_rounds.get(complexity, 2)
+
+        if loop_count < required:
+            return (
+                f"Task complexity is **{complexity}** but only {loop_count} round(s) completed "
+                f"(minimum {required} required). Continue working through the remaining phases."
+            )
+
+        # Any agents blocked or needing followup?
+        outstanding = [
+            ctx for ctx in self.shared_context
+            if "BLOCKED" in ctx or "NEEDS_FOLLOWUP" in ctx
+        ]
+        if outstanding:
+            return (
+                f"{len(outstanding)} agent(s) are BLOCKED or have NEEDS_FOLLOWUP items. "
+                f"Resolve all outstanding items before declaring complete."
+            )
+
+        # For LARGE and EPIC: require both reviewer and tester to have run
+        if complexity in ("LARGE", "EPIC"):
+            tester_ran = any("[tester]" in ctx for ctx in self.shared_context)
+            reviewer_ran = any("[reviewer]" in ctx for ctx in self.shared_context)
+            if not tester_ran and not reviewer_ran:
+                return (
+                    "For a task of this complexity, tests must be run AND code must be "
+                    "reviewed before TASK_COMPLETE. Delegate reviewer + tester now."
+                )
+            if not tester_ran:
+                return "Tests have not been run. Delegate tester to verify the implementation works."
+            if not reviewer_ran:
+                return "Code has not been reviewed. Delegate reviewer before completing."
+
+        return None  # Completion is acceptable
 
     def _build_final_summary(self, user_message: str, start_time: float, status: str = "Done") -> str:
         """Build a clean final status message."""
@@ -324,12 +444,18 @@ class OrchestratorManager:
         if file_changes and "(no file" not in file_changes:
             changes_str = f"\n\n📝 Changes:\n```\n{file_changes}\n```"
 
+        # Show what was accomplished each round
+        rounds_str = ""
+        if self._completed_rounds:
+            rounds_str = "\n\n🔄 Rounds:\n" + "\n".join(f"  {r}" for r in self._completed_rounds)
+
         return (
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"✅ {self.project_name} — {status}\n\n"
             f"📋 Task: {task_preview}\n"
             f"🤖 Agents: {agents_str}\n"
             f"⏱ {duration_str} | 📊 {self.turn_count} turns | 💰 ${self.total_cost_usd:.2f}"
+            f"{rounds_str}"
             f"{changes_str}\n\n"
             f"Send another message to continue.\n"
             f"━━━━━━━━━━━━━━━━━━━━"
@@ -567,7 +693,36 @@ class OrchestratorManager:
             prompt += f"{workspace}\n\n"
         if history:
             prompt += history
-        prompt += f"User request:\n{user_message}"
+
+        # Inject task complexity hint so the orchestrator sets the right expectations upfront
+        complexity = self._estimate_task_complexity(user_message)
+        complexity_hints = {
+            "SIMPLE": (
+                "⚡ TASK COMPLEXITY: SIMPLE — Handle efficiently in 1-2 rounds. "
+                "Fix → verify → TASK_COMPLETE."
+            ),
+            "MEDIUM": (
+                "⚡ TASK COMPLEXITY: MEDIUM — Plan 3-5 rounds. "
+                "Implement → review → test → TASK_COMPLETE."
+            ),
+            "LARGE": (
+                "⚡ TASK COMPLEXITY: LARGE — Plan 6-10 rounds. "
+                "Explore → implement phase by phase → review → test → TASK_COMPLETE. "
+                "Do NOT rush to completion."
+            ),
+            "EPIC": (
+                "⚡ TASK COMPLEXITY: EPIC — This is a large system build. Plan 10-25 rounds.\n"
+                "You MUST work through ALL 6 phases:\n"
+                "  Phase 1: Architecture + explore existing code (rounds 1-3)\n"
+                "  Phase 2: Core foundation — models, DB, config (rounds 4-8)\n"
+                "  Phase 3: Feature implementation — one feature at a time (rounds 9-13)\n"
+                "  Phase 4: Integration + error handling (rounds 14-17)\n"
+                "  Phase 5: Testing — write + run tests, fix failures (rounds 18-22)\n"
+                "  Phase 6: Polish + deployment config (rounds 23+)\n"
+                "TASK_COMPLETE only when: all features work + tests pass + app starts."
+            ),
+        }
+        prompt += f"\n\n{complexity_hints.get(complexity, '')}\n\nUser request:\n{user_message}"
 
         task_history_id = None  # Guard: prevents NameError in except blocks
         try:
@@ -584,7 +739,7 @@ class OrchestratorManager:
             loop_count = 0
             self._current_loop = 0
             max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
-            _completed_rounds: list[str] = []  # Track what has been done each round
+            self._completed_rounds = []  # Track what has been done each round (instance-level for final summary)
 
             while self.is_running and loop_count < max_loops:
                 if self._stop_event.is_set():
@@ -760,8 +915,27 @@ class OrchestratorManager:
                         f"{summary}"
                     )
 
-                # Check completion
+                # Check completion — validate TASK_COMPLETE is actually appropriate
                 if "TASK_COMPLETE" in response.text:
+                    premature_reason = self._check_premature_completion(loop_count, user_message)
+                    if premature_reason:
+                        logger.warning(
+                            f"[{self.project_id}] TASK_COMPLETE rejected (premature): {premature_reason}"
+                        )
+                        await self._notify(f"⚠️ *orchestrator* tried to finish early — pushing to continue...")
+                        # Inject a rejection so the orchestrator keeps working
+                        current_changes = self._detect_file_changes()
+                        orchestrator_input = (
+                            f"⛔ TASK_COMPLETE REJECTED — the task is not fully complete yet.\n\n"
+                            f"Reason: {premature_reason}\n\n"
+                            f"Current file changes:\n{current_changes}\n\n"
+                            f"Rounds completed so far:\n"
+                            + ("\n".join(f"  • {r}" for r in self._completed_rounds) or "  • (none yet)") +
+                            f"\n\nYou MUST keep working. What specific work is still needed?\n"
+                            f"Delegate the next phase of work now using <delegate> blocks."
+                        )
+                        continue
+                    # Completion validated — accept it
                     if task_history_id is not None:
                         await self.session_mgr.update_task_history(
                             task_history_id, "completed",
@@ -822,6 +996,18 @@ class OrchestratorManager:
                             f"Response length: {len(response.text)}, "
                             f"contains '<delegate>': {'<delegate>' in response.text}"
                         )
+                        # Build context-aware nudge — tell orchestrator what was done so far
+                        rounds_so_far = (
+                            "\n".join(f"  • {r}" for r in self._completed_rounds)
+                            if self._completed_rounds
+                            else "  • (no rounds completed yet — this is round 1)"
+                        )
+                        current_changes = self._detect_file_changes()
+                        changes_line = (
+                            f"\nCurrent file changes:\n{current_changes}"
+                            if current_changes and "(no file" not in current_changes
+                            else "\nNo file changes detected yet."
+                        )
                         orchestrator_input = (
                             "⚠️ No <delegate> blocks found in your response.\n\n"
                             "You MUST either:\n"
@@ -830,10 +1016,14 @@ class OrchestratorManager:
                             '{"agent": "developer", "task": "specific task description", "context": "relevant file paths and details"}\n'
                             "</delegate>\n\n"
                             "B) Say TASK_COMPLETE if the task is 100% verified done.\n\n"
-                            "REMINDER — before deciding, check:\n"
-                            "1. Was code actually written/modified? (check git diff)\n"
+                            f"═══ PROGRESS SO FAR ═══\n"
+                            f"{rounds_so_far}"
+                            f"{changes_line}\n\n"
+                            "═══ BEFORE DECIDING, CHECK ═══\n"
+                            "1. Was code actually written/modified? (see file changes above)\n"
                             "2. Was it reviewed by the reviewer agent?\n"
-                            "3. Were tests run and did they pass?\n\n"
+                            "3. Were tests run and did they pass?\n"
+                            "4. Are there any BLOCKED or NEEDS_FOLLOWUP items to address?\n\n"
                             f"Original user request:\n{user_message}"
                         )
                         continue
@@ -878,10 +1068,10 @@ class OrchestratorManager:
                     f"{role}({'OK' if all(not r.is_error for r in resps) else 'ERR'})"
                     for role, resps in sub_results.items()
                 )
-                _completed_rounds.append(f"Round {loop_count}: {_round_summary}")
+                self._completed_rounds.append(f"Round {loop_count}: {_round_summary}")
 
                 # Feed results back to orchestrator with round history
-                orchestrator_input = self._build_review_prompt(sub_results, _completed_rounds)
+                orchestrator_input = self._build_review_prompt(sub_results, self._completed_rounds)
 
         except asyncio.CancelledError:
             logger.info(f"Orchestrator loop cancelled for {self.project_name}")
@@ -1014,7 +1204,11 @@ class OrchestratorManager:
                 agent_start = time.monotonic()
 
                 # Build sub-agent prompt
-                sub_prompt = f"Task: {delegation.task}"
+                sub_prompt = (
+                    f"Project: {self.project_name}\n"
+                    f"Working directory: {self.project_dir}\n\n"
+                    f"Task: {delegation.task}"
+                )
                 if delegation.context:
                     sub_prompt += f"\n\nContext: {delegation.context}"
 
@@ -1030,7 +1224,7 @@ class OrchestratorManager:
 
                 # Warn about file conflicts if multiple agents are running in parallel
                 async with lock:
-                    conflicts = self._detect_file_conflicts()
+                    conflicts = self._detect_file_conflicts(files_touched)
                 if conflicts:
                     conflict_lines = [
                         f"  {f}: touched by {', '.join(agents)}"
@@ -1368,6 +1562,7 @@ class OrchestratorManager:
 
         # Use git for reliable file change detection instead of fragile regex
         files_changed_git = []
+        git_diff_snippet = ""
         try:
             result = subprocess.run(
                 ["git", "diff", "--name-only", "HEAD"],
@@ -1384,6 +1579,15 @@ class OrchestratorManager:
             )
             if result2.stdout.strip():
                 files_changed_git.extend([f"(new) {f.strip()}" for f in result2.stdout.strip().split('\n') if f.strip()])
+            # Get a short diff snippet for context — helps agents know WHAT changed
+            if files_changed_git:
+                result3 = subprocess.run(
+                    ["git", "diff", "--stat", "HEAD"],
+                    cwd=self.project_dir,
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result3.stdout.strip():
+                    git_diff_snippet = result3.stdout.strip()[:300]
         except Exception:
             pass
 
@@ -1424,6 +1628,8 @@ class OrchestratorManager:
         files_info = files_changed_git if files_changed_git else files_from_text
         if files_info:
             ctx_parts.append(f"  Files changed: {', '.join(files_info[:12])}")
+        if git_diff_snippet:
+            ctx_parts.append(f"  Diff summary: {git_diff_snippet[:200]}")
         if commands_run:
             ctx_parts.append(f"  Commands: {'; '.join(commands_run[:5])}")
         if test_results:
@@ -1839,6 +2045,41 @@ class OrchestratorManager:
                 "5. Only if all 4 are yes → respond with TASK_COMPLETE\n"
                 "\nIf any answer is no → delegate the missing work before completing."
             )
+
+        # --- Synthesize a concrete RECOMMENDED NEXT ACTION ---
+        rna_parts: list[str] = []
+        if blocked_items:
+            rna_parts.append("ADDRESS BLOCKED AGENTS — provide missing context/tools so they can proceed.")
+        elif failed_agents:
+            rna_parts.append(
+                f"RETRY FAILED AGENTS ({', '.join(set(failed_agents))}) — "
+                "use a different approach, include the exact error in 'context'."
+            )
+        elif followup_items:
+            rna_parts.append("ACT ON NEEDS_FOLLOWUP items listed above.")
+        elif file_changes and "(no file" not in file_changes:
+            # Work was done — check if review/tests are needed
+            roles_done = set(successful_agents)
+            if "reviewer" not in roles_done and "tester" not in roles_done:
+                rna_parts.append(
+                    "CODE WAS CHANGED but not reviewed or tested → "
+                    "delegate reviewer + tester in parallel before TASK_COMPLETE."
+                )
+            elif "reviewer" not in roles_done:
+                rna_parts.append("Code changed but NOT reviewed → delegate reviewer.")
+            elif "tester" not in roles_done:
+                rna_parts.append("Code changed but tests NOT run → delegate tester.")
+            else:
+                rna_parts.append("All checks done → evaluate if TASK_COMPLETE is appropriate.")
+        else:
+            rna_parts.append(
+                "No file changes detected — verify agents actually completed their work. "
+                "If task is done, say TASK_COMPLETE. If not, delegate with more specific instructions."
+            )
+
+        if rna_parts:
+            parts.append(f"\n─── 🎯 RECOMMENDED NEXT ACTION ───\n" + "\n".join(rna_parts))
+
         return "\n".join(parts)
 
     # --- Stuck detection ---
