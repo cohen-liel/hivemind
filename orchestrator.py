@@ -263,7 +263,20 @@ class OrchestratorManager:
                 logger.error(f"Update callback error: {e}")
 
     async def _send_final(self, text: str):
-        """Send the final clean message (deletes all intermediates, stays forever)."""
+        """Send the final clean message (deletes all intermediates, stays forever).
+
+        Also persists to SQLite so the message survives a browser refresh —
+        without this, a page reload during/after task completion shows a blank result
+        because the event_bus has no subscribers to catch the WS-only event.
+        """
+        # Persist to DB first so it survives regardless of WS connectivity
+        if self.session_mgr and self.project_id:
+            self._create_background_task(
+                self.session_mgr.add_message(
+                    self.project_id, "system", "System", text, 0.0,
+                )
+            )
+
         if self.on_final:
             try:
                 await self.on_final(text)
@@ -294,7 +307,7 @@ class OrchestratorManager:
         # in multi-agent sessions each round adds 3-5 sub-agent messages, so a small
         # window misses all orchestrator responses entirely.
         recent = [
-            m.content for m in self.conversation_log
+            m.content for m in list(self.conversation_log)
             if m.agent_name == "orchestrator" and m.content
         ][-STUCK_WINDOW_SIZE:]
 
@@ -1262,6 +1275,7 @@ class OrchestratorManager:
         """
         # Group delegations by agent role
         by_role: dict[str, list[Delegation]] = {}
+        results: dict[str, list[SDKResponse]] = {}
         for d in delegations:
             if d.agent not in SUB_AGENT_PROMPTS:
                 logger.warning(f"Unknown sub-agent role: {d.agent}, skipping")
@@ -1278,7 +1292,6 @@ class OrchestratorManager:
                 continue
             by_role.setdefault(d.agent, []).append(d)
 
-        results: dict[str, list[SDKResponse]] = {}
         lock = asyncio.Lock()  # Protect shared state updates
         # Track files touched by each agent for conflict detection
         files_touched: dict[str, set[str]] = {}  # agent_role -> set of file paths
