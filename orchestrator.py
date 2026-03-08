@@ -2341,43 +2341,46 @@ class OrchestratorManager:
     async def _build_review_prompt(self, sub_results: dict[str, list[SDKResponse]], completed_rounds: list[str] | None = None) -> str:
         """Build a structured prompt for the orchestrator to review sub-agent results.
 
-        Includes manifest state, agent results, workspace changes, round history,
-        budget/round estimate, and a concrete recommended next action.
+        This is the CRITICAL method that drives the orchestration loop forward.
+        Instead of dumping raw agent output and hoping the orchestrator figures
+        out what to do next, we:
+        1. Parse agent outputs to extract specific findings (issues, bugs, failures)
+        2. Build ready-made <delegate> blocks the orchestrator can use directly
+        3. Truncate raw output to keep the prompt focused and actionable
+        4. Present a clear decision: use these blocks, modify them, or TASK_COMPLETE
         """
-        parts = ["═══ SUB-AGENT RESULTS ═══\n"]
+        parts: list[str] = []
 
-        # Always inject manifest at the top — this is the team's ground truth
-        manifest = self._read_project_manifest()
-        if manifest:
-            parts.append(f"─── 📋 PROJECT MANIFEST (.nexus/PROJECT_MANIFEST.md) ───\n{manifest}\n")
-
-        # Budget + rounds estimate so orchestrator can prioritize ruthlessly
+        # ── Budget / rounds context (compact) ──
         budget_used = self.total_cost_usd
         budget_cap = self._effective_budget
         budget_left = max(0.0, budget_cap - budget_used)
         loops_done = self._current_loop
         loops_max = MAX_ORCHESTRATOR_LOOPS
         loops_left = max(0, loops_max - loops_done)
-        # Burn rate: avg cost per round so far → estimate rounds remaining within budget
         burn_rate = budget_used / max(loops_done, 1)
         budget_rounds_left = int(budget_left / burn_rate) if burn_rate > 0 else loops_left
         effective_rounds_left = min(loops_left, budget_rounds_left)
         parts.append(
-            f"─── 📊 SESSION PROGRESS ───\n"
-            f"Rounds: {loops_done}/{loops_max} ({loops_left} remaining) | "
-            f"Budget: ${budget_used:.2f}/${budget_cap:.0f} (${budget_left:.2f} left)\n"
-            f"Burn rate: ${burn_rate:.2f}/round → ~{effective_rounds_left} effective rounds left\n"
-            f"{'⚠️ BUDGET RUNNING LOW — prioritize critical work only!' if effective_rounds_left < 5 else ''}\n"
+            f"Round {loops_done}/{loops_max} | Budget ${budget_used:.2f}/${budget_cap:.0f} "
+            f"(~{effective_rounds_left} rounds left)"
         )
-        has_errors = False
-        total_sub_cost = 0.0
-        total_sub_turns = 0
-        successful_agents = []
-        failed_agents = []
-        _agent_action_items: dict[str, list[str]] = {}  # agent -> keywords found
-        _agents_only_reports: list[str] = []  # agents that only wrote .md/.txt files
+        if effective_rounds_left < 5:
+            parts.append("⚠️ BUDGET LOW — prioritize critical work only!")
 
-        # Crash indicators in agent output text (even if SDK didn't flag as error)
+        # ── Parse each agent's output ──
+        has_errors = False
+        successful_agents: list[str] = []
+        failed_agents: list[str] = []
+        crashed_agents: list[str] = []
+
+        # Structured findings extracted from agent outputs
+        _findings: list[dict] = []  # {agent, type, description, file, severity}
+        _agent_summaries: dict[str, str] = {}  # agent -> compact summary
+        _agents_only_reports: list[str] = []
+        _agents_wrote_code: list[str] = []
+        _test_results: list[dict] = []  # {agent, passed, failed, errors}
+
         _CRASH_INDICATORS = (
             "session crashed", "session was interrupted", "pick up where I left off",
             "was in the middle of", "got cancelled", "timed out",
@@ -2385,248 +2388,388 @@ class OrchestratorManager:
         )
 
         for agent, responses in sub_results.items():
-            for idx, response in enumerate(responses):
-                # Detect soft crashes: agent returned text but the content
-                # indicates it crashed mid-execution (SDK doesn't flag these)
+            for resp_idx, response in enumerate(responses):
+                # Detect soft crashes
                 is_soft_crash = False
                 if not response.is_error and response.text:
                     text_lower = response.text[:1000].lower()
-                    if any(indicator in text_lower for indicator in _CRASH_INDICATORS):
+                    if any(ind in text_lower for ind in _CRASH_INDICATORS):
                         is_soft_crash = True
 
-                status = "SUCCESS" if (not response.is_error and not is_soft_crash) else "ERROR"
-                if is_soft_crash:
-                    status = "CRASHED (soft)"
                 if response.is_error or is_soft_crash:
                     has_errors = True
-                    failed_agents.append(agent)
+                    if is_soft_crash:
+                        crashed_agents.append(agent)
+                    else:
+                        failed_agents.append(agent)
                 else:
                     successful_agents.append(agent)
-                total_sub_cost += response.cost_usd
-                total_sub_turns += response.num_turns
 
-                # Include a reasonable chunk of the response
-                content = response.text[:4000]
-                if len(response.text) > 4000:
-                    content += "\n... (truncated)"
+                text = response.text or ""
 
-                # Provide explicit fallback so the orchestrator knows work was attempted
-                if not content.strip():
-                    if response.is_error:
-                        content = (
-                            f"[Agent FAILED with error: {response.error_message}. "
-                            f"Consider retrying the task or using a different approach.]"
-                        )
-                    else:
-                        content = (
-                            "[Agent produced no text output — it may have completed the task "
-                            "using tools (file writes, shell commands). Check the workspace files "
-                            "to verify what was done before deciding if more work is needed.]"
-                        )
+                # ── Extract structured sections from agent output ──
+                summary = self._extract_section(text, ["## SUMMARY", "## Summary", "### Summary", "## Result"])
+                status_line = self._extract_section(text, ["## STATUS", "## Status"], max_lines=2)
+                issues_text = self._extract_section(text, ["## ISSUES FOUND", "## Issues Found", "## Issues", "## Findings"])
+                files_section = self._extract_section(text, ["## FILES CHANGED", "## Files Changed"])
 
-                # Extract action items from agent output for the orchestrator
-                _action_keywords = [
-                    "CRITICAL", "HIGH", "MEDIUM", "FAIL", "FAILED", "ERROR",
-                    "BUG", "VULNERABILITY", "ISSUE", "TODO", "FIX", "BROKEN",
-                ]
-                agent_text_upper = response.text.upper()
-                for kw in _action_keywords:
-                    if kw in agent_text_upper:
-                        _agent_action_items.setdefault(agent, []).append(kw)
+                # Build compact agent summary (max 600 chars)
+                if response.is_error:
+                    agent_summary = f"FAILED: {response.error_message[:300]}"
+                elif is_soft_crash:
+                    agent_summary = f"CRASHED: {text[:300]}"
+                elif summary:
+                    agent_summary = summary[:600]
+                else:
+                    agent_summary = text[:600]
+                _agent_summaries[agent] = agent_summary
 
-                # Detect if agent only wrote reports (.md files) vs actual code
-                _report_extensions = (".md", ".txt", ".log", ".json")
+                # ── Extract specific findings (issues, bugs, test failures) ──
+                if issues_text:
+                    for line in issues_text.split("\n"):
+                        line = line.strip()
+                        if not line or line.startswith("#") or line in ("(or: none)", "none", "None"):
+                            continue
+                        # Parse severity if present
+                        severity = "MEDIUM"
+                        for sev in ["CRITICAL", "HIGH", "LOW"]:
+                            if sev in line.upper():
+                                severity = sev
+                                break
+                        # Extract file path if mentioned
+                        file_path = ""
+                        for token in line.split():
+                            cleaned = token.strip("`\"',;:()[]")
+                            if ("/" in cleaned or "." in cleaned) and len(cleaned) > 3:
+                                if not cleaned.startswith("http") and any(
+                                    cleaned.endswith(ext) for ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".yml", ".yaml", ".toml", ".md")
+                                ):
+                                    file_path = cleaned
+                                    break
+                        _findings.append({
+                            "agent": agent,
+                            "type": "issue",
+                            "description": line[:200],
+                            "file": file_path,
+                            "severity": severity,
+                        })
+
+                # ── Extract test results ──
+                text_upper = text.upper()
+                if agent in ("tester",) or "TEST" in text_upper:
+                    passed = failed = errors = 0
+                    for line in text.split("\n"):
+                        ll = line.lower().strip()
+                        # Parse "N passed" or "passed: N" patterns
+                        # Be careful not to double-count: "12 passed, 0 failed" should NOT set failed=12
+                        tokens = ll.split()
+                        for ti, tok in enumerate(tokens):
+                            if tok.isdigit():
+                                num = int(tok)
+                                # Check the NEXT token for the keyword
+                                next_tok = tokens[ti + 1] if ti + 1 < len(tokens) else ""
+                                if "passed" in next_tok or next_tok.startswith("pass"):
+                                    passed = max(passed, num)
+                                elif "failed" in next_tok or "failure" in next_tok or next_tok.startswith("fail"):
+                                    failed = max(failed, num)
+                                elif "error" in next_tok:
+                                    errors = max(errors, num)
+                            elif tok in ("passed:", "passed") and ti + 1 < len(tokens) and tokens[ti + 1].isdigit():
+                                passed = max(passed, int(tokens[ti + 1]))
+                            elif tok in ("failed:", "failed", "failures:") and ti + 1 < len(tokens) and tokens[ti + 1].isdigit():
+                                failed = max(failed, int(tokens[ti + 1]))
+                            elif tok in ("errors:", "error:") and ti + 1 < len(tokens) and tokens[ti + 1].isdigit():
+                                errors = max(errors, int(tokens[ti + 1]))
+                        # Capture specific failure messages
+                        if any(kw in ll for kw in ("fail:", "failed:", "error:", "assertion")):
+                            _findings.append({
+                                "agent": agent,
+                                "type": "test_failure",
+                                "description": line.strip()[:200],
+                                "file": "",
+                                "severity": "HIGH",
+                            })
+                    if passed or failed or errors:
+                        _test_results.append({"agent": agent, "passed": passed, "failed": failed, "errors": errors})
+
+                # ── Detect report-only vs code changes ──
                 _code_extensions = (".py", ".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".yml", ".yaml", ".toml")
-                files_section = ""
-                for marker in ["## FILES CHANGED", "## Files Changed", "FILES CHANGED"]:
-                    idx_fc = response.text.find(marker)
-                    if idx_fc >= 0:
-                        files_section = response.text[idx_fc:idx_fc + 500]
-                        break
+                _report_extensions = (".md", ".txt", ".log", ".json")
                 if files_section:
-                    has_code_files = any(ext in files_section for ext in _code_extensions)
+                    has_code = any(ext in files_section for ext in _code_extensions)
                     has_only_reports = all(
                         any(ext in line for ext in _report_extensions)
                         for line in files_section.split("\n")[1:]
                         if line.strip().startswith("-") or line.strip().startswith("*")
-                    ) if files_section else False
-                    if has_only_reports and not has_code_files:
+                    ) if files_section.strip() else False
+                    if has_only_reports and not has_code:
                         _agents_only_reports.append(agent)
+                    elif has_code:
+                        _agents_wrote_code.append(agent)
 
-                label = f"{agent}" if len(responses) == 1 else f"{agent} (task {idx + 1}/{len(responses)})"
-                cost_str = f"${response.cost_usd:.4f}" if response.cost_usd > 0 else "—"
-                parts.append(
-                    f"─── {label} [{status}] (cost: {cost_str}, turns: {response.num_turns}) ───\n"
-                    f"{content}\n"
-                )
+                # ── Detect NEEDS_FOLLOWUP / BLOCKED ──
+                if status_line:
+                    if "NEEDS_FOLLOWUP" in status_line:
+                        _findings.append({
+                            "agent": agent, "type": "followup",
+                            "description": status_line[:200],
+                            "file": "", "severity": "HIGH",
+                        })
+                    elif "BLOCKED" in status_line:
+                        _findings.append({
+                            "agent": agent, "type": "blocked",
+                            "description": status_line[:200],
+                            "file": "", "severity": "CRITICAL",
+                        })
 
-        # ALWAYS show current file changes — most reliable way to see what happened
+        # ── WORKSPACE CHANGES (git) ──
         file_changes = await self._detect_file_changes()
-        if file_changes and "(no file" not in file_changes:
-            parts.append(f"─── WORKSPACE CHANGES (git diff --stat) ───\n{file_changes}\n")
+        has_file_changes = file_changes and "(no file" not in file_changes
 
-        # Extract and surface NEEDS_FOLLOWUP / BLOCKED statuses prominently
-        followup_items = []
-        blocked_items = []
-        for agent, responses in sub_results.items():
-            for response in responses:
-                text = response.text
-                for sm in ["## STATUS", "## Status"]:
-                    idx = text.find(sm)
-                    if idx >= 0:
-                        for line in text[idx:idx + 200].strip().split("\n")[1:]:
-                            if line.strip():
-                                sl = line.strip()
-                                if sl.startswith("NEEDS_FOLLOWUP"):
-                                    followup_items.append(f"  {agent}: {sl}")
-                                elif sl.startswith("BLOCKED"):
-                                    blocked_items.append(f"  {agent}: {sl}")
-                                break
-                        break
+        # ═══════════════════════════════════════════════════════
+        # BUILD THE PROMPT — compact, actionable, with ready-made blocks
+        # ═══════════════════════════════════════════════════════
 
-        if blocked_items:
-            parts.append("─── 🚫 BLOCKED AGENTS (address these first) ───")
-            parts.extend(blocked_items)
+        # Section 1: Agent summaries (compact — NOT raw output)
+        parts.append("\n═══ AGENT RESULTS (this round) ═══")
+        for agent, summary in _agent_summaries.items():
+            status_tag = "✅" if agent in successful_agents else "❌ FAILED" if agent in failed_agents else "💥 CRASHED"
+            parts.append(f"{status_tag} {agent}: {summary[:500]}")
+        parts.append("")
+
+        # Section 2: File changes
+        if has_file_changes:
+            parts.append(f"═══ FILES CHANGED ═══\n{file_changes}\n")
+
+        # Section 3: Findings summary (if any)
+        critical_findings = [f for f in _findings if f["severity"] in ("CRITICAL", "HIGH")]
+        medium_findings = [f for f in _findings if f["severity"] == "MEDIUM"]
+        if critical_findings or medium_findings:
+            parts.append("═══ ISSUES REQUIRING ACTION ═══")
+            for f in critical_findings:
+                file_hint = f" in {f['file']}" if f['file'] else ""
+                parts.append(f"  🔴 [{f['severity']}] {f['description']}{file_hint} (found by {f['agent']})")
+            for f in medium_findings[:5]:  # Cap medium findings
+                file_hint = f" in {f['file']}" if f['file'] else ""
+                parts.append(f"  🟡 [{f['severity']}] {f['description']}{file_hint} (found by {f['agent']})")
             parts.append("")
-        if followup_items:
-            parts.append("─── 📋 NEEDS FOLLOWUP (must act on these) ───")
-            parts.extend(followup_items)
+
+        # Section 4: Test results summary
+        if _test_results:
+            parts.append("═══ TEST RESULTS ═══")
+            for tr in _test_results:
+                parts.append(f"  {tr['agent']}: {tr['passed']} passed, {tr['failed']} failed, {tr['errors']} errors")
             parts.append("")
 
-        # Cost summary
-        parts.append(
-            f"─── SESSION TOTALS ───\n"
-            f"This round: ${total_sub_cost:.4f} ({total_sub_turns} turns) | "
-            f"Overall: ${self.total_cost_usd:.4f} ({self.turn_count} turns)\n"
-            f"Successful: {', '.join(successful_agents) or 'none'} | "
-            f"Failed: {', '.join(failed_agents) or 'none'}\n"
-        )
-
-        # Show round history so orchestrator knows what's been done
+        # Section 5: Round history (compact)
         if completed_rounds:
-            parts.append(f"─── ROUNDS COMPLETED ({len(completed_rounds)}) ───")
-            for r in completed_rounds:
+            parts.append(f"═══ HISTORY ({len(completed_rounds)} rounds) ═══")
+            for r in completed_rounds[-5:]:  # Only show last 5 rounds
                 parts.append(f"  {r}")
             parts.append("")
 
-        # Include accumulated shared context so orchestrator sees the full picture
-        if self.shared_context:
-            parts.append("─── ACCUMULATED CONTEXT (all rounds) ───")
-            for ctx in self.shared_context[-8:]:
-                parts.append(ctx)
-            parts.append("")
+        # ═══════════════════════════════════════════════════════
+        # GENERATE READY-MADE <delegate> BLOCKS
+        # This is the key innovation: instead of telling the orchestrator
+        # "figure out what to do", we BUILD the blocks for it.
+        # ═══════════════════════════════════════════════════════
+        suggested_blocks: list[str] = []
 
-        # ── ACTION ITEMS EXTRACTED FROM AGENT OUTPUTS ──
-        if _agent_action_items:
-            parts.append("─── 📝 ACTION ITEMS FOUND IN AGENT OUTPUTS ───")
-            for ai_agent, keywords in _agent_action_items.items():
-                unique_kw = sorted(set(keywords))
-                parts.append(f"  {ai_agent}: mentioned {', '.join(unique_kw)}")
-            parts.append(
-                "\n⚠️ Agents found issues (CRITICAL/HIGH/BUG/FAIL etc.) that likely need FIXING.\n"
-                "These are NOT just informational — you MUST delegate developer to FIX them.\n"
-                "Read each agent's output above and extract the specific issues to fix.\n"
+        # Priority 1: Retry crashed/failed agents
+        _retried = set()
+        for agent in crashed_agents + failed_agents:
+            if agent in _retried:
+                continue
+            _retried.add(agent)
+            # Find the original task for this agent from the delegation
+            error_ctx = _agent_summaries.get(agent, "unknown error")[:200]
+            suggested_blocks.append(
+                f'<delegate>\n'
+                f'{{"agent": "{agent}", "task": "RETRY: Your previous attempt failed/crashed. '
+                f'Please retry the same task with a fresh approach.", '
+                f'"context": "Previous error: {self._escape_json_str(error_ctx)}"}}\n'
+                f'</delegate>'
             )
 
-        # ── REPORTS vs CODE CHANGES ──
-        if _agents_only_reports:
-            parts.append(
-                f"─── ⚠️ REPORTS ONLY (no code changes) ───\n"
-                f"These agents wrote REPORTS but did NOT modify source code: {', '.join(_agents_only_reports)}\n"
-                f"Reports are INPUT for the next round, NOT the final output.\n"
-                f"You MUST now delegate developer to IMPLEMENT the fixes/changes described in these reports.\n"
-                f"Do NOT say TASK_COMPLETE just because reports were written — the actual work hasn't been done yet.\n"
-            )
-
-        if has_errors:
-            parts.append(
-                "\n⚠️ SOME AGENTS FAILED OR CRASHED. You MUST:\n"
-                "1. Analyze each error/crash carefully — read the exact error message\n"
-                "2. RETRY the failed tasks immediately — delegate them again with 'context' containing the error\n"
-                "3. If an agent 'crashed' or 'was interrupted', the task was NOT completed — retry it\n"
-                "4. If the same approach fails twice, try a completely different strategy\n"
-                "5. If a different agent is better suited, delegate to them instead\n"
-                "6. Do NOT say TASK_COMPLETE — there are failed/crashed agents that need retrying\n"
-                "\n🚨 CRITICAL: TASK_COMPLETE is FORBIDDEN when agents have crashed or failed.\n"
-                "You MUST delegate retry tasks NOW. Failure is normal — diagnose, adapt, retry. Never give up."
-            )
-        else:
-            # Check which agents have NEVER been used across all rounds
-            all_agents = {"developer", "reviewer", "tester", "devops", "researcher"}
-            unused_agents = all_agents - self._agents_used
-            # Suggest work for unused agents
-            unused_suggestions = []
-            if "reviewer" in unused_agents:
-                unused_suggestions.append("- reviewer: Has NOT reviewed any code yet → delegate a code review")
-            if "tester" in unused_agents:
-                unused_suggestions.append("- tester: Has NOT run any tests yet → delegate test writing + execution")
-            if "devops" in unused_agents:
-                unused_suggestions.append("- devops: Has NOT been used yet → consider deployment/config tasks")
-
-            unused_section = ""
-            if unused_suggestions:
-                unused_section = (
-                    "\n\n⚠️ IDLE AGENTS (never used this session):\n"
-                    + "\n".join(unused_suggestions)
-                    + "\n\nIDLE AGENTS = WASTED CAPACITY. Assign them work before considering TASK_COMPLETE."
-                )
-
-            parts.append(
-                "\n✅ ALL AGENTS COMPLETED THIS ROUND. Now reason through these questions:\n"
-                "1. Was the task FULLY implemented? Check FILES CHANGED above.\n"
-                "2. Has the code been REVIEWED by the reviewer agent? If not → delegate reviewer NOW.\n"
-                "3. Have TESTS been written and run by the tester agent? If not → delegate tester NOW.\n"
-                "4. Are there any ISSUES FOUND sections that need fixing? If yes → delegate developer to fix.\n"
-                "5. Are there idle agents that could do useful work? If yes → delegate them NOW.\n"
-                "6. ONLY if ALL of the above are satisfied → respond with TASK_COMPLETE.\n"
-                "\n🚨 IMPORTANT: After round 1, you almost ALWAYS need more rounds.\n"
-                "Round 1 = implement. Round 2 = review + test. Round 3 = fix issues. Round 4+ = polish.\n"
-                "If this is round 1 or 2, you should NOT say TASK_COMPLETE unless the task is trivially simple."
-                f"{unused_section}"
-            )
-
-        # --- Synthesize a concrete RECOMMENDED NEXT ACTION ---
-        rna_parts: list[str] = []
-        if blocked_items:
-            rna_parts.append("ADDRESS BLOCKED AGENTS — provide missing context/tools so they can proceed.")
-        elif failed_agents:
-            rna_parts.append(
-                f"RETRY FAILED AGENTS ({', '.join(set(failed_agents))}) — "
-                "use a different approach, include the exact error in 'context'."
-            )
-        elif followup_items:
-            rna_parts.append("ACT ON NEEDS_FOLLOWUP items listed above.")
-        elif file_changes and "(no file" not in file_changes:
-            # Work was done — check if review/tests are needed
-            roles_done = set(successful_agents)
-            if "reviewer" not in roles_done and "tester" not in roles_done:
-                rna_parts.append(
-                    "CODE WAS CHANGED but not reviewed or tested → "
-                    "delegate reviewer + tester in parallel before TASK_COMPLETE."
-                )
-            elif "reviewer" not in roles_done:
-                rna_parts.append("Code changed but NOT reviewed → delegate reviewer.")
-            elif "tester" not in roles_done:
-                rna_parts.append("Code changed but tests NOT run → delegate tester.")
-            else:
-                # Even if all checks done, push to use idle agents
-                if unused_agents - {"researcher", "devops"}:  # reviewer or tester unused
-                    rna_parts.append(
-                        f"Code was reviewed and tested, but agents {', '.join(unused_agents - {'researcher', 'devops'})} "
-                        f"were never used. Consider assigning them work or say TASK_COMPLETE if truly done."
-                    )
+        # Priority 2: Fix issues found by reviewer/tester
+        if critical_findings and not failed_agents:
+            # Group findings by file for efficient fixing
+            files_with_issues: dict[str, list[str]] = {}
+            general_issues: list[str] = []
+            for f in critical_findings:
+                if f["file"]:
+                    files_with_issues.setdefault(f["file"], []).append(f["description"])
                 else:
-                    rna_parts.append("All checks done → evaluate if TASK_COMPLETE is appropriate.")
-        else:
-            rna_parts.append(
-                "No file changes detected — verify agents actually completed their work. "
-                "If task is done, say TASK_COMPLETE. If not, delegate with more specific instructions."
+                    general_issues.append(f["description"])
+
+            # Build fix tasks — group by file
+            fix_descriptions: list[str] = []
+            for fpath, descs in list(files_with_issues.items())[:5]:
+                fix_descriptions.append(f"In {fpath}: {'; '.join(d[:80] for d in descs[:3])}")
+            if general_issues:
+                fix_descriptions.append(f"General: {'; '.join(d[:80] for d in general_issues[:3])}")
+
+            if fix_descriptions:
+                fix_task = "Fix the following issues found by reviewer/tester: " + " | ".join(fix_descriptions[:4])
+                fix_context = f"Issues found in round {loops_done}. Fix the actual code, don't just report."
+                suggested_blocks.append(
+                    f'<delegate>\n'
+                    f'{{"agent": "developer", "task": "{self._escape_json_str(fix_task[:500])}", '
+                    f'"context": "{self._escape_json_str(fix_context)}"}}\n'
+                    f'</delegate>'
+                )
+
+        # Priority 3: Test failures need developer fixes
+        test_failures = [f for f in _findings if f["type"] == "test_failure"]
+        if test_failures and not failed_agents and not critical_findings:
+            failure_descs = "; ".join(f["description"][:80] for f in test_failures[:5])
+            suggested_blocks.append(
+                f'<delegate>\n'
+                f'{{"agent": "developer", "task": "Fix failing tests: {self._escape_json_str(failure_descs[:400])}", '
+                f'"context": "Tests were run and some failed. Fix the code (not the tests) to make them pass."}}\n'
+                f'</delegate>'
             )
 
-        if rna_parts:
-            parts.append(f"\n─── 🎯 RECOMMENDED NEXT ACTION ───\n" + "\n".join(rna_parts))
+        # Priority 4: Reports written but no code changes → developer must implement
+        if _agents_only_reports and not _agents_wrote_code and not failed_agents:
+            report_agents = ", ".join(_agents_only_reports)
+            suggested_blocks.append(
+                f'<delegate>\n'
+                f'{{"agent": "developer", "task": "Implement the fixes/changes described in the reports written by {report_agents}. '
+                f'Read their output above and make the actual code changes.", '
+                f'"context": "Previous round produced reports/analysis but no code changes. Now implement."}}\n'
+                f'</delegate>'
+            )
+
+        # Priority 5: Code was written but not reviewed/tested
+        all_agents_set = {"developer", "reviewer", "tester", "devops", "researcher"}
+        unused_agents = all_agents_set - self._agents_used
+        roles_this_round = set(successful_agents)
+
+        if _agents_wrote_code or has_file_changes:
+            if "reviewer" not in roles_this_round and "reviewer" not in failed_agents:
+                changed_files = file_changes[:200] if has_file_changes else "check git diff"
+                suggested_blocks.append(
+                    f'<delegate>\n'
+                    f'{{"agent": "reviewer", "task": "Review the code changes from this round for bugs, security issues, and best practices.", '
+                    f'"context": "Files changed: {self._escape_json_str(changed_files)}"}}\n'
+                    f'</delegate>'
+                )
+            if "tester" not in roles_this_round and "tester" not in failed_agents:
+                suggested_blocks.append(
+                    f'<delegate>\n'
+                    f'{{"agent": "tester", "task": "Write and run tests for the code changes made this round. Report PASS/FAIL with details.", '
+                    f'"context": "Code was modified — verify it works correctly."}}\n'
+                    f'</delegate>'
+                )
+
+        # Priority 6: Blocked/followup items
+        blocked_findings = [f for f in _findings if f["type"] == "blocked"]
+        followup_findings = [f for f in _findings if f["type"] == "followup"]
+        for bf in blocked_findings:
+            suggested_blocks.append(
+                f'<delegate>\n'
+                f'{{"agent": "{bf["agent"]}", "task": "UNBLOCK: {self._escape_json_str(bf["description"][:300])}", '
+                f'"context": "This agent was blocked in the previous round. Provide what they need to proceed."}}\n'
+                f'</delegate>'
+            )
+        for ff in followup_findings:
+            suggested_blocks.append(
+                f'<delegate>\n'
+                f'{{"agent": "{ff["agent"]}", "task": "FOLLOWUP: {self._escape_json_str(ff["description"][:300])}", '
+                f'"context": "This agent needs follow-up work from the previous round."}}\n'
+                f'</delegate>'
+            )
+
+        # ═══════════════════════════════════════════════════════
+        # FINAL DECISION SECTION
+        # ═══════════════════════════════════════════════════════
+        if suggested_blocks:
+            parts.append("═══ SUGGESTED NEXT DELEGATIONS (ready to use) ═══")
+            parts.append("Use these <delegate> blocks as-is, modify them, or add more:")
+            parts.append("")
+            parts.extend(suggested_blocks)
+            parts.append("")
+            parts.append(
+                "INSTRUCTIONS: Copy the <delegate> blocks above into your response. "
+                "You may modify the task/context or add additional blocks. "
+                "Do NOT say TASK_COMPLETE — there is work to do."
+            )
+        else:
+            # No suggested blocks — either everything is done or we can't determine next steps
+            all_success = not has_errors
+            has_review = "reviewer" in self._agents_used
+            has_tests = "tester" in self._agents_used
+            code_changed = bool(_agents_wrote_code) or has_file_changes
+
+            if all_success and has_review and has_tests and code_changed:
+                # Genuinely looks complete
+                parts.append(
+                    "═══ DECISION ═══\n"
+                    "All agents succeeded, code was reviewed and tested.\n"
+                    "If the original task is fully addressed, respond with TASK_COMPLETE.\n"
+                    "If there's more work needed, create <delegate> blocks for the next phase."
+                )
+            elif all_success and code_changed:
+                # Code changed but missing review/tests
+                missing = []
+                if not has_review:
+                    missing.append("code review (reviewer)")
+                if not has_tests:
+                    missing.append("testing (tester)")
+                parts.append(
+                    f"═══ DECISION ═══\n"
+                    f"Code was changed but still needs: {', '.join(missing)}.\n"
+                    f"Delegate the missing steps before TASK_COMPLETE."
+                )
+                # Generate blocks for missing steps
+                if not has_review:
+                    parts.append(
+                        f'\n<delegate>\n'
+                        f'{{"agent": "reviewer", "task": "Review all code changes for bugs, security, and best practices.", '
+                        f'"context": "Code was written but not yet reviewed."}}\n'
+                        f'</delegate>'
+                    )
+                if not has_tests:
+                    parts.append(
+                        f'\n<delegate>\n'
+                        f'{{"agent": "tester", "task": "Write and run tests for the implementation. Report PASS/FAIL.", '
+                        f'"context": "Code was written but not yet tested."}}\n'
+                        f'</delegate>'
+                    )
+            elif not code_changed and all_success:
+                parts.append(
+                    "═══ DECISION ═══\n"
+                    "No code changes detected. Either:\n"
+                    "A) The task doesn't require code changes → TASK_COMPLETE if done\n"
+                    "B) Agents didn't do the work → delegate with more specific instructions"
+                )
+            else:
+                parts.append(
+                    "═══ DECISION ═══\n"
+                    "Review the results above and decide what to do next.\n"
+                    "Create <delegate> blocks for any remaining work."
+                )
 
         return "\n".join(parts)
+
+    def _extract_section(self, text: str, markers: list[str], max_lines: int = 10) -> str:
+        """Extract a section from agent output text by looking for markdown headers."""
+        for marker in markers:
+            idx = text.find(marker)
+            if idx >= 0:
+                # Find end of section (next ## header or end of text)
+                end = text.find("\n## ", idx + len(marker))
+                section = text[idx + len(marker): end if end > idx else idx + 800].strip()
+                # Limit lines
+                lines = section.split("\n")[:max_lines]
+                return "\n".join(lines).strip()
+        return ""
+
+    @staticmethod
+    def _escape_json_str(s: str) -> str:
+        """Escape a string for safe inclusion in a JSON string value."""
+        return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", "").replace("\t", " ")
 
     # --- Stuck detection ---
 
