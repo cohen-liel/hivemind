@@ -20,31 +20,34 @@ from claude_agent_sdk.types import (
     ToolResultBlock,
 )
 
-from config import AGENT_TIMEOUT_SECONDS, SDK_MAX_RETRIES
+from config import AGENT_TIMEOUT_SECONDS, SDK_MAX_RETRIES, CLAUDE_CLI_PATH
 
 logger = logging.getLogger(__name__)
 
-# Use the native Claude binary directly, bypassing the bash wrapper.
-# The wrapper (/usr/local/bin/claude) runs sandbox-exec which can fail with
-# "unsupported syntax: kleene star" on some macOS versions.
-# The native binary at /usr/local/bin/claude_code/claude works without sandbox issues.
-# We still need the Meta environment (x2p proxy, CAT tokens, ANTHROPIC_BASE_URL)
-# so we set those up in the environment before spawning.
+# Use the Claude CLI binary. Resolution order:
+#   1. CLAUDE_CLI_PATH env var / config.py (explicit path or just "claude")
+#   2. Native macOS binary at /usr/local/bin/claude_code/claude (avoids sandbox-exec)
+#   3. shutil.which("claude") — finds it on $PATH (works in Docker + Linux)
+#   4. Fallback to /usr/local/bin/claude
 import shutil as _shutil
 
 _NATIVE_BINARY = "/usr/local/bin/claude_code/claude"
-_WRAPPER_BINARY = _shutil.which("claude") or "/usr/local/bin/claude"
 
-# Prefer native binary if it exists (avoids sandbox-exec issues)
-if os.path.isfile(_NATIVE_BINARY) and os.access(_NATIVE_BINARY, os.X_OK):
+if CLAUDE_CLI_PATH != "claude":
+    # Explicitly configured — use as-is
+    SYSTEM_CLI_PATH = CLAUDE_CLI_PATH
+    logger.info(f"Using configured Claude CLI: {SYSTEM_CLI_PATH}")
+elif os.path.isfile(_NATIVE_BINARY) and os.access(_NATIVE_BINARY, os.X_OK):
+    # macOS native binary (avoids sandbox-exec issues)
     SYSTEM_CLI_PATH = _NATIVE_BINARY
     logger.info(f"Using native Claude binary: {_NATIVE_BINARY}")
 else:
-    SYSTEM_CLI_PATH = _WRAPPER_BINARY
-    logger.info(f"Using Claude wrapper: {_WRAPPER_BINARY}")
+    # Find on PATH (Docker, Linux, standard installs)
+    SYSTEM_CLI_PATH = _shutil.which("claude") or "/usr/local/bin/claude"
+    logger.info(f"Using Claude CLI from PATH: {SYSTEM_CLI_PATH}")
 
-# Set up Meta environment that the wrapper normally provides
-# (needed when using native binary directly)
+# Set up proxy environment for Meta-internal x2p network.
+# Skip if ANTHROPIC_BASE_URL is already set (custom/standard environment).
 if "ANTHROPIC_BASE_URL" not in os.environ:
     import platform as _platform
     if _platform.system() == "Darwin":
@@ -58,6 +61,7 @@ if "ANTHROPIC_BASE_URL" not in os.environ:
         if _CAT_B64:
             os.environ.setdefault("ANTHROPIC_CUSTOM_HEADERS", f"x-x2pagentd-inject-cat: {_CAT_B64}")
     else:
+        # Non-macOS Meta environment (Linux devserver)
         os.environ["ANTHROPIC_BASE_URL"] = "https://plugboard.x2p.facebook.net"
 
 
@@ -112,8 +116,8 @@ def classify_error(error_message: str) -> ErrorCategory:
 
     # Authentication errors — permanent
     if any(kw in lower for kw in (
-        "api key", "invalid api", "authentication", "unauthorized", "401", "403", "forbidden",
-        "invalid_api_key", "permission denied",
+        "authentication", "unauthorized", "401", "403", "forbidden",
+        "permission denied", "not logged in", "login required",
     )):
         return ErrorCategory.AUTH
 

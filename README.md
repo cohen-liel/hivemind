@@ -18,10 +18,10 @@ A web-based orchestration platform for multiple Claude Code agents, allowing you
    ```
 
 2. **Environment Variables:**
-   Copy the example config and add your API key:
+   Copy the example config:
    ```bash
    cp .env.example .env
-   # Edit .env and paste your ANTHROPIC_API_KEY
+   # Edit .env if needed — no API key required, uses Claude CLI directly
    ```
 
 3. **Running Locally (Virtual Environment):**
