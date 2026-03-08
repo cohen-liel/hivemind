@@ -427,7 +427,8 @@ class OrchestratorManager:
         complexity = self._estimate_task_complexity(task)
 
         # Minimum rounds before TASK_COMPLETE is allowed (by complexity)
-        min_rounds = {"SIMPLE": 1, "MEDIUM": 2, "LARGE": 4, "EPIC": 8}
+        # Raised minimums: even SIMPLE tasks need at least 2 rounds (implement + verify)
+        min_rounds = {"SIMPLE": 2, "MEDIUM": 3, "LARGE": 4, "EPIC": 8}
         required = min_rounds.get(complexity, 2)
 
         if loop_count < required:
@@ -435,6 +436,48 @@ class OrchestratorManager:
                 f"Task complexity is **{complexity}** but only {loop_count} round(s) completed "
                 f"(minimum {required} required). Continue working through the remaining phases."
             )
+
+        # Check if any agent crashed or reported errors — must retry before completing
+        crashed_agents = []
+        for ctx in self.shared_context:
+            if "FAILED" in ctx or "crashed" in ctx.lower() or "session crashed" in ctx.lower():
+                # Extract agent name from context entry like "[developer] Round 1 | Task: ..."
+                if ctx.startswith("["):
+                    agent_name = ctx[1:ctx.find("]")] if "]" in ctx else "unknown"
+                    crashed_agents.append(agent_name)
+        if crashed_agents:
+            return (
+                f"Agent(s) {', '.join(set(crashed_agents))} crashed or failed during execution. "
+                f"You MUST retry their tasks before declaring TASK_COMPLETE. "
+                f"Delegate the failed work again with a fresh approach."
+            )
+
+        # Check that actual file changes were made (for tasks that require code work)
+        # Skip this check only for pure research/documentation tasks
+        task_lower = task.lower()
+        is_code_task = not all(
+            keyword in task_lower
+            for keyword in ("research", "report", "document", "explain", "summarize")
+        )
+        if is_code_task:
+            try:
+                import asyncio
+                # Use a synchronous check — we're in a sync method
+                # Check the last round's results in shared_context for file changes
+                has_file_changes = any(
+                    "Files changed:" in ctx and "(none)" not in ctx
+                    for ctx in self.shared_context
+                )
+                if not has_file_changes:
+                    # Also check _completed_rounds for any successful work
+                    has_success = any("OK" in r for r in self._completed_rounds)
+                    if not has_success:
+                        return (
+                            "No file changes detected and no successful agent rounds recorded. "
+                            "The task requires actual code changes. Delegate the implementation work."
+                        )
+            except Exception:
+                pass  # Don't block completion on detection failure
 
         # Any agents blocked or needing followup? (check shared_context — most recent)
         outstanding = [
@@ -446,6 +489,17 @@ class OrchestratorManager:
                 f"{len(outstanding)} agent(s) are BLOCKED or have NEEDS_FOLLOWUP items. "
                 f"Resolve all outstanding items before declaring complete."
             )
+
+        # For MEDIUM and above: require reviewer to have run
+        if complexity in ("MEDIUM", "LARGE", "EPIC"):
+            reviewer_ran = "reviewer" in self._agents_used
+            manifest = self._read_project_manifest()
+            if manifest:
+                manifest_lower = manifest.lower()
+                if "## issues log" in manifest_lower and len(manifest_lower) > 100:
+                    reviewer_ran = True
+            if not reviewer_ran:
+                return "Code has not been reviewed. Delegate reviewer before completing."
 
         # For LARGE and EPIC: require both reviewer and tester to have run.
         # Use _agents_used (persists across log trimming) + manifest as belt-and-suspenders.
@@ -2278,10 +2332,27 @@ class OrchestratorManager:
         successful_agents = []
         failed_agents = []
 
+        # Crash indicators in agent output text (even if SDK didn't flag as error)
+        _CRASH_INDICATORS = (
+            "session crashed", "session was interrupted", "pick up where I left off",
+            "was in the middle of", "got cancelled", "timed out",
+            "anyio bug", "cancel scope", "RuntimeError",
+        )
+
         for agent, responses in sub_results.items():
             for idx, response in enumerate(responses):
-                status = "SUCCESS" if not response.is_error else "ERROR"
-                if response.is_error:
+                # Detect soft crashes: agent returned text but the content
+                # indicates it crashed mid-execution (SDK doesn't flag these)
+                is_soft_crash = False
+                if not response.is_error and response.text:
+                    text_lower = response.text[:1000].lower()
+                    if any(indicator in text_lower for indicator in _CRASH_INDICATORS):
+                        is_soft_crash = True
+
+                status = "SUCCESS" if (not response.is_error and not is_soft_crash) else "ERROR"
+                if is_soft_crash:
+                    status = "CRASHED (soft)"
+                if response.is_error or is_soft_crash:
                     has_errors = True
                     failed_agents.append(agent)
                 else:
@@ -2373,13 +2444,15 @@ class OrchestratorManager:
 
         if has_errors:
             parts.append(
-                "\n⚠️ SOME AGENTS FAILED. You MUST:\n"
-                "1. Analyze each error carefully — read the exact error message\n"
-                "2. Retry failed tasks: put the error in 'context', try a different approach\n"
-                "3. If the same approach fails twice, try a completely different strategy\n"
-                "4. If a different agent is better suited, delegate to them instead\n"
-                "5. Do NOT say TASK_COMPLETE until all critical work is done\n"
-                "\nIMPORTANT: Failure is normal — diagnose, adapt, retry. Never give up."
+                "\n⚠️ SOME AGENTS FAILED OR CRASHED. You MUST:\n"
+                "1. Analyze each error/crash carefully — read the exact error message\n"
+                "2. RETRY the failed tasks immediately — delegate them again with 'context' containing the error\n"
+                "3. If an agent 'crashed' or 'was interrupted', the task was NOT completed — retry it\n"
+                "4. If the same approach fails twice, try a completely different strategy\n"
+                "5. If a different agent is better suited, delegate to them instead\n"
+                "6. Do NOT say TASK_COMPLETE — there are failed/crashed agents that need retrying\n"
+                "\n🚨 CRITICAL: TASK_COMPLETE is FORBIDDEN when agents have crashed or failed.\n"
+                "You MUST delegate retry tasks NOW. Failure is normal — diagnose, adapt, retry. Never give up."
             )
         else:
             parts.append(
