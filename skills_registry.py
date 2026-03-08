@@ -46,6 +46,31 @@ SKILL_AGENT_MAP: dict[str, str] = {
     "security-review": "reviewer",
     "api-design": "reviewer",
     "pytest-patterns": "tester",
+
+    # Additional official Claude Code skills (auto-discovered)
+    "coding-agent": "developer",
+    "github": "developer",
+    "gh-issues": "developer",
+    "discord": "developer",
+    "slack": "developer",
+    "slack-gif-creator": "developer",
+    "notion": "developer",
+    "obsidian": "developer",
+    "trello": "developer",
+    "pdf": "developer",
+    "docx": "developer",
+    "xlsx": "developer",
+    "pptx": "developer",
+    "summarize": "orchestrator",
+    "session-logs": "orchestrator",
+    "internal-comms": "developer",
+    "algorithmic-art": "developer",
+    "canvas-design": "developer",
+    "brand-guidelines": "reviewer",
+    "theme-factory": "developer",
+    "tmux": "devops",
+    "healthcheck": "devops",
+    "weather": "developer",
 }
 
 _skills_cache: dict[str, str] = {}
