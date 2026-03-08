@@ -20,6 +20,7 @@ type Sender = 'user' | 'agent' | 'system';
 
 function senderOf(entry: ActivityEntry): Sender {
   if (entry.type === 'user_message') return 'user';
+  if (entry.type === 'error') return 'system';
   if (
     entry.type === 'agent_text' ||
     entry.type === 'tool_use' ||
@@ -27,13 +28,13 @@ function senderOf(entry: ActivityEntry): Sender {
     entry.type === 'agent_finished'
   )
     return 'agent';
-  return 'system'; // delegation, loop_progress
+  return 'system';
 }
 
 // --- Group consecutive messages from the same sender+agent ---
 interface MessageGroup {
   sender: Sender;
-  agent?: string; // agent name (for avatar); undefined for user/system
+  agent?: string;
   entries: ActivityEntry[];
 }
 
@@ -66,10 +67,17 @@ function renderContent(text: string) {
       return (
         <pre
           key={i}
-          className="bg-black/40 rounded-lg p-3 my-1.5 text-xs font-mono overflow-x-auto whitespace-pre text-gray-200 border border-white/5"
+          className="rounded-lg p-3 my-1.5 text-xs overflow-x-auto whitespace-pre"
+          style={{
+            background: 'rgba(0,0,0,0.4)',
+            border: '1px solid var(--border-dim)',
+            color: 'var(--text-primary)',
+            fontFamily: 'var(--font-mono)',
+          }}
         >
           {lang && (
-            <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wide font-sans">
+            <div className="text-[10px] mb-1.5 uppercase tracking-wide"
+              style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-display)' }}>
               {lang}
             </div>
           )}
@@ -85,31 +93,29 @@ function renderContent(text: string) {
 // BUBBLE COMPONENTS
 // ============================================================
 
-/** Small circular avatar */
 function Avatar({ icon, side }: { icon: string; side: 'left' | 'right' }) {
   return (
     <div
-      className={`w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-sm flex-shrink-0 ${
+      className={`w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0 ${
         side === 'right' ? 'order-last' : ''
       }`}
+      style={{ background: 'var(--bg-elevated)' }}
     >
       {icon}
     </div>
   );
 }
 
-/** Invisible spacer matching avatar width (for grouped messages without avatar) */
 function AvatarSpacer() {
   return <div className="w-8 flex-shrink-0" />;
 }
 
-/** Timestamp shown below a group */
 function GroupTimestamp({ ts, align }: { ts: number; align: 'left' | 'right' | 'center' }) {
   const justify =
     align === 'right' ? 'justify-end pr-10' : align === 'left' ? 'justify-start pl-10' : 'justify-center';
   return (
     <div className={`flex ${justify} mt-0.5`}>
-      <span className="text-[11px] text-gray-500 select-none">{formatTime(ts)}</span>
+      <span className="text-[11px] select-none" style={{ color: 'var(--text-muted)' }}>{formatTime(ts)}</span>
     </div>
   );
 }
@@ -126,14 +132,21 @@ function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvat
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
       <div className="max-w-[70%] min-w-[60px]">
         {showAvatar && entry.agent && (
-          <div className="text-[11px] text-gray-500 font-medium mb-0.5 ml-1">{entry.agent}</div>
+          <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
-        <div className="bg-gray-800 text-gray-100 rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed shadow-md">
+        <div className="rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed"
+          style={{
+            background: 'var(--bg-card)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-dim)',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          }}>
           {renderContent(shown)}
           {isLong && (
             <button
               onClick={() => setExpanded(!expanded)}
-              className="block text-xs text-blue-400 hover:text-blue-300 mt-1.5 font-medium"
+              className="block text-xs mt-1.5 font-medium transition-opacity hover:opacity-80"
+              style={{ color: 'var(--accent-blue)' }}
             >
               {expanded ? 'Show less' : `Show more (${(content.length / 1024).toFixed(1)}KB)`}
             </button>
@@ -149,11 +162,33 @@ function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAv
   return (
     <div className="flex items-end gap-2 justify-end animate-[fadeSlideIn_0.3s_ease-out_both]">
       <div className="max-w-[70%] min-w-[60px]">
-        <div className="bg-blue-600 text-white rounded-2xl rounded-br-md px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed shadow-md">
+        <div className="rounded-2xl rounded-br-md px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed"
+          style={{
+            background: 'var(--accent-blue)',
+            color: 'white',
+            boxShadow: '0 2px 10px var(--glow-blue)',
+          }}>
           {entry.content}
         </div>
       </div>
       {showAvatar ? <Avatar icon={'\u{1F464}'} side="right" /> : <AvatarSpacer />}
+    </div>
+  );
+}
+
+// ---------- Error bubble ----------
+function ErrorBubble({ entry }: { entry: ActivityEntry }) {
+  return (
+    <div className="flex justify-center animate-[fadeSlideIn_0.3s_ease-out_both]">
+      <div className="rounded-2xl px-4 py-2 text-xs inline-flex items-center gap-2"
+        style={{
+          background: 'var(--glow-red)',
+          border: '1px solid rgba(245,71,91,0.2)',
+          color: 'var(--accent-red)',
+        }}>
+        <span>⚠</span>
+        <span>{entry.content}</span>
+      </div>
     </div>
   );
 }
@@ -165,10 +200,16 @@ function ToolUseBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
       <div className="max-w-[70%]">
         {showAvatar && entry.agent && (
-          <div className="text-[11px] text-gray-500 font-medium mb-0.5 ml-1">{entry.agent}</div>
+          <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
-        <div className="bg-gray-800/70 text-gray-400 rounded-2xl rounded-bl-md px-3 py-2 text-xs font-mono flex items-center gap-2 shadow-sm border border-gray-700/50">
-          <span className="text-gray-500">{'\u{1F527}'}</span>
+        <div className="rounded-2xl rounded-bl-md px-3 py-2 text-xs flex items-center gap-2"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-dim)',
+            color: 'var(--text-secondary)',
+            fontFamily: 'var(--font-mono)',
+          }}>
+          <span style={{ color: 'var(--text-muted)' }}>🔧</span>
           <span className="truncate">{entry.tool_description || entry.tool_name}</span>
         </div>
       </div>
@@ -193,33 +234,32 @@ function ToolGroupBubble({
       {showAvatar ? <Avatar icon={agentIcon(agent)} side="left" /> : <AvatarSpacer />}
       <div className="max-w-[70%]">
         {showAvatar && (
-          <div className="text-[11px] text-gray-500 font-medium mb-0.5 ml-1">{agent}</div>
+          <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{agent}</div>
         )}
-        <div className="bg-gray-800/70 rounded-2xl rounded-bl-md px-3 py-2 text-xs shadow-sm border border-gray-700/50">
+        <div className="rounded-2xl rounded-bl-md px-3 py-2 text-xs"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
           <button
             onClick={() => setExpanded(!expanded)}
-            className="text-gray-400 hover:text-gray-300 flex items-center gap-1.5 w-full"
+            className="flex items-center gap-1.5 w-full transition-colors"
+            style={{ color: 'var(--text-secondary)' }}
           >
-            <span className="text-gray-500">{'\u{1F527}'}</span>
-            <span className="font-mono truncate">
+            <span style={{ color: 'var(--text-muted)' }}>🔧</span>
+            <span style={{ fontFamily: 'var(--font-mono)' }} className="truncate">
               {expanded
                 ? `Collapse ${entries.length} tool calls`
                 : `${entries.length} tool calls`}
             </span>
             <svg
-              className={`w-3 h-3 ml-auto flex-shrink-0 text-gray-600 transition-transform ${
-                expanded ? 'rotate-180' : ''
-              }`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth="2"
+              className={`w-3 h-3 ml-auto flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"
+              style={{ color: 'var(--text-muted)' }}
             >
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
             </svg>
           </button>
           {expanded && (
-            <div className="mt-1.5 pt-1.5 border-t border-gray-700/50 space-y-0.5 font-mono text-gray-500">
+            <div className="mt-1.5 pt-1.5 space-y-0.5"
+              style={{ borderTop: '1px solid var(--border-dim)', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
               {entries.map((e) => (
                 <div key={e.id} className="truncate">
                   {e.tool_description || e.tool_name}
@@ -240,14 +280,15 @@ function AgentStartedBubble({ entry, showAvatar }: { entry: ActivityEntry; showA
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
       <div className="max-w-[70%]">
         {showAvatar && entry.agent && (
-          <div className="text-[11px] text-gray-500 font-medium mb-0.5 ml-1">{entry.agent}</div>
+          <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
-        <div className="bg-gray-800 text-gray-100 rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm shadow-md">
+        <div className="rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)', color: 'var(--text-primary)' }}>
           <div className="flex items-center gap-2">
-            <span className="text-green-400 text-xs">{'\u25B6'}</span>
+            <span className="text-xs" style={{ color: 'var(--accent-green)' }}>▶</span>
             <span>
-              <span className="font-medium text-green-400">Started</span>
-              {entry.task && <span className="text-gray-400 ml-1.5">: {entry.task}</span>}
+              <span className="font-medium" style={{ color: 'var(--accent-green)' }}>Started</span>
+              {entry.task && <span className="ml-1.5" style={{ color: 'var(--text-secondary)' }}>: {entry.task}</span>}
             </span>
           </div>
         </div>
@@ -269,19 +310,20 @@ function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; show
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
       <div className="max-w-[70%]">
         {showAvatar && entry.agent && (
-          <div className="text-[11px] text-gray-500 font-medium mb-0.5 ml-1">{entry.agent}</div>
+          <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
-        <div className="bg-gray-800 text-gray-100 rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm shadow-md">
+        <div className="rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)', color: 'var(--text-primary)' }}>
           <div className="flex items-center gap-2">
-            <span className={isError ? 'text-red-400 text-xs' : 'text-green-400 text-xs'}>
-              {isError ? '\u2718' : '\u2714'}
+            <span className="text-xs" style={{ color: isError ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+              {isError ? '✘' : '✔'}
             </span>
             <span>
-              <span className={`font-medium ${isError ? 'text-red-400' : 'text-green-400'}`}>
+              <span className="font-medium" style={{ color: isError ? 'var(--accent-red)' : 'var(--accent-green)' }}>
                 {isError ? 'Failed' : 'Finished'}
               </span>
               {stats.length > 0 && (
-                <span className="text-gray-500 text-xs ml-1.5">({stats.join(', ')})</span>
+                <span className="text-xs ml-1.5" style={{ color: 'var(--text-muted)' }}>({stats.join(', ')})</span>
               )}
             </span>
           </div>
@@ -295,26 +337,20 @@ function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; show
 function DelegationBubble({ entry }: { entry: ActivityEntry }) {
   return (
     <div className="flex justify-center animate-[fadeSlideIn_0.3s_ease-out_both]">
-      <div className="bg-blue-950/40 border border-blue-800/30 text-blue-300 rounded-2xl px-4 py-2 text-xs shadow-sm inline-flex items-center gap-2">
+      <div className="rounded-2xl px-4 py-2 text-xs inline-flex items-center gap-2"
+        style={{
+          background: 'var(--glow-blue)',
+          border: '1px solid rgba(99,140,255,0.15)',
+          color: 'var(--accent-blue)',
+        }}>
         <span className="font-medium">{entry.from_agent}</span>
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          className="text-blue-500"
-        >
-          <path
-            d="M5 12h14M12 5l7 7-7 7"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          style={{ color: 'var(--accent-blue)' }}>
+          <path d="M5 12h14M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
         <span className="font-medium">{entry.to_agent}</span>
         {entry.task && (
-          <span className="text-blue-400/70 ml-0.5 truncate max-w-[200px]">: {entry.task}</span>
+          <span className="ml-0.5 truncate max-w-[200px]" style={{ opacity: 0.7 }}>: {entry.task}</span>
         )}
       </div>
     </div>
@@ -341,19 +377,21 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
         a.type === 'user_message' ||
         a.type === 'delegation' ||
         a.type === 'agent_text' ||
-        a.type === 'agent_finished'
+        a.type === 'agent_finished' ||
+        a.type === 'error'
       )
     : activities;
 
   // Empty state
   if (activities.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-500 text-sm px-4">
-        <div className="w-14 h-14 rounded-full bg-gray-800 flex items-center justify-center mb-3 text-2xl">
-          {'\u{1F4AC}'}
+      <div className="flex flex-col items-center justify-center h-full text-sm px-4">
+        <div className="w-14 h-14 rounded-full flex items-center justify-center mb-3 text-2xl"
+          style={{ background: 'var(--bg-elevated)' }}>
+          💬
         </div>
-        <p className="font-medium text-gray-400">No messages yet</p>
-        <p className="text-gray-600 text-xs mt-1">Send a message to get started</p>
+        <p className="font-medium" style={{ color: 'var(--text-secondary)' }}>No messages yet</p>
+        <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Send a message to get started</p>
       </div>
     );
   }
@@ -364,22 +402,28 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
     <div
       ref={scrollRef}
       className="flex flex-col h-full overflow-y-auto p-4 scroll-smooth"
-      style={{ scrollBehavior: 'smooth' }}
     >
       {/* View mode toggle */}
       <div className="flex justify-end mb-2 sticky top-0 z-10">
-        <div className="bg-gray-900/90 backdrop-blur-sm rounded-full p-0.5 flex gap-0.5 border border-gray-800/50">
+        <div className="rounded-full p-0.5 flex gap-0.5"
+          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-dim)', backdropFilter: 'blur(8px)' }}>
           <button
             onClick={() => setViewMode('summary')}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors
-              ${viewMode === 'summary' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+            className="px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors"
+            style={{
+              background: viewMode === 'summary' ? 'var(--bg-elevated)' : 'transparent',
+              color: viewMode === 'summary' ? 'var(--text-primary)' : 'var(--text-muted)',
+            }}
           >
             Summary
           </button>
           <button
             onClick={() => setViewMode('detail')}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors
-              ${viewMode === 'detail' ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-400'}`}
+            className="px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors"
+            style={{
+              background: viewMode === 'detail' ? 'var(--bg-elevated)' : 'transparent',
+              color: viewMode === 'detail' ? 'var(--text-primary)' : 'var(--text-muted)',
+            }}
           >
             Detail
           </button>
@@ -390,14 +434,18 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
         <div className="flex justify-center mb-3">
           <button
             onClick={onLoadMore}
-            className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 bg-gray-900 border border-gray-800 rounded-lg transition-colors"
+            className="px-3 py-1.5 text-xs rounded-lg transition-colors"
+            style={{
+              color: 'var(--text-muted)',
+              background: 'var(--bg-panel)',
+              border: '1px solid var(--border-dim)',
+            }}
           >
             Load earlier messages
           </button>
         </div>
       )}
       {groups.map((group, gi) => {
-        // Build sub-items for the group
         const items: JSX.Element[] = [];
         let toolAccum: ActivityEntry[] = [];
 
@@ -435,27 +483,22 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
 
           switch (entry.type) {
             case 'agent_text':
-              items.push(
-                <AgentTextBubble key={entry.id} entry={entry} showAvatar={showAvatar} />
-              );
+              items.push(<AgentTextBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
               break;
             case 'user_message':
-              items.push(
-                <UserMessageBubble key={entry.id} entry={entry} showAvatar={showAvatar} />
-              );
+              items.push(<UserMessageBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
               break;
             case 'agent_started':
-              items.push(
-                <AgentStartedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />
-              );
+              items.push(<AgentStartedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
               break;
             case 'agent_finished':
-              items.push(
-                <AgentFinishedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />
-              );
+              items.push(<AgentFinishedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
               break;
             case 'delegation':
               items.push(<DelegationBubble key={entry.id} entry={entry} />);
+              break;
+            case 'error':
+              items.push(<ErrorBubble key={entry.id} entry={entry} />);
               break;
             default:
               break;
@@ -463,16 +506,12 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
         }
         flushTools();
 
-        // Timestamp for the group (use last entry's timestamp)
         const lastTs = group.entries[group.entries.length - 1].timestamp;
         const tsAlign =
           group.sender === 'user' ? 'right' : group.sender === 'agent' ? 'left' : 'center';
 
         return (
-          <div
-            key={`g-${gi}`}
-            className={`flex flex-col gap-1 ${gi > 0 ? 'mt-4' : ''}`}
-          >
+          <div key={`g-${gi}`} className={`flex flex-col gap-1 ${gi > 0 ? 'mt-4' : ''}`}>
             {items}
             <GroupTimestamp ts={lastTs} align={tsAlign as 'left' | 'right' | 'center'} />
           </div>

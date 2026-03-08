@@ -32,14 +32,32 @@ export default function ConductorBar({
   const hasActivity = counts.working > 0 || counts.done > 0 || counts.error > 0;
 
   return (
-    <header className={`relative flex-shrink-0 border-b border-gray-800 bg-gray-900/80 backdrop-blur-md sticky top-0 z-20 transition-all duration-500
-      ${isActive ? 'shadow-[0_4px_30px_rgba(59,130,246,0.15)]' : ''}`}>
+    <header
+      className="relative flex-shrink-0 sticky top-0 z-20 transition-all duration-500"
+      style={{
+        background: 'var(--bg-panel)',
+        borderBottom: '1px solid var(--border-dim)',
+        backdropFilter: 'blur(12px)',
+        boxShadow: isActive ? '0 4px 30px var(--glow-blue)' : 'none',
+      }}
+    >
+      {/* Active glow bar */}
+      {isActive && (
+        <div
+          className="absolute bottom-0 left-0 h-[2px] animate-[loading_3s_ease-in-out_infinite]"
+          style={{
+            width: '40%',
+            background: 'linear-gradient(90deg, transparent, var(--accent-blue), transparent)',
+          }}
+        />
+      )}
 
-      {/* Single compact row: back + conductor icon + info + status */}
+      {/* Main row */}
       <div className="px-3 py-2 flex items-center gap-2.5">
         <Link
           to="/"
-          className="text-gray-500 hover:text-white transition-colors flex-shrink-0"
+          className="transition-colors flex-shrink-0 rounded-lg p-1 hover:bg-[var(--bg-elevated)]"
+          style={{ color: 'var(--text-muted)' }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <path d="M15 18l-6-6 6-6"/>
@@ -48,84 +66,103 @@ export default function ConductorBar({
 
         {/* Conductor icon */}
         <div className="relative flex-shrink-0">
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all duration-500
-            ${isActive
-              ? 'bg-blue-500/20 shadow-[0_0_15px_rgba(59,130,246,0.4)]'
-              : isOrchestratorDone
-                ? 'bg-green-500/10'
-                : 'bg-gray-800/50'}`}>
-            {'\u{1F3AF}'}
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center text-sm transition-all duration-500"
+            style={{
+              background: isActive
+                ? 'var(--glow-blue)'
+                : isOrchestratorDone
+                  ? 'var(--glow-green)'
+                  : 'var(--bg-elevated)',
+              boxShadow: isActive ? '0 0 15px var(--glow-blue)' : 'none',
+            }}
+          >
+            🎯
           </div>
           {isActive && (
-            <div className="absolute inset-0 rounded-full border-2 border-blue-400/30 animate-ping" />
+            <div
+              className="absolute inset-0 rounded-full animate-ping"
+              style={{ border: '2px solid var(--accent-blue)', opacity: 0.3 }}
+            />
           )}
         </div>
 
-        {/* Project name + status text */}
+        {/* Project name + status */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h1 className="text-sm font-bold text-white truncate">{projectName}</h1>
+            <h1 className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>
+              {projectName}
+            </h1>
             <div className="flex items-center gap-1 flex-shrink-0">
-              <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
-              <span className="text-[9px] text-gray-600 uppercase">
-                {status === 'running' ? 'Live' : status}
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${connected ? '' : ''}`}
+                style={{ backgroundColor: connected ? 'var(--accent-green)' : 'var(--accent-red)' }}
+              />
+              <span className="text-[9px] uppercase tracking-wider"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                {status === 'running' ? 'LIVE' : status.toUpperCase()}
               </span>
             </div>
           </div>
+
+          {/* Orchestrator status line */}
           {isActive && orchestrator?.current_tool && (
-            <div className="text-[10px] text-blue-300/70 font-mono truncate">
+            <div className="text-[10px] truncate text-fade-right"
+              style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)', opacity: 0.7 }}>
               {orchestrator.current_tool}
             </div>
           )}
           {isActive && !orchestrator?.current_tool && orchestrator?.task && (
-            <div className="text-[10px] text-blue-300/70 truncate">
+            <div className="text-[10px] truncate" style={{ color: 'var(--accent-blue)', opacity: 0.7 }}>
               {orchestrator.task}
             </div>
           )}
           {!isActive && status === 'idle' && (
-            <div className="text-[10px] text-gray-700">Send a task to begin</div>
+            <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Send a task to begin</div>
           )}
           {status === 'paused' && (
-            <div className="text-[10px] text-yellow-500/80">Paused</div>
+            <div className="text-[10px]" style={{ color: 'var(--accent-amber)' }}>Paused — waiting for input</div>
           )}
         </div>
 
         {/* Cost pill */}
         {costUsed > 0 && (
-          <div className="flex-shrink-0 bg-gray-800/60 rounded-full px-2 py-0.5">
-            <span className="text-[9px] font-mono text-gray-400">${costUsed.toFixed(3)}</span>
+          <div className="flex-shrink-0 rounded-full px-2.5 py-0.5"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)' }}>
+            <span className="telemetry" style={{ color: 'var(--accent-green)' }}>
+              ${costUsed.toFixed(3)}
+            </span>
           </div>
         )}
       </div>
 
-      {/* Status summary + progress (compact row, only when active) */}
+      {/* Agent status + progress bar */}
       {(hasActivity || (turnsMax > 0 && status === 'running')) && (
         <div className="px-3 pb-2 flex items-center gap-3">
-          {/* Colored dot summary */}
           {hasAgents && hasActivity && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
               {counts.working > 0 && (
                 <div className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                  <span className="text-[9px] text-blue-400 font-medium">{counts.working}</span>
+                  <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--accent-blue)' }} />
+                  <span className="text-[9px] font-medium" style={{ color: 'var(--accent-blue)' }}>{counts.working}</span>
                 </div>
               )}
               {counts.done > 0 && (
                 <div className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                  <span className="text-[9px] text-green-400/80 font-medium">{counts.done}</span>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--accent-green)' }} />
+                  <span className="text-[9px] font-medium" style={{ color: 'var(--accent-green)', opacity: 0.8 }}>{counts.done}</span>
                 </div>
               )}
               {counts.error > 0 && (
                 <div className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                  <span className="text-[9px] text-red-400 font-medium">{counts.error}</span>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--accent-red)' }} />
+                  <span className="text-[9px] font-medium" style={{ color: 'var(--accent-red)' }}>{counts.error}</span>
                 </div>
               )}
               {counts.idle > 0 && (
                 <div className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
-                  <span className="text-[9px] text-gray-600 font-medium">{counts.idle}</span>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--text-muted)' }} />
+                  <span className="text-[9px] font-medium" style={{ color: 'var(--text-muted)' }}>{counts.idle}</span>
                 </div>
               )}
             </div>
@@ -134,13 +171,16 @@ export default function ConductorBar({
           {/* Progress bar */}
           {turnsMax > 0 && status === 'running' && (
             <div className="flex-1 flex items-center gap-2">
-              <div className="flex-1 h-1 bg-gray-800 rounded-full overflow-hidden">
+              <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'var(--border-dim)' }}>
                 <div
-                  className="h-full bg-gradient-to-r from-blue-600 to-blue-400 rounded-full transition-all duration-500"
-                  style={{ width: `${turnsPct}%` }}
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${turnsPct}%`,
+                    background: `linear-gradient(90deg, var(--accent-blue), var(--accent-cyan))`,
+                  }}
                 />
               </div>
-              <span className="text-[8px] text-gray-700 flex-shrink-0">
+              <span className="telemetry flex-shrink-0" style={{ fontSize: '8px', color: 'var(--text-muted)' }}>
                 {turnsUsed}/{turnsMax}
               </span>
             </div>
