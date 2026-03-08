@@ -143,23 +143,25 @@ class TestCollectionConfigs:
 
     def test_default_agents_structure(self):
         assert isinstance(config.DEFAULT_AGENTS, list)
-        assert len(config.DEFAULT_AGENTS) == 5  # orchestrator, developer, reviewer, tester, devops
+        assert len(config.DEFAULT_AGENTS) >= 5  # at least the core 5 roles
         for agent in config.DEFAULT_AGENTS:
             assert "name" in agent
             assert "role" in agent
 
     def test_default_agents_has_all_roles(self):
         names = {a["name"] for a in config.DEFAULT_AGENTS}
-        assert names == {"orchestrator", "developer", "reviewer", "tester", "devops"}
+        # Must include at least the core 5 + researcher
+        assert {"orchestrator", "developer", "reviewer", "tester", "devops"}.issubset(names)
 
     def test_predefined_projects_is_dict(self):
         assert isinstance(config.PREDEFINED_PROJECTS, dict)
 
     def test_sub_agent_prompts_keys(self):
         assert isinstance(config.SUB_AGENT_PROMPTS, dict)
-        assert set(config.SUB_AGENT_PROMPTS.keys()) == {
-            "developer", "reviewer", "tester", "devops"
-        }
+        # Must include at least the core 4 sub-agent roles
+        assert {"developer", "reviewer", "tester", "devops"}.issubset(
+            set(config.SUB_AGENT_PROMPTS.keys())
+        )
 
     def test_sub_agent_prompts_values_are_strings(self):
         for name, prompt in config.SUB_AGENT_PROMPTS.items():

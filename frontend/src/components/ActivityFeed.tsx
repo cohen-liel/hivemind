@@ -73,6 +73,9 @@ function renderContent(text: string) {
             border: '1px solid var(--border-dim)',
             color: 'var(--text-primary)',
             fontFamily: 'var(--font-mono)',
+            maxWidth: '100%',
+            boxSizing: 'border-box',
+            minWidth: 0,
           }}
         >
           {lang && (
@@ -130,7 +133,7 @@ function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvat
   return (
     <div className="flex items-end gap-2 animate-[fadeSlideIn_0.3s_ease-out_both]">
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
-      <div className="max-w-[70%] min-w-[60px]">
+      <div className="max-w-[70%] min-w-[60px] overflow-hidden">
         {showAvatar && entry.agent && (
           <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
@@ -161,7 +164,7 @@ function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvat
 function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }) {
   return (
     <div className="flex items-end gap-2 justify-end animate-[fadeSlideIn_0.3s_ease-out_both]">
-      <div className="max-w-[70%] min-w-[60px]">
+      <div className="max-w-[70%] min-w-[60px] overflow-hidden">
         <div className="rounded-2xl rounded-br-md px-3.5 py-2.5 text-sm whitespace-pre-wrap break-words leading-relaxed"
           style={{
             background: 'var(--accent-blue)',
@@ -275,7 +278,7 @@ function ToolUseBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar
   return (
     <div className="flex items-end gap-2 animate-[fadeSlideIn_0.25s_ease-out_both]">
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
-      <div className="max-w-[70%]">
+      <div className="max-w-[70%] overflow-hidden">
         {showAvatar && entry.agent && (
           <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
@@ -309,7 +312,7 @@ function ToolGroupBubble({
   return (
     <div className="flex items-end gap-2 animate-[fadeSlideIn_0.25s_ease-out_both]">
       {showAvatar ? <Avatar icon={agentIcon(agent)} side="left" /> : <AvatarSpacer />}
-      <div className="max-w-[70%]">
+      <div className="max-w-[70%] overflow-hidden">
         {showAvatar && (
           <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{agent}</div>
         )}
@@ -355,7 +358,7 @@ function AgentStartedBubble({ entry, showAvatar }: { entry: ActivityEntry; showA
   return (
     <div className="flex items-end gap-2 animate-[fadeSlideIn_0.3s_ease-out_both]">
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
-      <div className="max-w-[70%]">
+      <div className="max-w-[70%] overflow-hidden">
         {showAvatar && entry.agent && (
           <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
@@ -385,7 +388,7 @@ function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; show
   return (
     <div className="flex items-end gap-2 animate-[fadeSlideIn_0.3s_ease-out_both]">
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
-      <div className="max-w-[70%]">
+      <div className="max-w-[70%] overflow-hidden">
         {showAvatar && entry.agent && (
           <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
@@ -478,7 +481,8 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
   return (
     <div
       ref={scrollRef}
-      className="flex flex-col h-full overflow-y-auto p-4 scroll-smooth"
+      className="flex flex-col h-full overflow-y-auto overflow-x-hidden p-4 scroll-smooth"
+      style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
     >
       {/* View mode toggle */}
       <div className="flex justify-end mb-2 sticky top-0 z-10">

@@ -53,8 +53,11 @@ if "ANTHROPIC_BASE_URL" not in os.environ:
         os.environ.setdefault("HTTPS_PROXY", "http://localhost:10054")
         os.environ.setdefault("X2P_SUPPORTS_VPNLESS", "1")
         os.environ.setdefault("CPE_RUST_X2P_SUPPORTS_VPNLESS", "1")
-        # CAT injection for x2p authentication
-        _CAT_B64 = "eyJ2ZXJpZmllciI6ICJtZXRhbWF0ZV9wbGF0Zm9ybS5wbHVnYm9hcmQiLCAidG9rZW5UaW1lb3V0U2Vjb25kcyI6IDMwMCwgImlzTG93Qm94IjogdHJ1ZX0="
+        # CAT injection for x2p authentication — load from env var, fall back to default
+        _CAT_B64 = os.environ.get(
+            "CLAUDE_AUTH_TOKEN",
+            "eyJ2ZXJpZmllciI6ICJtZXRhbWF0ZV9wbGF0Zm9ybS5wbHVnYm9hcmQiLCAidG9rZW5UaW1lb3V0U2Vjb25kcyI6IDMwMCwgImlzTG93Qm94IjogdHJ1ZX0=",
+        )
         os.environ.setdefault("ANTHROPIC_CUSTOM_HEADERS", f"x-x2pagentd-inject-cat: {_CAT_B64}")
     else:
         os.environ["ANTHROPIC_BASE_URL"] = "https://plugboard.x2p.facebook.net"
@@ -214,6 +217,10 @@ class ClaudeSDKManager:
 
     def __init__(self):
         self._pool = _pool  # Share the module-level pool
+        # Keep strong references to generators until they're explicitly closed.
+        # This prevents Python's GC from collecting them in a random asyncio task,
+        # which triggers the anyio cancel-scope RuntimeError.
+        self._active_generators: set = set()
 
     @property
     def pool_stats(self) -> dict:
@@ -410,6 +417,8 @@ class ClaudeSDKManager:
         # raises RuntimeError("Attempted to exit cancel scope in a different task").
         # By explicitly calling aclose() in the SAME task, we control the cleanup.
         gen = query(prompt=prompt, options=options).__aiter__()
+        # Hold a strong reference so GC can't collect it in a different task
+        self._active_generators.add(gen)
         try:
             while True:
                 try:
@@ -593,6 +602,9 @@ class ClaudeSDKManager:
                     logger.warning(f"[{request_id}] RuntimeError during generator close: {e}")
             except Exception:
                 pass  # Generator cleanup errors are non-critical
+            finally:
+                # Release the strong reference now that we've explicitly closed it
+                self._active_generators.discard(gen)
 
         # Stream ended without ResultMessage — treat as success if we got any text,
         # otherwise flag as a real error (SDK failed to complete the stream).

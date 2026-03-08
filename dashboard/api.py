@@ -588,16 +588,16 @@ def create_app() -> FastAPI:
         if state.session_mgr:
             await state.session_mgr.clear_messages(project_id)
             # Clear sessions so agents start fresh
-            async with state.session_mgr._get_db() as db:
-                await db.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
-                await db.execute("DELETE FROM task_history WHERE project_id = ?", (project_id,))
-                await db.commit()
+            db = await state.session_mgr._get_db()
+            await db.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
+            await db.execute("DELETE FROM task_history WHERE project_id = ?", (project_id,))
+            await db.commit()
 
         # Reset live state on active manager
         if manager:
-            manager._shared_context = []
-            manager._turn_count = 0
-            manager._total_cost = 0.0
+            manager.shared_context = []
+            manager.turn_count = 0
+            manager.total_cost_usd = 0.0
             manager.agent_states = {}
 
         # Notify connected clients so UI updates in real-time
@@ -699,9 +699,43 @@ def create_app() -> FastAPI:
 
     @app.post("/api/settings/persist")
     async def persist_settings(request: Request):
-        """Persist settings overrides to data/settings_overrides.json."""
+        """Persist settings overrides to data/settings_overrides.json.
+
+        Only allows whitelisted configuration keys to prevent arbitrary
+        data injection into the settings file.
+        """
         import json as json_mod
+
+        # Whitelist of keys that can be persisted via the API
+        _ALLOWED_PERSIST_KEYS = {
+            "max_turns_per_cycle",
+            "max_budget_usd",
+            "agent_timeout_seconds",
+            "sdk_max_turns_per_query",
+            "sdk_max_budget_per_query",
+            "max_user_message_length",
+            "max_orchestrator_loops",
+            "session_expiry_hours",
+            "rate_limit_seconds",
+            "budget_warning_threshold",
+            "stall_alert_seconds",
+            "pipeline_max_steps",
+            "scheduler_check_interval",
+            "session_timeout_seconds",
+        }
+
         data = await request.json()
+        if not isinstance(data, dict):
+            return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
+
+        # Reject any keys not in the whitelist
+        rejected = set(data.keys()) - _ALLOWED_PERSIST_KEYS
+        if rejected:
+            return JSONResponse(
+                {"error": f"Disallowed settings keys: {', '.join(sorted(rejected))}"},
+                status_code=400,
+            )
+
         overrides_path = Path("data/settings_overrides.json")
         overrides_path.parent.mkdir(parents=True, exist_ok=True)
         # Merge with existing overrides
@@ -717,8 +751,27 @@ def create_app() -> FastAPI:
 
     @app.get("/api/browse-dirs")
     async def browse_dirs(path: str = "~"):
-        """Browse filesystem directories for project creation."""
+        """Browse filesystem directories for project creation.
+
+        Restricted to the user's home directory and PROJECTS_BASE_DIR to
+        prevent listing sensitive system directories.
+        """
+        from config import PROJECTS_BASE_DIR
         target = Path(os.path.expanduser(path)).resolve()
+
+        # Security: only allow browsing within home dir or configured projects dir
+        home = Path.home().resolve()
+        projects_base = PROJECTS_BASE_DIR.resolve()
+        allowed_roots = [home, projects_base]
+        if not any(
+            target == root or str(target).startswith(str(root) + os.sep)
+            for root in allowed_roots
+        ):
+            return JSONResponse(
+                {"error": "Access denied: browsing is restricted to your home directory"},
+                status_code=403,
+            )
+
         if not target.exists():
             return {"error": "Path not found", "entries": []}
         if not target.is_dir():

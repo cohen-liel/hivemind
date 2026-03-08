@@ -42,7 +42,7 @@ class TestModuleConstants:
         assert m.get("webapp-testing") == "tester"
 
     def test_skill_agent_map_values_are_valid_roles(self):
-        valid_roles = {"developer", "reviewer", "tester", "devops", "orchestrator"}
+        valid_roles = {"developer", "reviewer", "tester", "devops", "orchestrator", "researcher"}
         for skill, role in skills_registry.SKILL_AGENT_MAP.items():
             assert role in valid_roles, f"Skill '{skill}' mapped to invalid role '{role}'"
 

@@ -1,6 +1,41 @@
+# Python
 __pycache__/
 *.pyc
-.env
-data/
-tests/
+*.pyo
+*.egg-info/
 .pytest_cache/
+venv/
+.venv/
+
+# Node / Frontend build artifacts (built in Docker Stage 1)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Environment & secrets
+.env
+
+# Data & logs (persisted via volume mounts)
+data/
+bot.log
+*.log
+
+# Git & IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tests (not needed in production image)
+tests/
+test_simulation.py
+
+# Documentation & project metadata
+README.md
+.nexus/
+
+# OS files
+.DS_Store
+Thumbs.db

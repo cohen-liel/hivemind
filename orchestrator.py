@@ -1168,20 +1168,37 @@ class OrchestratorManager:
                 orchestrator_input = self._build_review_prompt(sub_results, self._completed_rounds)
 
         except asyncio.CancelledError:
-            logger.info(f"Orchestrator loop cancelled for {self.project_name}")
-            if task_history_id is not None:
-                try:
-                    await self.session_mgr.update_task_history(
-                        task_history_id, "cancelled",
-                        cost_usd=self.total_cost_usd, turns_used=self.turn_count,
-                        summary="Task was cancelled",
-                    )
-                except Exception:
-                    pass
-            await self._send_final(
-                f"🛑 *{self.project_name}* — Task cancelled.\n"
-                f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
-            )
+            # Distinguish real cancellation (user pressed Stop) from spurious
+            # anyio cancel-scope leaks.  The SDK's anyio TaskGroup cleanup can
+            # propagate CancelledError to the event loop when a generator is
+            # GC'd in a different task.  If _stop_event is NOT set, this is a
+            # spurious cancellation — we should NOT exit.
+            if self._stop_event.is_set():
+                logger.info(f"Orchestrator loop cancelled (stop requested) for {self.project_name}")
+                if task_history_id is not None:
+                    try:
+                        await self.session_mgr.update_task_history(
+                            task_history_id, "cancelled",
+                            cost_usd=self.total_cost_usd, turns_used=self.turn_count,
+                            summary="Task was cancelled",
+                        )
+                    except Exception:
+                        pass
+                await self._send_final(
+                    f"🛑 *{self.project_name}* — Task cancelled.\n"
+                    f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
+                )
+            else:
+                logger.warning(
+                    f"Orchestrator loop got SPURIOUS CancelledError for {self.project_name} "
+                    f"(stop_event not set — likely anyio cancel-scope leak). "
+                    f"Treating as error, not true cancellation."
+                )
+                await self._send_final(
+                    f"⚠️ *{self.project_name}* — Agent session interrupted (anyio bug).\n"
+                    f"Send your message again to retry.\n"
+                    f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
+                )
         except Exception as e:
             logger.error(f"Orchestrator loop error: {e}", exc_info=True)
             # Use _send_final (not _notify) so the frontend receives an agent_final event

@@ -52,7 +52,7 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
 
   return (
     <div
-      className="sticky bottom-0 z-20 safe-area-bottom transition-all duration-300"
+      className="sticky bottom-0 z-20 safe-area-bottom transition-all duration-300 overflow-hidden"
       style={{
         background: 'var(--bg-panel)',
         borderTop: focused ? '1px solid var(--border-active)' : '1px solid var(--border-dim)',

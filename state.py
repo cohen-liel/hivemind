@@ -1,9 +1,16 @@
-"""Shared application state — the single source of truth for the web dashboard."""
+"""Shared application state — the single source of truth for the web dashboard.
+
+This module holds all runtime globals (active sessions, singletons) and provides
+thread-safe helpers to register / look-up / unregister orchestrator managers.
+
+All public functions validate their inputs and log significant operations.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+from typing import Any
 
 from orchestrator import OrchestratorManager
 from sdk_client import ClaudeSDKManager
@@ -27,7 +34,7 @@ sdk_client: ClaudeSDKManager | None = None
 session_mgr: SessionManager | None = None
 
 # Valid project name pattern
-PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9 _-]+$")
+PROJECT_NAME_RE: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9 _-]+$")
 
 # Per-user rate limiting: user_id -> last message timestamp
 user_last_message: dict[int, float] = {}
@@ -35,8 +42,12 @@ user_last_message: dict[int, float] = {}
 
 # ── Initialization ────────────────────────────────────────────────────
 
-async def initialize():
-    """Create SDK + SessionManager singletons. Safe to call once."""
+async def initialize() -> None:
+    """Create SDK + SessionManager singletons.  Safe to call once.
+
+    Raises:
+        RuntimeError: If SessionManager.initialize() fails (DB issues).
+    """
     global sdk_client, session_mgr
 
     if sdk_client is None:
@@ -50,40 +61,98 @@ async def initialize():
 
     # Scan available skills
     skills = scan_skills()
-    logger.info(f"Loaded {len(skills)} skills: {list(skills.keys())}")
+    logger.info("Loaded %d skills: %s", len(skills), list(skills.keys()))
 
 
 # ── Helper functions ──────────────────────────────────────────────────
 
 def get_manager(project_id: str) -> tuple[OrchestratorManager | None, int | None]:
-    """Find an OrchestratorManager by project_id across all users."""
+    """Find an OrchestratorManager by *project_id* across all users.
+
+    Args:
+        project_id: The project identifier to search for.
+
+    Returns:
+        A ``(manager, user_id)`` tuple, or ``(None, None)`` if not found.
+    """
+    if not isinstance(project_id, str) or not project_id:
+        logger.warning("get_manager called with invalid project_id: %r", project_id)
+        return None, None
+
     for user_id, sessions in active_sessions.items():
         if project_id in sessions:
             return sessions[project_id], user_id
     return None, None
 
 
-def get_all_managers() -> list[tuple[int, str, OrchestratorManager]]:
-    """Return a flat list of (user_id, project_id, manager) across all users."""
-    result = []
+def get_all_managers() -> list[tuple[int, str, Any]]:
+    """Return a flat list of ``(user_id, project_id, manager)`` across all users.
+
+    Returns:
+        A new list (safe to iterate/mutate without affecting global state).
+    """
+    result: list[tuple[int, str, Any]] = []
     for user_id, sessions in active_sessions.items():
         for project_id, manager in sessions.items():
             result.append((user_id, project_id, manager))
     return result
 
 
-async def register_manager(user_id: int, project_id: str, manager: OrchestratorManager):
-    """Register an OrchestratorManager for a user+project."""
+async def register_manager(
+    user_id: int,
+    project_id: str,
+    manager: Any,
+) -> None:
+    """Register an OrchestratorManager for a user + project.
+
+    Args:
+        user_id: Numeric user identifier.
+        project_id: The project identifier (must be non-empty string).
+        manager: The OrchestratorManager instance to register.
+
+    Raises:
+        ValueError: If *user_id* or *project_id* are invalid.
+    """
+    if not isinstance(user_id, int):
+        raise ValueError(f"user_id must be an int, got {type(user_id).__name__}")
+    if not isinstance(project_id, str) or not project_id:
+        raise ValueError(f"project_id must be a non-empty string, got {project_id!r}")
+
     async with _state_lock:
         if user_id not in active_sessions:
             active_sessions[user_id] = {}
         active_sessions[user_id][project_id] = manager
+    logger.debug("Registered manager for user=%d project=%s", user_id, project_id)
 
 
-async def unregister_manager(user_id: int, project_id: str):
-    """Remove an OrchestratorManager for a user+project."""
+async def unregister_manager(user_id: int, project_id: str) -> None:
+    """Remove an OrchestratorManager for a user + project.
+
+    Safe to call even if the user or project doesn't exist.
+
+    Args:
+        user_id: Numeric user identifier.
+        project_id: The project identifier to remove.
+    """
     async with _state_lock:
         if user_id in active_sessions:
-            active_sessions[user_id].pop(project_id, None)
+            removed = active_sessions[user_id].pop(project_id, None)
             if not active_sessions[user_id]:
                 del active_sessions[user_id]
+            if removed is not None:
+                logger.debug("Unregistered manager for user=%d project=%s", user_id, project_id)
+
+
+def is_valid_project_name(name: str) -> bool:
+    """Check whether *name* matches PROJECT_NAME_RE.
+
+    Args:
+        name: The candidate project name.
+
+    Returns:
+        ``True`` if the name contains only alphanumerics, spaces, hyphens,
+        and underscores (and is non-empty).
+    """
+    if not isinstance(name, str):
+        return False
+    return bool(PROJECT_NAME_RE.match(name))

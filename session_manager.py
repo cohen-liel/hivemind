@@ -1,10 +1,19 @@
+"""Async SQLite persistence layer for sessions, projects, and messages.
+
+Provides the ``SessionManager`` class — a high-level async wrapper around
+``aiosqlite`` with WAL mode, automatic schema migration, and retry logic
+for transient database errors.
+"""
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import logging
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -109,16 +118,69 @@ CREATE INDEX IF NOT EXISTS idx_schedules_enabled
 """
 
 
-class SessionManager:
-    """Async SQLite persistence for sessions, projects, and messages."""
+class DatabaseError(Exception):
+    """Raised when a database operation fails after retries."""
 
-    def __init__(self, db_path: str = SESSION_DB_PATH):
-        self.db_path = db_path
+
+def _retry_on_db_error(max_retries: int = 2, delay: float = 0.1):
+    """Decorator: retry an async method on transient SQLite errors.
+
+    Retries on ``aiosqlite.OperationalError`` (e.g. database locked)
+    with exponential back-off.  Non-retryable errors propagate immediately.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            last_exc: Exception | None = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return await fn(*args, **kwargs)
+                except aiosqlite.OperationalError as exc:
+                    last_exc = exc
+                    if attempt < max_retries:
+                        wait = delay * (2 ** attempt)
+                        logger.warning(
+                            "%s attempt %d/%d failed (%s), retrying in %.1fs",
+                            fn.__name__, attempt + 1, max_retries + 1, exc, wait,
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.error(
+                            "%s failed after %d attempts: %s",
+                            fn.__name__, max_retries + 1, exc,
+                        )
+            raise DatabaseError(f"{fn.__name__} failed after {max_retries + 1} attempts") from last_exc
+        return wrapper
+    return decorator
+
+
+class SessionManager:
+    """Async SQLite persistence for sessions, projects, and messages.
+
+    Usage::
+
+        mgr = SessionManager()
+        await mgr.initialize()
+        # … use mgr …
+        await mgr.close()
+
+    Or as an async context manager::
+
+        async with SessionManager() as mgr:
+            await mgr.save_project(…)
+    """
+
+    def __init__(self, db_path: str = SESSION_DB_PATH) -> None:
+        self.db_path: str = db_path
         self._db: aiosqlite.Connection | None = None
 
-    async def initialize(self):
-        """Create tables and migrate old JSON data if present."""
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+    async def initialize(self) -> None:
+        """Create tables and migrate old JSON data if present.
+
+        Raises:
+            aiosqlite.Error: If the database cannot be opened or schema creation fails.
+        """
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         # Enable WAL mode for better concurrent read/write performance
@@ -128,7 +190,37 @@ class SessionManager:
         # Add away_mode column to existing projects table if missing
         await self._migrate_add_columns()
         await self._migrate_json()
-        logger.info(f"SessionManager initialized: {self.db_path}")
+        logger.info("SessionManager initialized: %s", self.db_path)
+
+    async def close(self) -> None:
+        """Close the database connection gracefully."""
+        if self._db:
+            try:
+                await self._db.close()
+            except Exception as exc:
+                logger.warning("Error closing database: %s", exc)
+            finally:
+                self._db = None
+            logger.debug("SessionManager closed")
+
+    async def __aenter__(self) -> "SessionManager":
+        """Support ``async with SessionManager() as mgr:``."""
+        await self.initialize()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Close the DB connection on context exit."""
+        await self.close()
+
+    async def is_healthy(self) -> bool:
+        """Return ``True`` if the database connection is alive and responsive."""
+        try:
+            db = await self._get_db()
+            cursor = await db.execute("SELECT 1")
+            row = await cursor.fetchone()
+            return row is not None and row[0] == 1
+        except Exception:
+            return False
 
     async def close(self):
         if self._db:

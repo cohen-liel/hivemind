@@ -1,12 +1,21 @@
 """Configuration for the Web Claude Bot.
 
-Reads settings from environment variables (via .env) and exposes them
-as module-level constants to be imported across the project.
+Reads settings from environment variables (via .env), optional JSON overrides,
+and exposes them as module-level constants.  Import ``config`` anywhere to access.
+
+Resolution order (first wins):
+    data/settings_overrides.json  →  environment variable  →  hardcoded default
+
+All public constants are type-hinted.  Call ``validate_config()`` at startup to
+assert invariants (e.g. positive timeouts, valid thresholds).
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 from dotenv import load_dotenv
 
@@ -14,23 +23,44 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# --- Load settings overrides from data/settings_overrides.json ---
-_PROJECT_ROOT = Path(__file__).resolve().parent
-_OVERRIDES: dict = {}
+T = TypeVar("T")
+
+# ── Load settings overrides from data/settings_overrides.json ────────
+_PROJECT_ROOT: Path = Path(__file__).resolve().parent
+_OVERRIDES: dict[str, Any] = {}
 _overrides_path = _PROJECT_ROOT / "data" / "settings_overrides.json"
 if _overrides_path.exists():
     try:
         _OVERRIDES = json.loads(_overrides_path.read_text())
-        logger.info(f"Loaded settings overrides: {list(_OVERRIDES.keys())}")
-    except Exception as e:
-        logger.warning(f"Failed to load settings overrides: {e}")
+        logger.info("Loaded settings overrides: %s", list(_OVERRIDES.keys()))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load settings overrides: %s", e)
 
 
-def _get(key: str, default: str, type_fn=str):
-    """Get config value: overrides > env > default."""
+def _get(key: str, default: str, type_fn: Callable[[str], T] = str) -> T:
+    """Resolve a configuration value: overrides > env > *default*.
+
+    Args:
+        key: Environment variable / override key name.
+        default: Fallback value (as a string — will be converted by *type_fn*).
+        type_fn: Conversion function (``int``, ``float``, ``str``, …).
+
+    Returns:
+        The resolved value, converted to the type produced by *type_fn*.
+
+    Raises:
+        ValueError: If *type_fn* rejects the resolved string (e.g. ``int("abc")``).
+    """
+    raw: str
     if key.lower() in _OVERRIDES:
-        return type_fn(_OVERRIDES[key.lower()])
-    return type_fn(os.getenv(key, default))
+        raw = str(_OVERRIDES[key.lower()])
+    else:
+        raw = os.getenv(key, default)
+    try:
+        return type_fn(raw)
+    except (ValueError, TypeError) as exc:
+        logger.error("Config %s: cannot convert %r via %s — %s", key, raw, type_fn.__name__, exc)
+        return type_fn(default)
 
 
 # CORS origins (comma-separated)
@@ -81,10 +111,97 @@ try:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
 except OSError:
     pass
-SESSION_DB_PATH = str(STORE_DIR / "sessions.db")
+SESSION_DB_PATH: str = str(STORE_DIR / "sessions.db")
 
 # User input validation
-MAX_USER_MESSAGE_LENGTH = _get("MAX_USER_MESSAGE_LENGTH", "4000", int)
+MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "4000", int)
+
+
+# ── Validation ───────────────────────────────────────────────────────
+
+class ConfigError(ValueError):
+    """Raised by ``validate_config()`` when a config value is invalid."""
+
+
+def validate_config() -> list[str]:
+    """Check all configuration invariants and return a list of warnings.
+
+    Raises:
+        ConfigError: If any *critical* invariant is violated (e.g. negative
+            timeout, threshold out of range).
+
+    Returns:
+        A (possibly empty) list of non-fatal warning messages.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # --- Positive integers ------------------------------------------------
+    _positive_ints: dict[str, int] = {
+        "MAX_TURNS_PER_CYCLE": MAX_TURNS_PER_CYCLE,
+        "AGENT_TIMEOUT_SECONDS": AGENT_TIMEOUT_SECONDS,
+        "SESSION_TIMEOUT_SECONDS": SESSION_TIMEOUT_SECONDS,
+        "SDK_MAX_TURNS_PER_QUERY": SDK_MAX_TURNS_PER_QUERY,
+        "SESSION_EXPIRY_HOURS": SESSION_EXPIRY_HOURS,
+        "MAX_ORCHESTRATOR_LOOPS": MAX_ORCHESTRATOR_LOOPS,
+        "STALL_ALERT_SECONDS": STALL_ALERT_SECONDS,
+        "PIPELINE_MAX_STEPS": PIPELINE_MAX_STEPS,
+        "SCHEDULER_CHECK_INTERVAL": SCHEDULER_CHECK_INTERVAL,
+        "MAX_USER_MESSAGE_LENGTH": MAX_USER_MESSAGE_LENGTH,
+    }
+    for name, val in _positive_ints.items():
+        if not isinstance(val, int) or val <= 0:
+            errors.append(f"{name} must be a positive integer, got {val!r}")
+
+    # --- Non-negative integers --------------------------------------------
+    if not isinstance(SDK_MAX_RETRIES, int) or SDK_MAX_RETRIES < 0:
+        errors.append(f"SDK_MAX_RETRIES must be >= 0, got {SDK_MAX_RETRIES!r}")
+
+    # --- Positive floats --------------------------------------------------
+    _positive_floats: dict[str, float] = {
+        "MAX_BUDGET_USD": MAX_BUDGET_USD,
+        "SDK_MAX_BUDGET_PER_QUERY": SDK_MAX_BUDGET_PER_QUERY,
+    }
+    for name, val in _positive_floats.items():
+        if not isinstance(val, (int, float)) or val <= 0:
+            errors.append(f"{name} must be a positive number, got {val!r}")
+
+    # --- Thresholds in (0, 1] ---------------------------------------------
+    if not (0.0 < STUCK_SIMILARITY_THRESHOLD <= 1.0):
+        errors.append(
+            f"STUCK_SIMILARITY_THRESHOLD must be in (0, 1], got {STUCK_SIMILARITY_THRESHOLD}"
+        )
+    if not (0.0 < BUDGET_WARNING_THRESHOLD <= 1.0):
+        errors.append(
+            f"BUDGET_WARNING_THRESHOLD must be in (0, 1], got {BUDGET_WARNING_THRESHOLD}"
+        )
+
+    # --- Non-negative floats -----------------------------------------------
+    if RATE_LIMIT_SECONDS < 0:
+        errors.append(f"RATE_LIMIT_SECONDS must be >= 0, got {RATE_LIMIT_SECONDS}")
+
+    # --- Paths ------------------------------------------------------------
+    if not PROJECTS_BASE_DIR.is_absolute():
+        warnings.append(f"PROJECTS_BASE_DIR is relative: {PROJECTS_BASE_DIR}")
+
+    # --- Relationship checks -----------------------------------------------
+    if SDK_MAX_BUDGET_PER_QUERY > MAX_BUDGET_USD:
+        warnings.append(
+            f"SDK_MAX_BUDGET_PER_QUERY ({SDK_MAX_BUDGET_PER_QUERY}) > MAX_BUDGET_USD ({MAX_BUDGET_USD})"
+        )
+    if STUCK_WINDOW_SIZE < 2:
+        errors.append(f"STUCK_WINDOW_SIZE must be >= 2 for comparison, got {STUCK_WINDOW_SIZE}")
+
+    # --- Report ------------------------------------------------------------
+    for w in warnings:
+        logger.warning("Config warning: %s", w)
+    if errors:
+        msg = "Configuration validation failed:\n  • " + "\n  • ".join(errors)
+        logger.error(msg)
+        raise ConfigError(msg)
+
+    logger.info("Configuration validated OK (%d warnings)", len(warnings))
+    return warnings
 
 # Predefined projects (from env JSON or hardcoded)
 _env_projects = os.getenv("PREDEFINED_PROJECTS", "")

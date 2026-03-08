@@ -744,7 +744,7 @@ export default function ProjectView() {
       </div>
 
       {/* ===== DESKTOP LAYOUT ===== */}
-      <div className="hidden lg:flex flex-col h-full">
+      <div className="hidden lg:flex flex-col h-full w-full overflow-hidden">
         {/* Conductor header with progress */}
         <ConductorBar
           projectName={project.project_name}
@@ -777,9 +777,9 @@ export default function ProjectView() {
         </div>
 
         {/* Split view: tab content (left) + activity log (right) */}
-        <div className="flex-1 flex min-h-0">
+        <div className="flex-1 flex min-h-0 overflow-hidden" style={{ width: '100%' }}>
           {/* Left panel: selected tab content */}
-          <div className="overflow-y-auto" style={{ flex: '0 0 65%' }}>
+          <div className="overflow-y-auto overflow-x-hidden min-w-0" style={{ width: '65%', maxWidth: '65%', flexShrink: 0 }}>
             {desktopTab === 'nexus' && (
               <ConductorMode
                 agents={agentStateList}
@@ -821,7 +821,7 @@ export default function ProjectView() {
           </div>
 
           {/* Right panel: permanent activity log + chat input */}
-          <div className="flex flex-col" style={{ flex: '0 0 35%', borderLeft: '1px solid var(--border-dim)', background: 'var(--bg-panel)' }}>
+          <div className="flex flex-col min-w-0 overflow-hidden" style={{ width: '35%', maxWidth: '35%', flexShrink: 0, borderLeft: '1px solid var(--border-dim)', background: 'var(--bg-panel)' }}>
             <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-panel)', zIndex: 10 }}>
               <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Activity Log</h3>
             </div>

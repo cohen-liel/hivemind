@@ -1,13 +1,36 @@
-version: '3.8'
-
 services:
   bot:
     build: .
     container_name: claude-bot
     restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
     volumes:
+      # Persist session database across restarts
       - ./data:/app/data
-      # Map the user's Downloads directory inside the container
-      - ~/Downloads:/root/Downloads
+      # Mount projects directory (scoped — NOT the entire home)
+      - ${CLAUDE_PROJECTS_DIR:-~/claude-projects}:/projects:ro
     env_file:
       - .env
+    environment:
+      - CLAUDE_PROJECTS_DIR=/projects
+      - CONVERSATION_STORE_DIR=/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/stats"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
+        reservations:
+          memory: 256m
+          cpus: "0.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
