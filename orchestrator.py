@@ -39,6 +39,7 @@ AGENT_EMOJI = {
     "reviewer": "🔍",
     "tester": "🧪",
     "devops": "⚙️",
+    "researcher": "🔎",
     "user": "👤",
 }
 
@@ -286,8 +287,11 @@ class OrchestratorManager:
         2. Error-repeat: same agent failing with the same error 3+ consecutive times
         """
         # --- Signal 1: orchestrator response similarity ---
+        # Search the full log for orchestrator entries (not just last N*2) because
+        # in multi-agent sessions each round adds 3-5 sub-agent messages, so a small
+        # window misses all orchestrator responses entirely.
         recent = [
-            m.content for m in self.conversation_log[-STUCK_WINDOW_SIZE * 2:]
+            m.content for m in self.conversation_log
             if m.agent_name == "orchestrator" and m.content
         ][-STUCK_WINDOW_SIZE:]
 
@@ -734,7 +738,8 @@ class OrchestratorManager:
         # If the manifest already exists, this is a continuation — inject it and override complexity
         existing_manifest = self._read_project_manifest()
         if existing_manifest:
-            complexity = "LARGE"  # At minimum — manifest means prior work exists
+            # Keep EPIC if already detected — manifest only sets a *minimum* of LARGE
+            complexity = complexity if complexity == "EPIC" else "LARGE"
             prompt += (
                 f"\n\n📋 EXISTING PROJECT MANIFEST FOUND (.nexus/PROJECT_MANIFEST.md):\n"
                 f"This is a CONTINUATION of previous work. Read the manifest carefully before delegating.\n\n"
@@ -785,6 +790,7 @@ class OrchestratorManager:
             self._current_loop = 0
             max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
             self._completed_rounds = []  # Track what has been done each round (instance-level for final summary)
+            self.shared_context = []  # Reset shared context for new session (prevents leaking from previous task)
 
             while self.is_running and loop_count < max_loops:
                 if self._stop_event.is_set():
@@ -968,17 +974,24 @@ class OrchestratorManager:
                             f"[{self.project_id}] TASK_COMPLETE rejected (premature): {premature_reason}"
                         )
                         await self._notify(f"⚠️ *orchestrator* tried to finish early — pushing to continue...")
-                        # Inject a rejection so the orchestrator keeps working
-                        current_changes = self._detect_file_changes()
-                        orchestrator_input = (
-                            f"⛔ TASK_COMPLETE REJECTED — the task is not fully complete yet.\n\n"
-                            f"Reason: {premature_reason}\n\n"
-                            f"Current file changes:\n{current_changes}\n\n"
-                            f"Rounds completed so far:\n"
-                            + ("\n".join(f"  • {r}" for r in self._completed_rounds) or "  • (none yet)") +
-                            f"\n\nYou MUST keep working. What specific work is still needed?\n"
-                            f"Delegate the next phase of work now using <delegate> blocks."
-                        )
+                        # Still run any delegate blocks that accompanied the TASK_COMPLETE
+                        early_delegations = self._parse_delegations(response.text)
+                        if early_delegations:
+                            sub_results = await self._run_sub_agents(early_delegations)
+                            review = self._build_review_prompt(sub_results, loop_count)
+                            orchestrator_input = review
+                        else:
+                            # No delegates — inject rejection and force planning
+                            current_changes = self._detect_file_changes()
+                            orchestrator_input = (
+                                f"⛔ TASK_COMPLETE REJECTED — the task is not fully complete yet.\n\n"
+                                f"Reason: {premature_reason}\n\n"
+                                f"Current file changes:\n{current_changes}\n\n"
+                                f"Rounds completed so far:\n"
+                                + ("\n".join(f"  • {r}" for r in self._completed_rounds) or "  • (none yet)") +
+                                f"\n\nYou MUST keep working. What specific work is still needed?\n"
+                                f"Delegate the next phase of work now using <delegate> blocks."
+                            )
                         continue
                     # Completion validated — accept it
                     if task_history_id is not None:
@@ -1195,6 +1208,16 @@ class OrchestratorManager:
         for d in delegations:
             if d.agent not in SUB_AGENT_PROMPTS:
                 logger.warning(f"Unknown sub-agent role: {d.agent}, skipping")
+                # Feed back to orchestrator so it can retry with a valid role name
+                results.setdefault("⚠ Invalid Role", []).append(SDKResponse(
+                    text=(
+                        f"Delegation to unknown role '{d.agent}' was skipped.\n"
+                        f"Valid roles are: {', '.join(SUB_AGENT_PROMPTS.keys())}.\n"
+                        f"Task was: {d.task[:200]}"
+                    ),
+                    is_error=True,
+                    error_message=f"Unknown agent role: {d.agent}",
+                ))
                 continue
             by_role.setdefault(d.agent, []).append(d)
 
@@ -1560,8 +1583,8 @@ class OrchestratorManager:
                 )
                 await self._notify(conflict_msg)
                 logger.warning(f"[{self.project_id}] File conflicts: {conflicts}")
-                # Inject conflict info into results so orchestrator can resolve
-                results.setdefault("_conflicts", []).append(SDKResponse(
+                # Inject conflict info as a readable agent entry so orchestrator can resolve
+                results.setdefault("⚠ File Conflicts", []).append(SDKResponse(
                     text=conflict_msg,
                     is_error=True,
                     error_message=f"File conflicts in: {', '.join(conflicts.keys())}",
