@@ -20,18 +20,20 @@ class EventBus:
         self._subscribers: list[asyncio.Queue] = []
         self._lock = asyncio.Lock()
 
-    def subscribe(self) -> asyncio.Queue:
+    async def subscribe(self) -> asyncio.Queue:
         """Create a new subscriber queue and register it."""
-        queue: asyncio.Queue = asyncio.Queue(maxsize=256)
-        self._subscribers.append(queue)
-        return queue
+        async with self._lock:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+            self._subscribers.append(queue)
+            return queue
 
-    def unsubscribe(self, queue: asyncio.Queue):
+    async def unsubscribe(self, queue: asyncio.Queue):
         """Remove a subscriber queue."""
-        try:
-            self._subscribers.remove(queue)
-        except ValueError:
-            pass
+        async with self._lock:
+            try:
+                self._subscribers.remove(queue)
+            except ValueError:
+                pass
 
     async def publish(self, event: dict):
         """Broadcast an event dict to all subscribers.
@@ -42,7 +44,10 @@ class EventBus:
         if "timestamp" not in event:
             event["timestamp"] = time.time()
 
-        for queue in list(self._subscribers):
+        async with self._lock:
+            subscribers = list(self._subscribers)
+
+        for queue in subscribers:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:

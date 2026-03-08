@@ -79,7 +79,7 @@ def get_manager(project_id: str) -> tuple[OrchestratorManager | None, int | None
         logger.warning("get_manager called with invalid project_id: %r", project_id)
         return None, None
 
-    for user_id, sessions in active_sessions.items():
+    for user_id, sessions in dict(active_sessions).items():
         if project_id in sessions:
             return sessions[project_id], user_id
     return None, None
@@ -92,8 +92,8 @@ def get_all_managers() -> list[tuple[int, str, Any]]:
         A new list (safe to iterate/mutate without affecting global state).
     """
     result: list[tuple[int, str, Any]] = []
-    for user_id, sessions in active_sessions.items():
-        for project_id, manager in sessions.items():
+    for user_id, sessions in dict(active_sessions).items():
+        for project_id, manager in dict(sessions).items():
             result.append((user_id, project_id, manager))
     return result
 

@@ -14,7 +14,7 @@ from pathlib import Path
 import uvicorn
 
 import state
-from config import PREDEFINED_PROJECTS
+from config import PREDEFINED_PROJECTS, validate_config, ConfigError
 from dashboard.api import create_app, _create_web_manager
 
 logging.basicConfig(
@@ -49,6 +49,15 @@ async def run():
     """Start web server."""
     # Initialize shared state (SDK + SessionManager)
     await state.initialize()
+
+    # Validate configuration at startup
+    try:
+        warnings = validate_config()
+        for w in warnings:
+            logger.warning("Config: %s", w)
+    except ConfigError as e:
+        logger.critical("Invalid configuration: %s", e)
+        raise SystemExit(1)
 
     # Auto-create predefined projects if they don't exist yet
     if state.session_mgr:
@@ -118,7 +127,14 @@ async def run():
     finally:
         cleanup_task.cancel()
         scheduler_task.cancel()
-        logger.info("Shutting down...")
+        for task in (cleanup_task, scheduler_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if state.session_mgr:
+            await state.session_mgr.close()
+        logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":

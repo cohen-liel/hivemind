@@ -53,12 +53,10 @@ if "ANTHROPIC_BASE_URL" not in os.environ:
         os.environ.setdefault("HTTPS_PROXY", "http://localhost:10054")
         os.environ.setdefault("X2P_SUPPORTS_VPNLESS", "1")
         os.environ.setdefault("CPE_RUST_X2P_SUPPORTS_VPNLESS", "1")
-        # CAT injection for x2p authentication — load from env var, fall back to default
-        _CAT_B64 = os.environ.get(
-            "CLAUDE_AUTH_TOKEN",
-            "eyJ2ZXJpZmllciI6ICJtZXRhbWF0ZV9wbGF0Zm9ybS5wbHVnYm9hcmQiLCAidG9rZW5UaW1lb3V0U2Vjb25kcyI6IDMwMCwgImlzTG93Qm94IjogdHJ1ZX0=",
-        )
-        os.environ.setdefault("ANTHROPIC_CUSTOM_HEADERS", f"x-x2pagentd-inject-cat: {_CAT_B64}")
+        # CAT injection for x2p authentication — require env var
+        _CAT_B64 = os.environ.get("CLAUDE_AUTH_TOKEN", "")
+        if _CAT_B64:
+            os.environ.setdefault("ANTHROPIC_CUSTOM_HEADERS", f"x-x2pagentd-inject-cat: {_CAT_B64}")
     else:
         os.environ["ANTHROPIC_BASE_URL"] = "https://plugboard.x2p.facebook.net"
 

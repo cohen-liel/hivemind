@@ -57,6 +57,14 @@ class UpdateSettingsRequest(BaseModel):
     max_orchestrator_loops: int | None = None
 
 
+class CreateScheduleRequest(BaseModel):
+    project_id: str
+    schedule_time: str
+    task_description: str
+    user_id: int = 0
+    repeat: str = "once"
+
+
 # --- Helpers using state module ---
 
 def _find_manager(project_id: str):
@@ -128,7 +136,7 @@ def _create_web_manager(
             "project_id": project_id,
             "project_name": project_name,
             "text": text,
-            "timestamp": __import__('time').time(),
+            "timestamp": time.time(),
         })
 
     async def on_result(text: str):
@@ -137,7 +145,7 @@ def _create_web_manager(
             "project_id": project_id,
             "project_name": project_name,
             "text": text,
-            "timestamp": __import__('time').time(),
+            "timestamp": time.time(),
         })
 
     async def on_final(text: str):
@@ -146,7 +154,7 @@ def _create_web_manager(
             "project_id": project_id,
             "project_name": project_name,
             "text": text,
-            "timestamp": __import__('time').time(),
+            "timestamp": time.time(),
         })
 
     async def on_event(event: dict):
@@ -372,21 +380,18 @@ def create_app() -> FastAPI:
         if not db_project:
             return JSONResponse({"error": "Project not found"}, status_code=404)
 
-        db = await state.session_mgr._get_db()
         if req.name is not None:
             name = req.name.strip()
             if not name or not state.PROJECT_NAME_RE.match(name):
                 return JSONResponse({"error": "Invalid project name"}, status_code=400)
-            await db.execute("UPDATE projects SET name=? WHERE project_id=?", (name, project_id))
+            await state.session_mgr.update_project_fields(project_id, name=name)
             # Update in-memory manager name if active
             manager, _ = _find_manager(project_id)
             if manager:
                 manager.project_name = name
 
         if req.description is not None:
-            await db.execute("UPDATE projects SET description=? WHERE project_id=?", (req.description, project_id))
-
-        await db.commit()
+            await state.session_mgr.update_project_fields(project_id, description=req.description)
 
         await event_bus.publish({
             "type": "project_status",
@@ -434,21 +439,7 @@ def create_app() -> FastAPI:
         """Conversation history (paginated, from DB)."""
         if not state.session_mgr:
             return {"messages": [], "total": 0}
-        db = await state.session_mgr._get_db()
-        cursor = await db.execute(
-            "SELECT agent_name, role, content, cost_usd, timestamp FROM messages "
-            "WHERE project_id=? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (project_id, limit, offset),
-        )
-        rows = await cursor.fetchall()
-        messages = [dict(row) for row in reversed(rows)]
-
-        cursor2 = await db.execute(
-            "SELECT COUNT(*) FROM messages WHERE project_id=?",
-            (project_id,),
-        )
-        total = (await cursor2.fetchone())[0]
-
+        messages, total = await state.session_mgr.get_messages_paginated(project_id, limit, offset)
         return {"messages": messages, "total": total}
 
     @app.get("/api/projects/{project_id}/files")
@@ -495,13 +486,8 @@ def create_app() -> FastAPI:
         """Task history from DB."""
         if not state.session_mgr:
             return {"tasks": []}
-        db = await state.session_mgr._get_db()
-        cursor = await db.execute(
-            "SELECT * FROM task_history WHERE project_id=? ORDER BY started_at DESC LIMIT 50",
-            (project_id,),
-        )
-        rows = await cursor.fetchall()
-        return {"tasks": [dict(row) for row in rows]}
+        tasks = await state.session_mgr.get_project_tasks(project_id)
+        return {"tasks": tasks}
 
     @app.post("/api/projects")
     async def create_project(req: CreateProjectRequest):
@@ -586,12 +572,7 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": "Cannot clear history while project is running"}, status_code=400)
 
         if state.session_mgr:
-            await state.session_mgr.clear_messages(project_id)
-            # Clear sessions so agents start fresh
-            db = await state.session_mgr._get_db()
-            await db.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
-            await db.execute("DELETE FROM task_history WHERE project_id = ?", (project_id,))
-            await db.commit()
+            await state.session_mgr.clear_project_data(project_id)
 
         # Reset live state on active manager
         if manager:
@@ -930,17 +911,22 @@ def create_app() -> FastAPI:
         return {"schedules": schedules}
 
     @app.post("/api/schedules")
-    async def create_schedule(request: Request):
+    async def create_schedule(req: CreateScheduleRequest):
         """Create a new schedule."""
-        data = await request.json()
         if not state.session_mgr:
             return JSONResponse({"error": "DB not ready"}, status_code=500)
+        # Validate schedule_time format
+        if not re.match(r"^\d{2}:\d{2}$", req.schedule_time):
+            return JSONResponse({"error": "schedule_time must be HH:MM format"}, status_code=400)
+        h, m = int(req.schedule_time[:2]), int(req.schedule_time[3:])
+        if h > 23 or m > 59:
+            return JSONResponse({"error": "Invalid time: hours 0-23, minutes 0-59"}, status_code=400)
         schedule_id = await state.session_mgr.add_schedule(
-            user_id=data.get("user_id", 0),
-            project_id=data["project_id"],
-            schedule_time=data["schedule_time"],
-            task_description=data["task_description"],
-            repeat=data.get("repeat", "once"),
+            user_id=req.user_id,
+            project_id=req.project_id,
+            schedule_time=req.schedule_time,
+            task_description=req.task_description,
+            repeat=req.repeat,
         )
         return {"ok": True, "schedule_id": schedule_id}
 
@@ -1065,7 +1051,7 @@ def create_app() -> FastAPI:
     async def websocket_endpoint(ws: WebSocket):
         """WebSocket for real-time event stream with ping/pong heartbeat."""
         await ws.accept()
-        queue = event_bus.subscribe()
+        queue = await event_bus.subscribe()
 
         async def _sender():
             """Forward events from bus to WebSocket client."""
@@ -1110,7 +1096,7 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.debug(f"WebSocket error: {e}")
         finally:
-            event_bus.unsubscribe(queue)
+            await event_bus.unsubscribe(queue)
 
     # --- Static files (production build) ---
 

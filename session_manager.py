@@ -222,11 +222,6 @@ class SessionManager:
         except Exception:
             return False
 
-    async def close(self):
-        if self._db:
-            await self._db.close()
-            self._db = None
-
     async def _get_db(self) -> aiosqlite.Connection:
         if not self._db:
             raise RuntimeError("SessionManager not initialized. Call initialize() first.")
@@ -360,6 +355,46 @@ class SessionManager:
             "UPDATE projects SET status=?, updated_at=? WHERE project_id=?",
             (status, time.time(), project_id),
         )
+        await db.commit()
+
+    async def update_project_fields(self, project_id: str, **fields):
+        """Update arbitrary project fields safely."""
+        if not fields:
+            return
+        db = await self._get_db()
+        sets = ", ".join(f"{k}=?" for k in fields)
+        vals = list(fields.values()) + [time.time(), project_id]
+        await db.execute(f"UPDATE projects SET {sets}, updated_at=? WHERE project_id=?", vals)
+        await db.commit()
+
+    async def get_messages_paginated(self, project_id: str, limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
+        """Return paginated messages and total count."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT agent_name, role, content, cost_usd, timestamp FROM messages "
+            "WHERE project_id=? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (project_id, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        cursor2 = await db.execute("SELECT COUNT(*) FROM messages WHERE project_id=?", (project_id,))
+        total = (await cursor2.fetchone())[0]
+        return [dict(row) for row in reversed(rows)], total
+
+    async def get_project_tasks(self, project_id: str, limit: int = 50) -> list[dict]:
+        """Return task history for a project."""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT * FROM task_history WHERE project_id=? ORDER BY started_at DESC LIMIT ?",
+            (project_id, limit),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def clear_project_data(self, project_id: str):
+        """Clear all messages, sessions, and task_history for a project."""
+        db = await self._get_db()
+        await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
+        await db.execute("DELETE FROM sessions WHERE project_id=?", (project_id,))
+        await db.execute("DELETE FROM task_history WHERE project_id=?", (project_id,))
         await db.commit()
 
     # --- Cleanup ---
