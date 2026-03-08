@@ -1185,6 +1185,42 @@ class OrchestratorManager:
                     f"{', '.join(f'{k}({len(v)} tasks)' for k, v in sub_results.items())}"
                 )
 
+                # Auto-commit safety net: ensure agents' work is saved
+                # even if they forgot to commit (prevents work loss on crash)
+                try:
+                    commit_result = await asyncio.wait_for(
+                        asyncio.create_subprocess_exec(
+                            "git", "-C", self.project_dir,
+                            "diff", "--quiet",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        ),
+                        timeout=10.0,
+                    )
+                    await commit_result.wait()
+                    if commit_result.returncode != 0:
+                        # There are uncommitted changes — auto-commit them
+                        add_proc = await asyncio.create_subprocess_exec(
+                            "git", "-C", self.project_dir,
+                            "add", "-A",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await add_proc.wait()
+                        agents_in_round = ", ".join(sub_results.keys())
+                        commit_proc = await asyncio.create_subprocess_exec(
+                            "git", "-C", self.project_dir,
+                            "commit", "-m", f"auto: save work from round {loop_count} ({agents_in_round})",
+                            "--no-verify",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await commit_proc.wait()
+                        if commit_proc.returncode == 0:
+                            logger.info(f"[{self.project_id}] Auto-committed uncommitted changes after round {loop_count}")
+                except Exception as e:
+                    logger.debug(f"[{self.project_id}] Auto-commit check failed (non-critical): {e}")
+
                 # Check stuck detection
                 if self._detect_stuck():
                     await self._notify(
