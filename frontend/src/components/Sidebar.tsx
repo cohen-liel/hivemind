@@ -5,10 +5,10 @@ import { useWSSubscribe } from '../WebSocketContext';
 import type { Project, WSEvent } from '../types';
 
 const STATUS_CONFIG: Record<string, { color: string; label: string; pulse: boolean }> = {
-  running: { color: '#3dd68c', label: 'Running', pulse: true },
-  paused:  { color: '#f5a623', label: 'Paused', pulse: false },
-  stopped: { color: '#f5475b', label: 'Stopped', pulse: false },
-  idle:    { color: '#4a4e63', label: 'Idle', pulse: false },
+  running: { color: 'var(--accent-green)', label: 'Running', pulse: true },
+  paused:  { color: 'var(--accent-amber)', label: 'Paused', pulse: false },
+  stopped: { color: 'var(--accent-red)', label: 'Stopped', pulse: false },
+  idle:    { color: 'var(--text-muted)', label: 'Idle', pulse: false },
 };
 
 interface Props {
@@ -86,21 +86,26 @@ export default function Sidebar({ onProjectsChange }: Props) {
       <div className="flex items-center gap-2.5 px-4 h-14 flex-shrink-0"
         style={{ borderBottom: '1px solid var(--border-dim)' }}>
         {!collapsed && (
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-6 h-6 rounded-lg flex items-center justify-center text-xs"
-              style={{ background: 'var(--glow-blue)', color: 'var(--accent-blue)' }}>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center text-sm"
+              style={{
+                background: 'var(--glow-blue)',
+                boxShadow: '0 0 12px var(--glow-blue)',
+              }}>
               ⚡
             </div>
-            <span className="text-sm font-semibold text-[var(--text-primary)] truncate"
-              style={{ fontFamily: 'var(--font-display)' }}>
+            <span className="text-sm font-bold truncate"
+              style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
               Claude Bot
             </span>
           </div>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="ml-auto p-1 transition-colors rounded-md hover:bg-[var(--bg-elevated)]"
+          className="ml-auto p-1.5 transition-all duration-200 rounded-lg active:scale-90"
           style={{ color: 'var(--text-muted)' }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
           title={collapsed ? 'Expand' : 'Collapse'}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -113,22 +118,22 @@ export default function Sidebar({ onProjectsChange }: Props) {
         </button>
       </div>
 
-      {/* New Project */}
+      {/* New Project — premium CTA */}
       <div className="px-3 py-3 flex-shrink-0">
         <button
           onClick={() => navigate('/new')}
-          className={`w-full flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200
+          className={`w-full flex items-center gap-2 px-3 py-2.5 text-sm font-semibold rounded-xl transition-all duration-200 active:scale-[0.97]
             ${collapsed ? 'justify-center' : ''}`}
           style={{
             background: 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)',
             color: 'white',
-            boxShadow: '0 2px 8px rgba(99,140,255,0.25)',
+            boxShadow: '0 3px 12px rgba(99,140,255,0.3), inset 0 1px 0 rgba(255,255,255,0.12)',
           }}
-          onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 4px 16px rgba(99,140,255,0.35)')}
-          onMouseLeave={e => (e.currentTarget.style.boxShadow = '0 2px 8px rgba(99,140,255,0.25)')}
+          onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 5px 20px rgba(99,140,255,0.4), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+          onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 3px 12px rgba(99,140,255,0.3), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(0)'; }}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-            <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+            <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
           </svg>
           {!collapsed && <span>New Project</span>}
         </button>
@@ -142,15 +147,16 @@ export default function Sidebar({ onProjectsChange }: Props) {
             <button
               key={item.path}
               onClick={() => navigate(item.path)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 text-[13px] rounded-lg transition-all duration-150
+              className={`w-full flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium rounded-xl transition-all duration-200 active:scale-[0.98]
                 ${collapsed ? 'justify-center' : ''}`}
               style={{
                 background: isActive ? 'var(--bg-elevated)' : 'transparent',
                 color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
                 borderLeft: isActive ? '2px solid var(--accent-blue)' : '2px solid transparent',
+                boxShadow: isActive ? 'inset 0 0 0 1px var(--border-subtle)' : 'none',
               }}
-              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-elevated)'; }}
-              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+              onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
+              onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; } }}
             >
               {item.icon}
               {!collapsed && <span>{item.label}</span>}
@@ -161,10 +167,14 @@ export default function Sidebar({ onProjectsChange }: Props) {
 
       {/* Projects label */}
       {!collapsed && (
-        <div className="px-5 py-1.5 flex-shrink-0">
+        <div className="px-5 py-2 flex-shrink-0 flex items-center justify-between">
           <span className="text-[10px] font-bold tracking-[0.12em] uppercase"
             style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
             Projects
+          </span>
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md"
+            style={{ color: 'var(--text-muted)', background: 'var(--bg-elevated)' }}>
+            {projects.length}
           </span>
         </div>
       )}
@@ -179,30 +189,42 @@ export default function Sidebar({ onProjectsChange }: Props) {
             <button
               key={project.project_id}
               onClick={() => navigate(`/project/${project.project_id}`)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 text-[13px] rounded-lg transition-all duration-150 text-left
+              className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-[13px] rounded-xl transition-all duration-200 text-left active:scale-[0.98]
                 ${collapsed ? 'justify-center' : ''}`}
               style={{
                 background: isActive ? 'var(--bg-elevated)' : 'transparent',
                 color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                boxShadow: isActive ? `inset 0 0 0 1px var(--border-subtle), 0 0 8px ${status.color === 'var(--accent-green)' ? 'var(--glow-green)' : 'transparent'}` : 'none',
               }}
-              onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-card)'; }}
-              onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = isActive ? 'var(--bg-elevated)' : 'transparent'; }}
+              onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'var(--bg-card)'; } }}
+              onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; } }}
               title={`${project.project_name} (${status.label})`}
             >
               <span
-                className={`w-2 h-2 rounded-full flex-shrink-0 ${status.pulse ? 'animate-pulse' : ''}`}
-                style={{ backgroundColor: status.color }}
+                className={`w-2.5 h-2.5 rounded-full flex-shrink-0 transition-all duration-300 ${status.pulse ? 'animate-pulse' : ''}`}
+                style={{
+                  backgroundColor: status.color,
+                  boxShadow: status.pulse ? `0 0 8px ${status.color}` : 'none',
+                }}
               />
               {!collapsed && (
-                <span className="truncate">{project.project_name}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="truncate block font-medium">{project.project_name}</span>
+                  {project.total_cost_usd > 0 && (
+                    <span className="text-[10px] block mt-0.5" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      ${project.total_cost_usd.toFixed(3)}
+                    </span>
+                  )}
+                </div>
               )}
             </button>
           );
         })}
         {projects.length === 0 && !collapsed && (
-          <p className="text-xs px-3 py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+          <div className="text-xs px-3 py-6 text-center" style={{ color: 'var(--text-muted)' }}>
+            <div className="text-2xl mb-2">📂</div>
             No projects yet
-          </p>
+          </div>
         )}
       </div>
 
@@ -210,14 +232,14 @@ export default function Sidebar({ onProjectsChange }: Props) {
       <div className="px-2 py-3 flex-shrink-0" style={{ borderTop: '1px solid var(--border-dim)' }}>
         <button
           onClick={() => navigate('/settings')}
-          className={`w-full flex items-center gap-2.5 px-3 py-2 text-[13px] rounded-lg transition-all duration-150
+          className={`w-full flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium rounded-xl transition-all duration-200 active:scale-[0.98]
             ${collapsed ? 'justify-center' : ''}`}
           style={{
             background: location.pathname === '/settings' ? 'var(--bg-elevated)' : 'transparent',
             color: location.pathname === '/settings' ? 'var(--text-primary)' : 'var(--text-secondary)',
           }}
-          onMouseEnter={e => { if (location.pathname !== '/settings') e.currentTarget.style.background = 'var(--bg-card)'; }}
-          onMouseLeave={e => { if (location.pathname !== '/settings') e.currentTarget.style.background = 'transparent'; }}
+          onMouseEnter={e => { if (location.pathname !== '/settings') { e.currentTarget.style.background = 'var(--bg-card)'; } }}
+          onMouseLeave={e => { if (location.pathname !== '/settings') { e.currentTarget.style.background = 'transparent'; } }}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.3"/>

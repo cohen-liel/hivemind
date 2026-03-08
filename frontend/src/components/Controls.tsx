@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { AGENT_ICONS } from '../constants';
 
 interface Props {
   projectId: string;
@@ -14,6 +15,16 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
   const [message, setMessage] = useState('');
   const [targetAgent, setTargetAgent] = useState('orchestrator');
   const [sending, setSending] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }, [message]);
 
   const handleSend = async () => {
     if (!message.trim() || sending) return;
@@ -34,83 +45,162 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
   };
 
   const isActive = status === 'running' || status === 'paused';
+  const hasContent = message.trim().length > 0;
+  const targetIcon = AGENT_ICONS[targetAgent] || '🎯';
 
   return (
-    <div className="sticky bottom-0 z-20 safe-area-bottom"
+    <div
+      className="sticky bottom-0 z-20 safe-area-bottom transition-all duration-300"
       style={{
         background: 'var(--bg-panel)',
-        borderTop: '1px solid var(--border-dim)',
-      }}>
-
-      {/* Control buttons */}
+        borderTop: focused ? '1px solid var(--border-active)' : '1px solid var(--border-dim)',
+        boxShadow: focused ? '0 -8px 30px rgba(0,0,0,0.3)' : '0 -4px 12px rgba(0,0,0,0.15)',
+      }}
+    >
+      {/* Control buttons — pill-style */}
       {isActive && (
-        <div className="flex items-center gap-1 px-4 pt-2.5 pb-1">
+        <div className="flex items-center gap-2 px-4 pt-3 pb-1">
           {status === 'running' && (
-            <button onClick={onPause}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:bg-[rgba(245,166,35,0.08)]"
-              style={{ color: 'var(--accent-amber)' }}>
-              <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="0.5"/><rect x="9" y="3" width="3" height="10" rx="0.5"/></svg>
+            <button
+              onClick={onPause}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95"
+              style={{
+                background: 'rgba(245,166,35,0.1)',
+                color: 'var(--accent-amber)',
+                border: '1px solid rgba(245,166,35,0.15)',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,166,35,0.18)'; e.currentTarget.style.borderColor = 'rgba(245,166,35,0.3)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,166,35,0.1)'; e.currentTarget.style.borderColor = 'rgba(245,166,35,0.15)'; }}
+            >
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="0.5"/><rect x="9" y="3" width="3" height="10" rx="0.5"/></svg>
               Pause
             </button>
           )}
           {status === 'paused' && (
-            <button onClick={onResume}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:bg-[rgba(61,214,140,0.08)]"
-              style={{ color: 'var(--accent-green)' }}>
-              <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5V3z"/></svg>
+            <button
+              onClick={onResume}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95"
+              style={{
+                background: 'rgba(61,214,140,0.1)',
+                color: 'var(--accent-green)',
+                border: '1px solid rgba(61,214,140,0.15)',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(61,214,140,0.18)'; e.currentTarget.style.borderColor = 'rgba(61,214,140,0.3)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(61,214,140,0.1)'; e.currentTarget.style.borderColor = 'rgba(61,214,140,0.15)'; }}
+            >
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5V3z"/></svg>
               Resume
             </button>
           )}
-          <button onClick={onStop}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:bg-[rgba(245,71,91,0.08)]"
-            style={{ color: 'var(--accent-red)' }}>
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1.5"/></svg>
+          <button
+            onClick={onStop}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95"
+            style={{
+              background: 'rgba(245,71,91,0.08)',
+              color: 'var(--accent-red)',
+              border: '1px solid rgba(245,71,91,0.12)',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,71,91,0.15)'; e.currentTarget.style.borderColor = 'rgba(245,71,91,0.25)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,71,91,0.08)'; e.currentTarget.style.borderColor = 'rgba(245,71,91,0.12)'; }}
+          >
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1.5"/></svg>
             Stop
           </button>
+
+          {/* Spacer + status hint */}
+          <div className="flex-1" />
+          {status === 'running' && (
+            <span className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-green)' }} />
+              RUNNING
+            </span>
+          )}
+          {status === 'paused' && (
+            <span className="text-[10px]" style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
+              PAUSED
+            </span>
+          )}
         </div>
       )}
 
-      {/* Input row */}
-      <div className="flex items-end gap-2 px-3 py-2.5">
+      {/* Input row — premium feel */}
+      <div className="flex items-end gap-2.5 px-3 py-3">
+        {/* Agent selector — icon button */}
         {agents.length > 1 && (
-          <select
-            value={targetAgent}
-            onChange={(e) => setTargetAgent(e.target.value)}
-            className="flex-shrink-0 appearance-none cursor-pointer max-w-[70px] rounded-lg px-2.5 py-2.5 text-[13px] focus:outline-none"
-            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-            <option value="orchestrator">all</option>
-            {agents.filter(a => a !== 'orchestrator').map(a => (
-              <option key={a} value={a}>{a}</option>
-            ))}
-          </select>
+          <div className="relative flex-shrink-0">
+            <select
+              value={targetAgent}
+              onChange={(e) => setTargetAgent(e.target.value)}
+              className="absolute inset-0 opacity-0 cursor-pointer z-10 w-full h-full"
+            >
+              <option value="orchestrator">All agents</option>
+              {agents.filter(a => a !== 'orchestrator').map(a => (
+                <option key={a} value={a}>{a}</option>
+              ))}
+            </select>
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center text-base transition-all duration-200 cursor-pointer"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-subtle)',
+              }}
+              title={`Sending to: ${targetAgent}`}
+            >
+              {targetIcon}
+            </div>
+          </div>
         )}
 
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={status === 'idle' ? 'Send a task…' : 'Send a message…'}
-          rows={1}
-          className="flex-1 min-w-0 rounded-xl px-4 py-2.5 text-[15px] resize-none focus:outline-none transition-colors"
-          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }}
-        />
+        {/* Text input */}
+        <div
+          className="flex-1 min-w-0 rounded-2xl transition-all duration-300 overflow-hidden"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: focused ? '1px solid var(--border-active)' : '1px solid var(--border-subtle)',
+            boxShadow: focused ? '0 0 0 3px rgba(99,140,255,0.08)' : 'none',
+          }}
+        >
+          <textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            placeholder={status === 'idle' ? 'Describe a task for your agents…' : 'Send a message…'}
+            rows={1}
+            className="w-full px-4 py-2.5 text-[15px] resize-none focus:outline-none bg-transparent leading-relaxed"
+            style={{ color: 'var(--text-primary)', maxHeight: '120px' }}
+          />
+        </div>
 
+        {/* Send button — grows when active */}
         <button
           onClick={handleSend}
-          disabled={!message.trim() || sending}
-          className="flex-shrink-0 p-2.5 rounded-xl transition-all"
+          disabled={!hasContent || sending}
+          className="flex-shrink-0 rounded-xl transition-all duration-300 flex items-center justify-center active:scale-90"
           style={{
-            background: message.trim() && !sending ? 'var(--accent-blue)' : 'var(--bg-elevated)',
-            color: message.trim() && !sending ? 'white' : 'var(--text-muted)',
-            boxShadow: message.trim() && !sending ? '0 2px 10px rgba(99,140,255,0.3)' : 'none',
-          }}>
+            width: hasContent && !sending ? '44px' : '40px',
+            height: hasContent && !sending ? '44px' : '40px',
+            background: hasContent && !sending
+              ? 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)'
+              : 'var(--bg-elevated)',
+            color: hasContent && !sending ? 'white' : 'var(--text-muted)',
+            boxShadow: hasContent && !sending
+              ? '0 4px 15px rgba(99,140,255,0.35), inset 0 1px 0 rgba(255,255,255,0.1)'
+              : 'none',
+            border: hasContent && !sending ? 'none' : '1px solid var(--border-subtle)',
+            cursor: hasContent && !sending ? 'pointer' : 'default',
+          }}
+        >
           {sending ? (
-            <svg className="w-4 h-4 animate-spin" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round"/>
+            <svg className="w-5 h-5 animate-spin" viewBox="0 0 20 20" fill="none">
+              <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="2" strokeDasharray="36" strokeDashoffset="10" strokeLinecap="round"/>
             </svg>
           ) : (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M14 2L7 9M14 2l-5 12-2-5-5-2 12-5z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+              <path d="M17.5 2.5L9 11M17.5 2.5l-6 15-2.5-6.5L2.5 8.5l15-6z"
+                stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           )}
         </button>
