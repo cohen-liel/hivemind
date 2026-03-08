@@ -69,7 +69,7 @@ def _extract_json(text: str) -> dict | None:
         if ch == "\\":
             escape = True
             continue
-        if ch == '"' and not escape:
+        if ch == '"':  # escape is always False here (handled above with continue)
             in_string = not in_string
             continue
         if in_string:
@@ -994,7 +994,7 @@ class OrchestratorManager:
                         early_delegations = self._parse_delegations(response.text)
                         if early_delegations:
                             sub_results = await self._run_sub_agents(early_delegations)
-                            review = self._build_review_prompt(sub_results, loop_count)
+                            review = self._build_review_prompt(sub_results, self._completed_rounds)
                             orchestrator_input = review
                         else:
                             # No delegates — inject rejection and force planning
