@@ -1747,7 +1747,7 @@ class OrchestratorManager:
             if available_skills:
                 system_prompt += f"\n\n{available_skills}"
             max_turns = 1
-            max_budget = 1.0  # Increased from 0.5 — complex tasks need more room to think
+            max_budget = 5.0  # Orchestrator processes large context across many rounds — needs headroom
             permission_mode = "bypassPermissions"
             tools = []  # Disable ALL tools — text-only coordinator
             logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, no tools, max_turns=1)")

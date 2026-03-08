@@ -44,15 +44,15 @@ except OSError:
     pass  # Directory may already exist with restricted permissions
 
 # Agent limits
-MAX_TURNS_PER_CYCLE = _get("MAX_TURNS_PER_CYCLE", "100", int)
+MAX_TURNS_PER_CYCLE = _get("MAX_TURNS_PER_CYCLE", "200", int)
 MAX_BUDGET_USD = _get("MAX_BUDGET_USD", "100.0", float)
 AGENT_TIMEOUT_SECONDS = _get("AGENT_TIMEOUT_SECONDS", "300", int)
-SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "3600"))
+SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "28800"))  # 8h default
 
 # SDK settings
 SDK_MAX_RETRIES = 2
 SDK_MAX_TURNS_PER_QUERY = _get("SDK_MAX_TURNS_PER_QUERY", "30", int)
-SDK_MAX_BUDGET_PER_QUERY = _get("SDK_MAX_BUDGET_PER_QUERY", "10.0", float)
+SDK_MAX_BUDGET_PER_QUERY = _get("SDK_MAX_BUDGET_PER_QUERY", "20.0", float)
 
 # Session persistence
 SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "24"))
@@ -60,7 +60,7 @@ SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "24"))
 # Stuck detection
 STUCK_SIMILARITY_THRESHOLD = 0.85
 STUCK_WINDOW_SIZE = 4
-MAX_ORCHESTRATOR_LOOPS = _get("MAX_ORCHESTRATOR_LOOPS", "25", int)
+MAX_ORCHESTRATOR_LOOPS = _get("MAX_ORCHESTRATOR_LOOPS", "50", int)
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "3.0"))
 
 # Budget warning threshold (percentage of MAX_BUDGET_USD)
