@@ -1028,6 +1028,21 @@ class OrchestratorManager:
                 if workspace:
                     sub_prompt += f"\n\n{workspace}"
 
+                # Warn about file conflicts if multiple agents are running in parallel
+                async with lock:
+                    conflicts = self._detect_file_conflicts()
+                if conflicts:
+                    conflict_lines = [
+                        f"  {f}: touched by {', '.join(agents)}"
+                        for f, agents in conflicts.items()
+                    ]
+                    sub_prompt += (
+                        "\n\n⚠️ FILE CONFLICT WARNING: The following files were already "
+                        "modified by another agent this session. Read the CURRENT version "
+                        "of these files before making any changes:\n" +
+                        "\n".join(conflict_lines)
+                    )
+
                 response = await self._query_agent(agent_role, sub_prompt, skill_names=delegation.skills)
 
                 # Auto-retry once on failure with enriched context
@@ -1050,14 +1065,34 @@ class OrchestratorManager:
                     await self.session_mgr.invalidate_session(
                         self.user_id, self.project_id, agent_role
                     )
-                    # Build enriched retry prompt with workspace state
+                    # Build enriched retry prompt — smart diagnostics based on error type
                     workspace_now = self._get_workspace_context()
+                    error_lower = error_msg.lower()
+
+                    # Tailor guidance to the error type
+                    if "permission" in error_lower or "eperm" in error_lower:
+                        hint = "Check file permissions. Try reading the file first to confirm it exists and is accessible."
+                    elif "not found" in error_lower or "no such file" in error_lower or "enoent" in error_lower:
+                        hint = "The file or path does not exist. List the directory first (ls) to see what's actually there."
+                    elif "syntax" in error_lower or "parse" in error_lower or "invalid" in error_lower:
+                        hint = "There is a syntax or parsing error. Read the file carefully before editing. Check line numbers in the error."
+                    elif "timeout" in error_lower or "timed out" in error_lower:
+                        hint = "The operation timed out. Try a simpler/faster approach, or break it into smaller steps."
+                    elif "import" in error_lower or "module" in error_lower or "package" in error_lower:
+                        hint = "A dependency is missing. Check requirements.txt or package.json. Try pip install or npm install first."
+                    elif "connection" in error_lower or "network" in error_lower:
+                        hint = "Network or connection issue. Check if the service is running. Try a local alternative."
+                    else:
+                        hint = "Try a completely different approach. The previous method did not work."
+
                     retry_prompt = (
                         f"[RETRY — previous attempt failed]\n"
                         f"Error: {error_msg}\n\n"
-                        f"IMPORTANT: Try a different approach. The previous method did not work.\n"
-                        f"If a command failed, check if the tool/binary exists first.\n"
-                        f"If a file operation failed, verify the path exists.\n\n"
+                        f"Diagnosis: {hint}\n\n"
+                        f"Before retrying:\n"
+                        f"1. Read the error message carefully — understand WHY it failed\n"
+                        f"2. Check your assumptions (file exists? correct path? right syntax?)\n"
+                        f"3. Try the simplest possible fix first\n\n"
                         f"Original task: {delegation.task}\n"
                     )
                     if delegation.context:
