@@ -16,7 +16,7 @@ SKILL_AGENT_MAP: dict[str, str] = {
     "doc-coauthoring": "developer",
     "mcp-builder": "developer",
     "web-artifacts-builder": "developer",
-    "planning-with-files": "orchestrator",
+    "planning-with-files": "developer",  # Uses task_plan.md/findings.md — conflicts with orchestrator manifest system if injected at orchestrator level
     "skill-creator": "developer",
 
     # Backend skills — developer

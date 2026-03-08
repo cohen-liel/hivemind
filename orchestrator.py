@@ -135,6 +135,7 @@ class OrchestratorManager:
         self.multi_agent = multi_agent
 
         self.conversation_log: list[Message] = []
+        self._agents_used: set[str] = set()  # All agent roles that have run — persists even if log is trimmed
         self.is_running = False
         self.is_paused = False
         self.total_cost_usd = 0.0
@@ -432,13 +433,10 @@ class OrchestratorManager:
             )
 
         # For LARGE and EPIC: require both reviewer and tester to have run.
-        # Check FULL conversation log (not just trimmed shared_context) so agents that ran
-        # 30+ rounds ago are still detected correctly.
+        # Use _agents_used (persists across log trimming) + manifest as belt-and-suspenders.
         if complexity in ("LARGE", "EPIC"):
-            # Search full conversation log for agent names
-            all_agent_names = {m.agent_name for m in self.conversation_log}
-            tester_ran = "tester" in all_agent_names
-            reviewer_ran = "reviewer" in all_agent_names
+            tester_ran = "tester" in self._agents_used
+            reviewer_ran = "reviewer" in self._agents_used
 
             # Also check the manifest for test results (belt-and-suspenders)
             manifest = self._read_project_manifest()
@@ -475,6 +473,10 @@ class OrchestratorManager:
         agents_used = list(dict.fromkeys(
             m.agent_name for m in self.conversation_log if m.agent_name != "user"
         ))
+        # Also include any agents from _agents_used that were trimmed from conversation_log
+        for a in sorted(self._agents_used - set(agents_used)):
+            if a != "user":
+                agents_used.append(a)
         agents_str = " → ".join(agents_used) if agents_used else "orchestrator"
 
         file_changes = self._detect_file_changes()
@@ -792,6 +794,7 @@ class OrchestratorManager:
             self._current_loop = 0
             max_loops = MAX_ORCHESTRATOR_LOOPS  # Safety limit on orchestrator iterations
             self._completed_rounds = []  # Track what has been done each round (instance-level for final summary)
+            self._agents_used = set()    # Reset agent participation tracking for new session
             self.shared_context = []  # Reset shared context for new session (prevents leaking from previous task)
             self._budget_warning_sent = False  # Reset budget warning flag for new session
 
@@ -1939,6 +1942,7 @@ class OrchestratorManager:
     def _record_response(self, agent_name: str, role: str, response: SDKResponse):
         """Record an agent response in the conversation log and update costs."""
         self.total_cost_usd += response.cost_usd
+        self._agents_used.add(agent_name)  # Track participation for premature-completion checks
         self.conversation_log.append(
             Message(
                 agent_name=agent_name,
@@ -1947,6 +1951,10 @@ class OrchestratorManager:
                 cost_usd=response.cost_usd,
             )
         )
+        # Cap log at 2000 entries — drop oldest to prevent memory blowup in EPIC 50-round tasks.
+        # Agent participation is tracked separately in _agents_used so it survives trimming.
+        if len(self.conversation_log) > 2000:
+            self.conversation_log = self.conversation_log[-2000:]
         # Persist to SQLite in background (safe: tracked reference, errors logged)
         self._create_background_task(
             self.session_mgr.add_message(
