@@ -237,6 +237,11 @@ class EventBus:
         batch: list[dict] = []
         while True:
             try:
+                # Guard: _write_queue may be None if stop_writer was called
+                if self._write_queue is None:
+                    await asyncio.sleep(0.5)
+                    continue
+
                 # Wait for first event
                 try:
                     event = await asyncio.wait_for(self._write_queue.get(), timeout=5.0)
@@ -247,6 +252,8 @@ class EventBus:
                 # Collect more events (up to 50 or 2 seconds)
                 deadline = time.time() + 2.0
                 while len(batch) < 50 and time.time() < deadline:
+                    if self._write_queue is None:
+                        break
                     try:
                         event = self._write_queue.get_nowait()
                         batch.append(event)
