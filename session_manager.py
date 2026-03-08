@@ -116,6 +116,26 @@ CREATE INDEX IF NOT EXISTS idx_away_digest_user
 CREATE INDEX IF NOT EXISTS idx_schedules_enabled
     ON schedules(enabled, schedule_time);
 
+CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    task_description TEXT NOT NULL,
+    lesson_type TEXT NOT NULL DEFAULT 'general',
+    lesson TEXT NOT NULL,
+    tags TEXT DEFAULT '',
+    outcome TEXT DEFAULT 'success',
+    rounds_used INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0.0,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_project
+    ON lessons(project_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_user
+    ON lessons(user_id, created_at);
+
 -- Trigger: auto-increment message_count on projects when a message is inserted
 CREATE TRIGGER IF NOT EXISTS trg_messages_insert_count
     AFTER INSERT ON messages
@@ -796,3 +816,119 @@ class SessionManager:
 
             except Exception as e:
                 logger.warning(f"Failed to migrate {json_path}: {e}")
+
+    # ── Lessons / Experience Memory ──────────────────────────────────────
+
+    async def add_lesson(
+        self,
+        project_id: str,
+        user_id: int,
+        task_description: str,
+        lesson: str,
+        lesson_type: str = "general",
+        tags: str = "",
+        outcome: str = "success",
+        rounds_used: int = 0,
+        cost_usd: float = 0.0,
+    ) -> int:
+        """Store a lesson learned from a task execution.
+
+        Args:
+            project_id: The project this lesson came from.
+            user_id: The user who ran the task.
+            task_description: Brief description of the task.
+            lesson: The actual lesson text (what worked, what failed, what to do differently).
+            lesson_type: Category — 'strategy', 'error_pattern', 'tool_usage', 'general'.
+            tags: Comma-separated tags for retrieval (e.g., 'pytest,testing,developer').
+            outcome: 'success', 'partial', or 'failure'.
+            rounds_used: How many orchestrator rounds the task took.
+            cost_usd: Total cost of the task.
+
+        Returns:
+            The row ID of the inserted lesson.
+        """
+        db = await self._get_db()
+        now = time.time()
+        cursor = await db.execute(
+            """INSERT INTO lessons
+               (project_id, user_id, task_description, lesson_type, lesson, tags, outcome, rounds_used, cost_usd, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (project_id, user_id, task_description, lesson_type, lesson, tags, outcome, rounds_used, cost_usd, now),
+        )
+        await db.commit()
+        logger.info(f"Stored lesson for project={project_id}: type={lesson_type}, outcome={outcome}")
+        return cursor.lastrowid
+
+    async def get_lessons_for_project(self, project_id: str, limit: int = 20) -> list[dict]:
+        """Retrieve lessons for a specific project, most recent first.
+
+        These are project-specific lessons that help the orchestrator avoid
+        repeating mistakes within the same codebase.
+        """
+        db = await self._get_db()
+        cursor = await db.execute(
+            """SELECT lesson_type, lesson, tags, outcome, rounds_used, cost_usd, task_description, created_at
+               FROM lessons
+               WHERE project_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (project_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_lessons_for_user(self, user_id: int, limit: int = 30) -> list[dict]:
+        """Retrieve all lessons for a user across all projects.
+
+        These cross-project lessons help the orchestrator transfer knowledge
+        between different codebases (e.g., 'pytest always needs --tb=short').
+        """
+        db = await self._get_db()
+        cursor = await db.execute(
+            """SELECT l.lesson_type, l.lesson, l.tags, l.outcome, l.rounds_used,
+                      l.cost_usd, l.task_description, l.created_at, p.name as project_name
+               FROM lessons l
+               LEFT JOIN projects p ON l.project_id = p.project_id
+               WHERE l.user_id = ?
+               ORDER BY l.created_at DESC
+               LIMIT ?""",
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def search_lessons(self, user_id: int, keywords: list[str], limit: int = 10) -> list[dict]:
+        """Search lessons by keywords in task_description, lesson text, and tags.
+
+        This is the retrieval mechanism for injecting relevant past experience
+        into the orchestrator's prompt at task start.
+        """
+        db = await self._get_db()
+        # Build a WHERE clause that matches any keyword in lesson, tags, or task_description
+        conditions = []
+        params: list = [user_id]
+        for kw in keywords[:10]:  # Cap at 10 keywords
+            kw_clean = kw.strip().replace("'", "")
+            if kw_clean:
+                conditions.append(
+                    "(l.lesson LIKE ? OR l.tags LIKE ? OR l.task_description LIKE ?)"
+                )
+                like_val = f"%{kw_clean}%"
+                params.extend([like_val, like_val, like_val])
+
+        if not conditions:
+            return []
+
+        where_clause = " OR ".join(conditions)
+        cursor = await db.execute(
+            f"""SELECT l.lesson_type, l.lesson, l.tags, l.outcome, l.rounds_used,
+                       l.task_description, l.created_at, p.name as project_name
+                FROM lessons l
+                LEFT JOIN projects p ON l.project_id = p.project_id
+                WHERE l.user_id = ? AND ({where_clause})
+                ORDER BY l.created_at DESC
+                LIMIT ?""",
+            (*params, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]

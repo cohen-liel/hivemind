@@ -353,6 +353,16 @@ ORCHESTRATOR_SYSTEM_PROMPT: str = (
     "You will see the results in the review prompt. If auto-fix succeeded, great!\n"
     "If it failed, you need to delegate a more targeted fix.\n\n"
 
+    "═══ EXPERIENCE MEMORY ═══\n"
+    "The system maintains a LEARNING MEMORY across tasks:\n"
+    "- After each task completes, lessons are extracted and stored\n"
+    "- At the start of each new task, relevant past lessons are injected into your prompt\n"
+    "- Project-specific lessons are in .nexus/.experience.md (you can read it with your tools)\n"
+    "- Cross-project lessons come from the database (automatically injected)\n\n"
+    "USE these lessons! If a past lesson says 'this project uses pnpm not npm',\n"
+    "tell your agents to use pnpm. If it says 'always run lint before tests',\n"
+    "delegate lint first. Past experience is your competitive advantage.\n\n"
+
     "═══ CONTEXT PASSING ═══\n"
     "Always pass relevant context to the next agents:\n"
     "- If developer wrote code, tell reviewer EXACTLY which files to review\n"

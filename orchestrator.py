@@ -901,6 +901,17 @@ class OrchestratorManager:
                 f"{todo_content[:2000]}\n"
             )
 
+        # ── Experience Memory Injection ──
+        # Retrieve relevant lessons from past tasks and inject them into the prompt.
+        # This gives the orchestrator "memory" of what worked and what failed before.
+        try:
+            experience_context = await self._inject_experience_context(user_message)
+            if experience_context:
+                prompt += experience_context
+                logger.info(f"[{self.project_id}] Injected experience context ({len(experience_context)} chars)")
+        except Exception as e:
+            logger.debug(f"[{self.project_id}] Experience injection failed (non-fatal): {e}")
+
         task_history_id = None  # Guard: prevents NameError in except blocks
         _anyio_retries = 0
         _MAX_ANYIO_RETRIES = 3  # Max times to auto-retry on spurious CancelledError
@@ -1142,6 +1153,22 @@ class OrchestratorManager:
                             turns_used=self.turn_count,
                             summary=display_text[:500] if display_text.strip() else "Task completed",
                         )
+
+                    # ── Reflection Step (Reflexion pattern) ──
+                    # Generate lessons learned from this task execution
+                    # and store them for future tasks.
+                    try:
+                        reflection = await self._generate_reflection(
+                            task=user_message, outcome="success", start_time=start_time
+                        )
+                        if reflection:
+                            await self._store_lessons(
+                                task=user_message, reflection=reflection, outcome="success"
+                            )
+                            logger.info(f"[{self.project_id}] Reflection stored after successful completion")
+                    except Exception as e:
+                        logger.warning(f"[{self.project_id}] Reflection step failed (non-fatal): {e}")
+
                     await self._send_final(
                         await self._build_final_summary(user_message, start_time)
                     )
@@ -1442,6 +1469,18 @@ class OrchestratorManager:
                     )
                 except Exception:
                     pass
+
+            # ── Reflection on failed task ──
+            try:
+                reflection = await self._generate_reflection(
+                    task=user_message, outcome=f"failure: {str(e)[:200]}", start_time=start_time
+                )
+                if reflection:
+                    await self._store_lessons(
+                        task=user_message, reflection=reflection, outcome="failure"
+                    )
+            except Exception:
+                pass  # Don't let reflection failure mask the original error
         else:
             # Loop exited normally (not via exception).
             # If we hit the safety limit without a clean exit, send a final summary.
@@ -1455,6 +1494,20 @@ class OrchestratorManager:
                         )
                     except Exception:
                         pass
+
+                # ── Reflection on incomplete task ──
+                try:
+                    reflection = await self._generate_reflection(
+                        task=user_message, outcome="partial (loop limit reached)", start_time=start_time
+                    )
+                    if reflection:
+                        await self._store_lessons(
+                            task=user_message, reflection=reflection, outcome="partial"
+                        )
+                        logger.info(f"[{self.project_id}] Reflection stored after loop-limit exit")
+                except Exception as e:
+                    logger.warning(f"[{self.project_id}] Reflection on loop-limit failed (non-fatal): {e}")
+
                 await self._send_final(
                     await self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
@@ -3136,5 +3189,236 @@ class OrchestratorManager:
                 current = f"{before}\n{issues_text}\n{after}"
 
         self._write_todo(current)
+
+    # ── Experience Ledger (.nexus/.experience.md) ──
+    # Cross-session memory: stores lessons learned from past task executions.
+    # Inspired by Reflexion (Shinn et al., 2023) — verbal reinforcement learning.
+    # The orchestrator reflects on completed tasks and stores insights that are
+    # injected into future task prompts, enabling learning without weight updates.
+
+    def _get_experience_path(self) -> Path:
+        """Get the path to the experience ledger file."""
+        nexus_dir = Path(self.project_dir) / ".nexus"
+        nexus_dir.mkdir(parents=True, exist_ok=True)
+        return nexus_dir / ".experience.md"
+
+    def _read_experience(self) -> str:
+        """Read the experience ledger. Returns empty string if not found."""
+        exp_path = self._get_experience_path()
+        if exp_path.exists():
+            try:
+                content = exp_path.read_text(encoding="utf-8").strip()
+                # Cap at 3000 chars to avoid bloating the prompt
+                if len(content) > 3000:
+                    # Keep the header + most recent lessons
+                    lines = content.split("\n")
+                    header = "\n".join(lines[:5])
+                    # Find lesson entries (start with '### Lesson')
+                    lesson_starts = [i for i, l in enumerate(lines) if l.startswith("### Lesson")]
+                    if lesson_starts:
+                        # Keep the last 5 lessons
+                        keep_from = lesson_starts[-5] if len(lesson_starts) >= 5 else lesson_starts[0]
+                        recent = "\n".join(lines[keep_from:])
+                        content = f"{header}\n\n... (older lessons trimmed)\n\n{recent}"
+                return content
+            except Exception:
+                pass
+        return ""
+
+    def _write_experience(self, content: str):
+        """Write the experience ledger."""
+        try:
+            exp_path = self._get_experience_path()
+            exp_path.write_text(content, encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] Failed to write experience ledger: {e}")
+
+    def _append_experience(self, lesson: str):
+        """Append a new lesson to the experience ledger."""
+        existing = self._read_experience()
+        if not existing:
+            existing = (
+                "# Experience Ledger\n\n"
+                "This file stores lessons learned from past task executions.\n"
+                "The orchestrator uses these to avoid repeating mistakes.\n"
+            )
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        # Count existing lessons to number the new one
+        lesson_count = existing.count("### Lesson ")
+        new_entry = (
+            f"\n### Lesson {lesson_count + 1} ({timestamp})\n"
+            f"{lesson}\n"
+        )
+        self._write_experience(existing + new_entry)
+
+    async def _generate_reflection(self, task: str, outcome: str, start_time: float) -> str | None:
+        """Generate a reflection on the task execution using the LLM.
+
+        This is the core of the Reflexion pattern: after a task completes,
+        the orchestrator analyzes what happened and extracts reusable lessons.
+
+        Returns the reflection text, or None if generation fails.
+        """
+        duration = time.monotonic() - start_time
+        rounds_summary = "\n".join(f"  {r}" for r in self._completed_rounds[-15:]) if self._completed_rounds else "  (no rounds)"
+        agents_used = sorted(self._agents_used)
+
+        # Read the current todo to see what was accomplished
+        todo = self._read_todo()
+
+        reflection_prompt = (
+            f"You are reflecting on a completed task to extract lessons for future tasks.\n\n"
+            f"TASK: {task[:500]}\n"
+            f"OUTCOME: {outcome}\n"
+            f"DURATION: {int(duration)}s ({len(self._completed_rounds)} rounds)\n"
+            f"COST: ${self.total_cost_usd:.4f}\n"
+            f"AGENTS USED: {', '.join(agents_used)}\n\n"
+            f"ROUND HISTORY:\n{rounds_summary}\n\n"
+        )
+        if todo:
+            reflection_prompt += f"TASK LEDGER:\n{todo[:1000]}\n\n"
+
+        reflection_prompt += (
+            "Based on this execution, extract 2-4 CONCRETE lessons. Focus on:\n"
+            "1. What strategy worked well? (e.g., 'sequential developer→tester pipeline was effective')\n"
+            "2. What went wrong? (e.g., 'developer kept failing on X because Y')\n"
+            "3. What should be done differently next time? (e.g., 'always run lint before tests')\n"
+            "4. Any project-specific knowledge? (e.g., 'this project uses pnpm not npm')\n\n"
+            "Format each lesson as a single line starting with '- '.\n"
+            "Be specific and actionable. Do NOT be vague.\n"
+            "Output ONLY the lessons, nothing else."
+        )
+
+        try:
+            # Use a lightweight query — this is a background task, not user-facing
+            response = await self._query_agent("orchestrator", reflection_prompt)
+            if response and not response.is_error and response.text.strip():
+                return response.text.strip()
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] Reflection generation failed: {e}")
+        return None
+
+    async def _store_lessons(self, task: str, reflection: str, outcome: str):
+        """Store lessons from a reflection in both the file system and the database.
+
+        Dual storage ensures:
+        - File system (.experience.md): always available to the orchestrator via read tools
+        - Database (lessons table): searchable, queryable, cross-project
+        """
+        # 1. Append to the experience ledger file
+        self._append_experience(reflection)
+
+        # 2. Parse individual lessons and store in DB
+        lessons = []
+        for line in reflection.split("\n"):
+            line = line.strip()
+            if line.startswith("- ") and len(line) > 10:
+                lessons.append(line[2:].strip())
+
+        if not lessons:
+            # If no bullet points, store the whole reflection as one lesson
+            lessons = [reflection[:500]]
+
+        # Extract tags from the task description for future retrieval
+        task_lower = task.lower()
+        tags = []
+        tag_keywords = [
+            "react", "python", "typescript", "javascript", "node", "fastapi",
+            "django", "flask", "next", "vue", "angular", "docker", "postgres",
+            "sqlite", "redis", "api", "auth", "test", "deploy", "css", "html",
+            "database", "websocket", "graphql", "rest", "frontend", "backend",
+        ]
+        for kw in tag_keywords:
+            if kw in task_lower:
+                tags.append(kw)
+
+        # Determine lesson type based on content
+        for lesson_text in lessons:
+            lesson_lower = lesson_text.lower()
+            if any(w in lesson_lower for w in ["error", "fail", "crash", "bug", "wrong"]):
+                lesson_type = "error_pattern"
+            elif any(w in lesson_lower for w in ["strategy", "pipeline", "approach", "pattern"]):
+                lesson_type = "strategy"
+            elif any(w in lesson_lower for w in ["tool", "command", "npm", "pip", "git"]):
+                lesson_type = "tool_usage"
+            else:
+                lesson_type = "general"
+
+            try:
+                await self.session_mgr.add_lesson(
+                    project_id=self.project_id,
+                    user_id=self.user_id,
+                    task_description=task[:500],
+                    lesson=lesson_text[:500],
+                    lesson_type=lesson_type,
+                    tags=",".join(tags[:10]),
+                    outcome=outcome,
+                    rounds_used=len(self._completed_rounds),
+                    cost_usd=self.total_cost_usd,
+                )
+            except Exception as e:
+                logger.warning(f"[{self.project_id}] Failed to store lesson in DB: {e}")
+
+        logger.info(
+            f"[{self.project_id}] Stored {len(lessons)} lessons "
+            f"(outcome={outcome}, tags={tags})"
+        )
+
+    async def _inject_experience_context(self, task: str) -> str:
+        """Build an experience context block to inject into the orchestrator's initial prompt.
+
+        Retrieves relevant lessons from both the project-specific experience ledger
+        and the cross-project lessons database.
+        """
+        sections = []
+
+        # 1. Project-specific experience (from .experience.md)
+        experience = self._read_experience()
+        if experience:
+            sections.append(
+                "📚 PROJECT EXPERIENCE (lessons from previous tasks in this project):\n"
+                f"{experience[:1500]}"
+            )
+
+        # 2. Cross-project lessons from DB (keyword search based on current task)
+        try:
+            # Extract keywords from the task for searching
+            task_words = re.sub(r"[^a-zA-Z0-9 ]", " ", task.lower()).split()
+            # Filter to meaningful words (>3 chars, not stop words)
+            stop_words = {"the", "and", "for", "that", "this", "with", "from", "have", "will", "should", "would", "could"}
+            keywords = [w for w in task_words if len(w) > 3 and w not in stop_words][:8]
+
+            if keywords:
+                db_lessons = await self.session_mgr.search_lessons(
+                    user_id=self.user_id,
+                    keywords=keywords,
+                    limit=5,
+                )
+                if db_lessons:
+                    lesson_lines = []
+                    for l in db_lessons:
+                        project_name = l.get("project_name", "unknown")
+                        lesson_text = l.get("lesson", "")
+                        outcome = l.get("outcome", "")
+                        icon = "✅" if outcome == "success" else "⚠️" if outcome == "partial" else "❌"
+                        lesson_lines.append(f"  {icon} [{project_name}] {lesson_text[:200]}")
+                    if lesson_lines:
+                        sections.append(
+                            "📚 CROSS-PROJECT LESSONS (relevant experience from other projects):\n"
+                            + "\n".join(lesson_lines)
+                        )
+        except Exception as e:
+            logger.debug(f"[{self.project_id}] Failed to search lessons DB: {e}")
+
+        if not sections:
+            return ""
+
+        return (
+            "\n\n═══ EXPERIENCE MEMORY ═══\n"
+            "These are lessons learned from previous tasks. Use them to avoid repeating mistakes.\n\n"
+            + "\n\n".join(sections)
+            + "\n═══════════════════════\n"
+        )
 
     # _detect_stuck is defined earlier in the class (line ~245)
