@@ -404,8 +404,18 @@ class ClaudeSDKManager:
         message_count = 0
         tool_uses: list[str] = []  # Track tools used for logging
 
+        # Explicitly manage the async generator lifecycle to prevent the anyio
+        # cancel-scope bug. If we let the generator escape and get GC'd in a
+        # different asyncio task, its cleanup (aclose → anyio TaskGroup.__aexit__)
+        # raises RuntimeError("Attempted to exit cancel scope in a different task").
+        # By explicitly calling aclose() in the SAME task, we control the cleanup.
+        gen = query(prompt=prompt, options=options).__aiter__()
         try:
-            async for message in query(prompt=prompt, options=options):
+            while True:
+                try:
+                    message = await gen.__anext__()
+                except StopAsyncIteration:
+                    break
                 message_count += 1
 
                 if isinstance(message, AssistantMessage):
@@ -570,6 +580,19 @@ class ClaudeSDKManager:
                 error_message=f"Stream error: {e}",
                 error_category=classify_error(str(e)),
             )
+        finally:
+            # Explicitly close the async generator in THIS task to prevent
+            # Python's GC from closing it in a different task (which triggers
+            # the anyio cancel-scope RuntimeError that cascades and kills siblings).
+            try:
+                await gen.aclose()
+            except RuntimeError as e:
+                if "cancel scope" in str(e):
+                    logger.debug(f"[{request_id}] Suppressed anyio cancel scope during generator close")
+                else:
+                    logger.warning(f"[{request_id}] RuntimeError during generator close: {e}")
+            except Exception:
+                pass  # Generator cleanup errors are non-critical
 
         # Stream ended without ResultMessage — treat as success if we got any text,
         # otherwise flag as a real error (SDK failed to complete the stream).

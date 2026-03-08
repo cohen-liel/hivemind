@@ -1016,9 +1016,17 @@ def create_app() -> FastAPI:
 
         async def _sender():
             """Forward events from bus to WebSocket client."""
-            while True:
-                event = await queue.get()
-                await ws.send_json(event)
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=120.0)
+                        await ws.send_json(event)
+                    except asyncio.TimeoutError:
+                        break  # No events for 120s — client likely gone
+                    except Exception:
+                        break  # WebSocket send error — exit cleanly
+            except asyncio.CancelledError:
+                raise
 
         async def _heartbeat():
             """Send periodic pings to detect stale connections."""

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Awaitable
 
 from config import (
+    AGENT_TIMEOUT_SECONDS,
     MAX_BUDGET_USD,
     MAX_ORCHESTRATOR_LOOPS,
     MAX_TURNS_PER_CYCLE,
@@ -230,7 +231,7 @@ class OrchestratorManager:
                     f"found after task ended — auto-restarting"
                 )
                 # Schedule a new session (can't await from a sync callback)
-                asyncio.ensure_future(self.start_session(combined))
+                self._create_background_task(self.start_session(combined))
 
     async def _notify(self, text: str):
         """Send a progress/status update to the client."""
@@ -588,7 +589,13 @@ class OrchestratorManager:
                 if self._stop_event.is_set():
                     break
 
-                await self._pause_event.wait()
+                # Wait until un-paused — poll every second so stop_event is respected
+                while not self._pause_event.is_set():
+                    if self._stop_event.is_set():
+                        break
+                    await asyncio.sleep(1.0)
+                if self._stop_event.is_set():
+                    break
 
                 # Check session timeout (60 min default)
                 elapsed = time.monotonic() - start_time
@@ -955,23 +962,27 @@ class OrchestratorManager:
                 if self._stop_event.is_set():
                     break
 
-                # Check limits (under lock since turn_count is shared)
+                # Check limits under lock, then notify OUTSIDE the lock
+                # (never await inside a lock — it blocks all sibling agents)
+                _limit_msg: str | None = None
                 async with lock:
                     if self.turn_count >= MAX_TURNS_PER_CYCLE:
-                        await self._notify(
+                        _limit_msg = (
                             f"⏰ Turn limit reached ({MAX_TURNS_PER_CYCLE}) — "
                             f"skipping remaining sub-agents.\n"
                             f"Use /resume to continue."
                         )
-                        return
-                    if self.total_cost_usd >= self._effective_budget:
-                        await self._notify(
+                    elif self.total_cost_usd >= self._effective_budget:
+                        _limit_msg = (
                             f"💰 Budget limit reached (${self.total_cost_usd:.4f} / ${self._effective_budget:.2f}) — "
                             f"skipping remaining sub-agents.\n"
                             f"Use /resume to continue."
                         )
-                        return
-                    self.turn_count += 1
+                    else:
+                        self.turn_count += 1
+                if _limit_msg:
+                    await self._notify(_limit_msg)
+                    return
 
                 await self._notify(
                     f"{AGENT_EMOJI.get(agent_role, '🔧')} *{agent_role}* is working on:\n_{delegation.task[:200]}_"
@@ -1100,7 +1111,7 @@ class OrchestratorManager:
                 elapsed += 8
                 # Build detailed status of currently working agents
                 working_details = []
-                for name, info in self.agent_states.items():
+                for name, info in list(self.agent_states.items()):  # snapshot prevents RuntimeError during concurrent writes
                     if info.get("state") != "working":
                         continue
                     detail = f"{AGENT_EMOJI.get(name, '🔧')} {name}"
@@ -1136,20 +1147,19 @@ class OrchestratorManager:
                         cost=self.total_cost_usd, max_budget=MAX_BUDGET_USD,
                     )
 
+        role_tasks: dict[str, asyncio.Task] = {}
         heartbeat_task = asyncio.create_task(_heartbeat())
         try:
             if len(by_role) > 1:
-                # Run each role in an isolated asyncio.Task to prevent
-                # anyio cancel-scope leaks from cascading across roles.
-                # asyncio.gather with return_exceptions=True catches errors
-                # from individual tasks, but the claude_agent_sdk uses anyio
-                # TaskGroups internally whose cancel scopes are task-specific.
-                # If one query fails, its cleanup (GeneratorExit → aclose)
-                # can raise RuntimeError("Attempted to exit cancel scope in
-                # a different task") which cascades and kills all siblings.
-                # By wrapping each role in a shielded helper, we isolate them.
+                # Run each role as a fully independent asyncio.Task.
+                # We use asyncio.wait() instead of asyncio.gather() because
+                # gather connects tasks — if the claude_agent_sdk's anyio
+                # cancel-scope cleanup leaks into a sibling task, gather
+                # propagates the cancellation to ALL tasks, killing them all.
+                # asyncio.wait() treats each task independently: if one crashes
+                # or gets cancelled, the others continue running unaffected.
                 async def _isolated_run_role(role, dels):
-                    """Run a role with isolation from sibling cancellations."""
+                    """Run a role with full isolation from sibling failures."""
                     try:
                         await run_role(role, dels)
                     except asyncio.CancelledError:
@@ -1176,37 +1186,76 @@ class OrchestratorManager:
                         else:
                             raise
 
-                gather_results = await asyncio.gather(
-                    *(_isolated_run_role(role, dels) for role, dels in by_role.items()),
-                    return_exceptions=True,
-                )
-                # Log any unexpected exceptions from parallel execution
-                for role_name, result in zip(by_role.keys(), gather_results):
-                    if isinstance(result, Exception):
-                        logger.error(
-                            f"[{self.project_id}] Agent role '{role_name}' raised exception: {result}",
-                            exc_info=result,
+                # Create independent tasks (not linked via gather)
+                for role, dels in by_role.items():
+                    task = asyncio.create_task(
+                        _isolated_run_role(role, dels),
+                        name=f"agent-{role}",
+                    )
+                    role_tasks[role] = task
+
+                # Wait for all tasks to complete — with timeout to prevent infinite hangs
+                if role_tasks:
+                    _wait_timeout = AGENT_TIMEOUT_SECONDS + 60  # agent timeout + buffer
+                    done, still_pending = await asyncio.wait(
+                        role_tasks.values(),
+                        return_when=asyncio.ALL_COMPLETED,
+                        timeout=_wait_timeout,
+                    )
+                    if still_pending:
+                        logger.warning(
+                            f"[{self.project_id}] {len(still_pending)} agent task(s) timed out "
+                            f"after {_wait_timeout}s — cancelling"
                         )
-                        await self._send_result(
-                            f"⚠️ *{role_name}* crashed unexpectedly: {result}\n"
-                            f"The orchestrator will be notified to handle this."
-                        )
-                        # Create a synthetic error response so the orchestrator knows
-                        async with lock:
-                            results.setdefault(role_name, []).append(SDKResponse(
-                                text=f"Agent crashed with exception: {result}",
-                                is_error=True,
-                                error_message=str(result),
-                            ))
+                        for t in still_pending:
+                            t.cancel()
+                        await asyncio.wait(still_pending, timeout=5.0)
+                    # Check for unexpected exceptions
+                    for role_name, task in role_tasks.items():
+                        if task.cancelled():
+                            logger.warning(
+                                f"[{self.project_id}] Agent role '{role_name}' was cancelled"
+                            )
+                            async with lock:
+                                results.setdefault(role_name, []).append(SDKResponse(
+                                    text=f"Agent '{role_name}' was cancelled.",
+                                    is_error=True,
+                                    error_message="Task cancelled",
+                                ))
+                        elif task.exception() is not None:
+                            exc = task.exception()
+                            logger.error(
+                                f"[{self.project_id}] Agent role '{role_name}' raised exception: {exc}",
+                                exc_info=exc,
+                            )
+                            await self._send_result(
+                                f"⚠️ *{role_name}* crashed unexpectedly: {exc}\n"
+                                f"The orchestrator will be notified to handle this."
+                            )
+                            async with lock:
+                                results.setdefault(role_name, []).append(SDKResponse(
+                                    text=f"Agent crashed with exception: {exc}",
+                                    is_error=True,
+                                    error_message=str(exc),
+                                ))
             elif by_role:
                 # Single role — run directly (no overhead)
                 role, dels = next(iter(by_role.items()))
                 await run_role(role, dels)
+        except asyncio.CancelledError:
+            # Orchestrator was stopped — cancel any running agent tasks
+            if role_tasks:
+                for task in role_tasks.values():
+                    if not task.done():
+                        task.cancel()
+                # Wait briefly for tasks to finish cancellation
+                await asyncio.wait(role_tasks.values(), timeout=5.0)
+            raise
         finally:
             heartbeat_task.cancel()
             try:
-                await heartbeat_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(heartbeat_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
 
         # Reset current_agent after all sub-agents finish
@@ -1660,21 +1709,22 @@ class OrchestratorManager:
         if has_errors:
             parts.append(
                 "\n⚠️ SOME AGENTS FAILED. You MUST:\n"
-                "1. Analyze each error carefully — read the error message\n"
-                "2. Retry failed tasks with error details in 'context' field\n"
-                "3. If the same approach keeps failing, try a DIFFERENT strategy\n"
+                "1. Analyze each error carefully — read the exact error message\n"
+                "2. Retry failed tasks: put the error in 'context', try a different approach\n"
+                "3. If the same approach fails twice, try a completely different strategy\n"
                 "4. If a different agent is better suited, delegate to them instead\n"
                 "5. Do NOT say TASK_COMPLETE until all critical work is done\n"
-                "\nIMPORTANT: Do NOT give up after one failed attempt — adapt and retry."
+                "\nIMPORTANT: Failure is normal — diagnose, adapt, retry. Never give up."
             )
         else:
             parts.append(
-                "\n✅ ALL AGENTS COMPLETED SUCCESSFULLY. Now decide:\n"
-                "- If ALL tasks are done AND verified → respond with TASK_COMPLETE\n"
-                "- If you need to verify the work → delegate to reviewer or tester\n"
-                "- If more work is needed → delegate with specific instructions\n"
-                "- Always pass relevant results from this round as 'context' to next agent\n"
-                "\nTip: If the developer made changes, consider sending the reviewer to check."
+                "\n✅ ALL AGENTS COMPLETED. Now reason through these questions:\n"
+                "1. Was the task FULLY implemented? Check FILES CHANGED above.\n"
+                "2. Has the code been REVIEWED? If not, delegate reviewer now.\n"
+                "3. Have TESTS been run and passed? If not, delegate tester now.\n"
+                "4. Are there any ISSUES FOUND sections that need fixing?\n"
+                "5. Only if all 4 are yes → respond with TASK_COMPLETE\n"
+                "\nIf any answer is no → delegate the missing work before completing."
             )
         return "\n".join(parts)
 

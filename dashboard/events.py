@@ -51,7 +51,10 @@ class EventBus:
                     queue.get_nowait()
                     queue.put_nowait(event)
                 except (asyncio.QueueEmpty, asyncio.QueueFull):
-                    pass
+                    logger.warning(
+                        "EventBus: dropped event '%s' — subscriber queue persistently full",
+                        event.get('type', '?'),
+                    )
 
 
 # Module-level singleton
