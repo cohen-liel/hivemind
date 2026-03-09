@@ -28,6 +28,7 @@ from contracts import (
     task_input_to_prompt,
 )
 from git_discipline import executor_commit
+from skills_registry import build_skill_prompt, select_skills_for_task
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +153,8 @@ async def execute_graph(
                 if on_task_done:
                     try:
                         await on_task_done(task, output)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(f"[DAG] on_task_done callback failed for {task.id}: {exc}")
 
                 # Handle failures: retry if budget allows
                 if not output.is_successful() and not output.is_terminal():
@@ -219,8 +220,19 @@ async def _run_single_task(
     # Get specialist system prompt
     system_prompt = specialist_prompts.get(
         task.role.value,
-        specialist_prompts.get("developer", "You are an expert software engineer.")
+        specialist_prompts.get("backend_developer", "You are an expert software engineer.")
     )
+
+    # Inject relevant skills for this role + task (top 5, relevance-ranked)
+    try:
+        skill_names = select_skills_for_task(task.role.value, task.goal, max_skills=5)
+        if skill_names:
+            system_prompt = system_prompt + build_skill_prompt(skill_names)
+            logger.debug(
+                f"[DAG] Task {task.id}: injected skills {skill_names}"
+            )
+    except Exception as exc:
+        logger.warning(f"[DAG] Task {task.id}: skill injection failed (non-fatal): {exc}")
 
     # Resume session if we have one for this role
     session_key = f"{graph.project_id}:{task.role.value}"

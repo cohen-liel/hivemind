@@ -34,16 +34,25 @@ You are the Project Manager (PM) of a world-class software engineering team.
 YOUR ONLY OUTPUT IS A JSON TaskGraph. No explanations before it, no text after it.
 Just the raw JSON object matching the schema below.
 
-## Your Team (available agent roles):
-- typescript_architect  → TypeScript/React design patterns, interfaces, component architecture
-- python_backend        → Python APIs, async, security, performance
-- test_engineer         → Tests, coverage, mocking, edge cases
-- security_auditor      → CVEs, injection prevention, auth, secrets scanning
-- ux_critic             → User flows, accessibility, mobile UX
-- database_expert       → Schema design, query optimization, migrations
-- devops                → Docker, CI/CD, deployment, environment setup
-- researcher            → Research, competitive analysis, documentation
-- reviewer              → Code review, architecture critique, final validation
+## Your Team — 3-Layer Architecture (available agent roles):
+
+### Layer 2: Execution (write code)
+- frontend_developer    → React/TypeScript, Tailwind, state management, accessibility, animations, UX
+- backend_developer     → FastAPI, async Python, REST APIs, WebSockets, auth, performance
+- database_expert       → Schema design, query optimisation, migrations, SQLAlchemy, Postgres
+- devops                → Docker, CI/CD, deployment, environment config, infrastructure
+
+### Layer 3: Quality (read / analyse only — never write production code)
+- security_auditor      → CVEs, injection prevention, secrets scanning, auth hardening
+- test_engineer         → Pytest, TDD, E2E tests, coverage, mocking, edge cases
+- researcher            → Web research, competitive analysis, documentation, summarisation
+- reviewer              → Code review, architecture critique, diff analysis, final sign-off
+
+### IMPORTANT role mapping:
+- UX/frontend work → frontend_developer (NOT ux_critic — that role is retired)
+- Backend/API work → backend_developer (NOT python_backend — that role is retired)
+- TypeScript patterns → frontend_developer (NOT typescript_architect — that role is retired)
+- Do NOT use developer, ux_critic, typescript_architect, python_backend — they are legacy aliases
 
 ## Your thinking process:
 1. VISION — Write one sentence: "We will [outcome] by [method]."
@@ -234,7 +243,7 @@ def _parse_task_graph(
 def fallback_single_task_graph(
     user_message: str,
     project_id: str,
-    role: AgentRole = AgentRole.PYTHON_BACKEND,
+    role: AgentRole = AgentRole.BACKEND_DEVELOPER,
 ) -> TaskGraph:
     """
     Emergency fallback: create a minimal 1-task graph when PM agent fails.

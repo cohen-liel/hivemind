@@ -192,7 +192,7 @@ class TaskGraph(BaseModel):
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 
 
-def extract_task_output(raw_text: str, task_id: str) -> TaskOutput | None:
+def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
     """
     Parse a TaskOutput from an agent's raw text response.
 

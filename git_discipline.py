@@ -88,7 +88,7 @@ def _build_commit_message(outputs: list[TaskOutput], round_num: int) -> str:
     total_cost = sum(o.cost_usd for o in outputs)
     body_lines.append(f"Cost: ${total_cost:.4f}")
 
-    return first_line + "\n".join(body_lines)
+    return first_line + "\n" + "\n".join(body_lines)
 
 
 async def _run(cmd: list[str], cwd: str) -> str:
