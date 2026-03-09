@@ -6,100 +6,113 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Skill name → agent role auto-mapping
-# These skills are automatically appended to the agent's system prompt when delegated
-SKILL_AGENT_MAP: dict[str, str] = {
-    # Built-in Claude Code skills
-    "webapp-testing": "tester",
-    "frontend-design": "developer",
-    "claude-api": "developer",
-    "doc-coauthoring": "developer",
-    "mcp-builder": "developer",
-    "web-artifacts-builder": "developer",
-    "planning-with-files": "developer",  # Uses task_plan.md/findings.md — conflicts with orchestrator manifest system if injected at orchestrator level
-    "skill-creator": "developer",
+# ---------------------------------------------------------------------------
+# Skill → Agent Role Mapping (multi-role support)
+# Each skill maps to ONE OR MORE agent roles that should receive it.
+# 3-layer architecture:
+#   Layer 1 (Brain):   pm, orchestrator
+#   Layer 2 (Hands):   frontend_developer, backend_developer, database_expert, devops
+#   Layer 3 (Quality): security_auditor, test_engineer, reviewer, researcher
+# ---------------------------------------------------------------------------
+SKILL_AGENT_MAP: dict[str, list[str]] = {
 
-    # Backend skills — developer
-    "fastapi-backend": "developer",
-    "sqlalchemy-orm": "developer",
-    "jwt-authentication": "developer",
-    "redis-caching": "developer",
-    "celery-tasks": "developer",
-    "async-python": "developer",
-    "nodejs-express": "developer",
-    "prisma-orm": "developer",
-    "typescript-patterns": "developer",
-    "git-workflow": "developer",
-    "websockets-realtime": "developer",
-    "s3-file-storage": "developer",
-    "email-service": "developer",
-    "stripe-payments": "developer",
-    "graphql-api": "developer",
-    "state-management": "developer",
-    "mobile-react-native": "developer",
+    # ── Layer 1: Brain ────────────────────────────────────────────────────
+    "planning-with-files":  ["pm", "developer"],
+    "mermaid-diagrams":     ["pm", "researcher"],
+    "strategic-compact":    ["pm"],
+    "session-logs":         ["orchestrator"],
+    "model-usage":          ["orchestrator"],
 
-    # Frontend skills — developer
-    "react-typescript": "developer",
-    "nextjs-fullstack": "developer",
-    "tailwind-css": "developer",
+    # ── Layer 2: Frontend Developer ───────────────────────────────────────
+    "react-typescript":     ["frontend_developer"],
+    "tailwind-css":         ["frontend_developer"],
+    "frontend-design":      ["frontend_developer"],
+    "state-management":     ["frontend_developer"],
+    "webapp-testing":       ["frontend_developer", "test_engineer"],
+    "typescript-patterns":  ["frontend_developer"],
+    "nextjs-fullstack":     ["frontend_developer"],
+    "mobile-react-native":  ["frontend_developer"],
+    "web-artifacts-builder":["frontend_developer"],
+    "algorithmic-art":      ["frontend_developer"],
+    "theme-factory":        ["frontend_developer"],
+    "frontend-slides":      ["frontend_developer", "researcher"],
+    "canvas-design":        ["frontend_developer", "researcher"],
 
-    # Infrastructure — devops
-    "docker-deployment": "devops",
-    "postgres-database": "devops",
-    "tmux": "devops",
-    "healthcheck": "devops",
-    "microservices": "devops",
+    # ── Layer 2: Backend Developer ────────────────────────────────────────
+    "fastapi-backend":      ["backend_developer"],
+    "async-python":         ["backend_developer"],
+    "jwt-authentication":   ["backend_developer", "security_auditor"],
+    "redis-caching":        ["backend_developer"],
+    "celery-tasks":         ["backend_developer"],
+    "websockets-realtime":  ["backend_developer"],
+    "s3-file-storage":      ["backend_developer"],
+    "email-service":        ["backend_developer"],
+    "stripe-payments":      ["backend_developer"],
+    "nodejs-express":       ["backend_developer"],
+    "graphql-api":          ["backend_developer"],
+    "claude-api":           ["backend_developer"],
+    "mcp-builder":          ["backend_developer"],
+    "git-workflow":         ["backend_developer", "devops"],
 
-    # Quality & security — reviewer / tester
-    "security-review": "reviewer",
-    "api-design": "reviewer",
-    "brand-guidelines": "reviewer",
-    "diffs": "reviewer",
-    "pytest-patterns": "tester",
-    "tdd-workflow": "tester",
-    "e2e-testing": "tester",
-    "verification-loop": "tester",
+    # ── Layer 2: Database Expert ──────────────────────────────────────────
+    "sqlalchemy-orm":       ["database_expert"],
+    "postgres-database":    ["database_expert", "devops"],
+    "prisma-orm":           ["database_expert"],
 
-    # Research & analysis — researcher
-    "web-research": "researcher",
-    "web-scraping": "researcher",
-    "market-research": "researcher",
-    "summarize": "researcher",
-    "article-writing": "researcher",
-    "content-engine": "researcher",
-    "mermaid-diagrams": "researcher",
-    "investor-materials": "researcher",
-    "strategic-compact": "researcher",
-    "weather": "researcher",
+    # ── Layer 2: DevOps ───────────────────────────────────────────────────
+    "docker-deployment":    ["devops"],
+    "healthcheck":          ["devops"],
+    "microservices":        ["devops"],
+    "tmux":                 ["devops"],
 
-    # Integrations — developer
-    "coding-agent": "developer",
-    "github": "developer",
-    "gh-issues": "developer",
-    "apple-notes": "developer",
-    "apple-reminders": "developer",
+    # ── Layer 3: Security Auditor ─────────────────────────────────────────
+    "security-review":      ["security_auditor", "reviewer"],
+    "api-design":           ["security_auditor", "reviewer"],
+    "web-research":         ["security_auditor", "researcher"],
 
-    # Document/media creation — developer
-    "pdf": "developer",
-    "docx": "developer",
-    "xlsx": "developer",
-    "pptx": "developer",
-    "frontend-slides": "developer",
-    "canvas-design": "developer",
-    "algorithmic-art": "developer",
-    "theme-factory": "developer",
-    "openai-whisper": "developer",
-    "video-frames": "developer",
-    "camsnap": "developer",
-    "peekaboo": "developer",
-    "internal-comms": "developer",
-    "prose": "developer",
-    "oracle": "developer",
-    "slack-gif-creator": "developer",
+    # ── Layer 3: Test Engineer ────────────────────────────────────────────
+    "pytest-patterns":      ["test_engineer"],
+    "tdd-workflow":         ["test_engineer"],
+    "e2e-testing":          ["test_engineer"],
+    "verification-loop":    ["test_engineer"],
 
-    # Orchestration utilities
-    "session-logs": "orchestrator",
-    "model-usage": "orchestrator",
+    # ── Layer 3: Reviewer ─────────────────────────────────────────────────
+    "diffs":                ["reviewer"],
+    "brand-guidelines":     ["reviewer"],
+
+    # ── Layer 3: Researcher ───────────────────────────────────────────────
+    "web-scraping":         ["researcher"],
+    "summarize":            ["researcher"],
+    "article-writing":      ["researcher"],
+    "market-research":      ["researcher"],
+    "investor-materials":   ["researcher"],
+    "content-engine":       ["researcher"],
+    "weather":              ["researcher"],
+    "prose":                ["researcher"],
+
+    # ── Legacy: map old "developer" role to backend_developer ─────────────
+    "coding-agent":         ["backend_developer", "developer"],
+    "github":               ["backend_developer", "developer"],
+    "gh-issues":            ["backend_developer", "developer"],
+    "skill-creator":        ["developer"],
+    "doc-coauthoring":      ["developer"],
+
+    # ── Document/media creation ───────────────────────────────────────────
+    "pdf":                  ["researcher", "developer"],
+    "docx":                 ["researcher", "developer"],
+    "xlsx":                 ["researcher", "developer"],
+    "pptx":                 ["researcher", "developer"],
+
+    # ── Misc ──────────────────────────────────────────────────────────────
+    "apple-notes":          ["developer"],
+    "apple-reminders":      ["developer"],
+    "openai-whisper":       ["developer", "researcher"],
+    "video-frames":         ["developer"],
+    "camsnap":              ["developer"],
+    "peekaboo":             ["developer"],
+    "internal-comms":       ["developer"],
+    "oracle":               ["developer"],
+    "slack-gif-creator":    ["developer"],
 }
 
 _skills_cache: dict[str, str] = {}
@@ -179,12 +192,16 @@ def list_skills() -> list[str]:
 
 
 def get_skills_for_agent(agent_role: str) -> list[str]:
-    """Return skill names auto-mapped to the given agent role."""
+    """Return skill names auto-mapped to the given agent role.
+
+    Supports multi-role skills: a skill is included if the agent_role
+    appears in its roles list.
+    """
     if not _skills_cache:
         scan_skills()
     return [
-        name for name, role in SKILL_AGENT_MAP.items()
-        if role == agent_role and name in _skills_cache
+        name for name, roles in SKILL_AGENT_MAP.items()
+        if agent_role in roles and name in _skills_cache
     ]
 
 
@@ -196,7 +213,7 @@ def select_skills_for_task(agent_role: str, task: str, max_skills: int = 5) -> l
     Falls back to all skills if the role has <= max_skills total.
 
     Args:
-        agent_role: The agent role (developer, tester, reviewer, etc.)
+        agent_role: The agent role (frontend_developer, backend_developer, etc.)
         task: The task description to match against.
         max_skills: Maximum number of skills to inject (default 5 → ~5K tokens).
     """
