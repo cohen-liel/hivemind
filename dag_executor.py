@@ -418,18 +418,29 @@ def _build_result(ctx: _ExecutionContext, graph: TaskGraph) -> ExecutionResult:
 # Single task execution
 # ---------------------------------------------------------------------------
 
+# Number of turns reserved for the mandatory summary phase.
+_SUMMARY_PHASE_TURNS = 5
+# Minimum turns in work phase before we bother with a summary phase.
+_MIN_WORK_TURNS_FOR_SUMMARY = 3
+
+
 async def _run_single_task(
     task: TaskInput,
     ctx: _ExecutionContext,
 ) -> TaskOutput:
-    """Run one task: build prompt -> call specialist -> parse TaskOutput.
+    """Run one task using Two-Phase Architecture.
 
-    Flow:
-    1. Build prompt from task + upstream context
-    2. Call SDK with per-role max_turns and wall-clock timeout
-    3. Parse JSON output from agent response
-    4. If no JSON found but agent did work → attempt JSON recovery query
-    5. Return TaskOutput (success or classified failure)
+    Phase 1 — WORK: Agent executes the task with full tools.
+        max_turns = role_limit - _SUMMARY_PHASE_TURNS (reserves turns for summary).
+    Phase 2 — SUMMARY: Agent produces ONLY the JSON output block.
+        Resumes the same session, tools disabled, max_turns = _SUMMARY_PHASE_TURNS.
+        Runs ALWAYS after work phase (not just as fallback).
+
+    This guarantees the agent always gets a chance to produce JSON, even if
+    it used all work turns. The summary phase costs ~$0.01-0.05.
+
+    Fallback: If both phases fail to produce JSON, multi-signal work detection
+    infers the result from the agent's text output.
     """
     role_name = task.role.value
     max_turns = _get_max_turns(role_name)
@@ -506,7 +517,18 @@ async def _run_single_task(
             except Exception:
                 pass
 
-    # ── Execute the main SDK query ──
+    # ── Two-Phase Execution ──
+    # Phase 1: WORK — agent does the actual task with full tools.
+    # We reserve _SUMMARY_PHASE_TURNS turns for the mandatory summary phase.
+    work_turns = max(max_turns - _SUMMARY_PHASE_TURNS, max_turns // 2)
+    # Time budget: leave 90 seconds for the summary phase
+    work_timeout = max(task_timeout - 90, task_timeout // 2)
+
+    logger.info(
+        f"[DAG] Task {task.id}: PHASE 1 (WORK) — "
+        f"max_turns={work_turns}/{max_turns}, timeout={work_timeout}s/{task_timeout}s"
+    )
+
     t0 = time.monotonic()
     try:
         response = await asyncio.wait_for(
@@ -515,26 +537,21 @@ async def _run_single_task(
                 system_prompt=system_prompt,
                 cwd=ctx.project_dir,
                 session_id=session_id,
-                max_turns=max_turns,
+                max_turns=work_turns,
                 max_budget_usd=15.0,
                 on_stream=_on_stream,
                 on_tool_use=_on_tool_use,
             ),
-            timeout=task_timeout,
+            timeout=work_timeout,
         )
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - t0
-        logger.error(f"[DAG] Task {task.id} timed out after {elapsed:.0f}s (limit={task_timeout}s)")
-        output = TaskOutput(
-            task_id=task.id,
-            status=TaskStatus.FAILED,
-            summary=f"Task timed out after {elapsed:.0f} seconds (limit: {task_timeout}s)",
-            issues=[f"Wall-clock timeout ({task_timeout}s) for role {role_name}"],
-            failure_details=f"Task exceeded {task_timeout}s wall-clock timeout",
-            confidence=0.0,
+        logger.warning(
+            f"[DAG] Task {task.id}: WORK phase timed out after {elapsed:.0f}s. "
+            f"Will attempt summary phase to recover JSON."
         )
-        output.failure_category = FailureCategory.TIMEOUT
-        return output
+        # Work phase timed out — we still try the summary phase below
+        response = None
     except asyncio.CancelledError:
         logger.info(f"[DAG] Task {task.id} was cancelled")
         raise
@@ -550,193 +567,294 @@ async def _run_single_task(
         )
         output.failure_category = FailureCategory.EXTERNAL
         return output
-    elapsed = time.monotonic() - t0
 
-    # Persist session ID for potential recovery query
-    if response.session_id:
-        ctx.session_ids[session_key] = response.session_id
+    work_elapsed = time.monotonic() - t0
 
-    logger.info(
-        f"[DAG] Task {task.id}: SDK returned in {elapsed:.1f}s "
-        f"is_error={response.is_error} turns={response.num_turns}/{max_turns} "
-        f"cost=${response.cost_usd:.4f} text_len={len(response.text)} "
-        f"session_id={'yes' if response.session_id else 'no'}"
+    # Process work phase response
+    work_session_id: str | None = None
+    work_cost = 0.0
+    work_turns_used = 0
+    work_text = ""
+    work_had_error = False
+
+    if response is not None:
+        work_session_id = response.session_id or None
+        work_cost = response.cost_usd
+        work_turns_used = response.num_turns
+        work_text = response.text
+        work_had_error = response.is_error
+
+        # Persist session ID
+        if response.session_id:
+            ctx.session_ids[session_key] = response.session_id
+
+        logger.info(
+            f"[DAG] Task {task.id}: WORK phase done in {work_elapsed:.1f}s — "
+            f"is_error={response.is_error} turns={work_turns_used}/{work_turns} "
+            f"cost=${work_cost:.4f} text_len={len(work_text)}"
+        )
+
+        if response.is_error:
+            logger.warning(
+                f"[DAG] Task {task.id}: WORK phase error: {response.error_message[:200]}"
+            )
+            work_had_error = True
+    else:
+        # Timeout case — try to get session_id from stored sessions
+        work_session_id = ctx.session_ids.get(session_key)
+        logger.info(
+            f"[DAG] Task {task.id}: WORK phase timed out, "
+            f"session_id={'yes' if work_session_id else 'no'}"
+        )
+
+    # ── Try to parse JSON from work phase output ──
+    output: TaskOutput | None = None
+    if work_text and not work_had_error:
+        output = extract_task_output(work_text, task.id)
+        output.cost_usd = work_cost
+        output.turns_used = work_turns_used
+        logger.info(
+            f"[DAG] Task {task.id}: WORK phase extract -> "
+            f"status={output.status.value} confidence={output.confidence:.2f}"
+        )
+
+    # ── Phase 2: SUMMARY — mandatory JSON extraction ──
+    # Run summary phase if:
+    # 1. No JSON was found in work phase output, OR
+    # 2. JSON was found but with low confidence (multi-signal inferred)
+    # 3. Agent did meaningful work (turns >= _MIN_WORK_TURNS_FOR_SUMMARY)
+    needs_summary = (
+        work_session_id
+        and work_turns_used >= _MIN_WORK_TURNS_FOR_SUMMARY
+        and (
+            output is None
+            or not output.is_successful()
+            or output.confidence <= 0.75  # Multi-signal inferred or low-confidence JSON
+        )
     )
 
-    if response.is_error:
-        logger.warning(
-            f"[DAG] Task {task.id}: SDK error: {response.error_message[:200]} "
-            f"category={response.error_category}"
+    if needs_summary:
+        logger.info(
+            f"[DAG] Task {task.id}: PHASE 2 (SUMMARY) — "
+            f"resuming session, tools disabled, max_turns={_SUMMARY_PHASE_TURNS}"
         )
+
+        summary_output = await _run_summary_phase(
+            task=task,
+            ctx=ctx,
+            session_id=work_session_id,
+            system_prompt=system_prompt,
+            work_cost=work_cost,
+            work_turns=work_turns_used,
+        )
+
+        if summary_output is not None:
+            # Summary phase produced valid JSON — use it
+            if output is None or summary_output.confidence > output.confidence:
+                output = summary_output
+                logger.info(
+                    f"[DAG] Task {task.id}: SUMMARY phase improved output — "
+                    f"confidence={output.confidence:.2f}"
+                )
+            else:
+                # Summary didn't improve — keep work phase output but add costs
+                output.cost_usd = work_cost + (summary_output.cost_usd - work_cost)
+                output.turns_used = work_turns_used + (summary_output.turns_used - work_turns_used)
+    elif output is None:
+        # No work output and no summary possible — create failure output
         output = TaskOutput(
             task_id=task.id,
             status=TaskStatus.FAILED,
-            summary=f"Agent error: {response.error_message}",
-            issues=[response.error_message],
-            cost_usd=response.cost_usd,
-            turns_used=response.num_turns,
+            summary=f"Agent produced no output (work_turns={work_turns_used}, error={work_had_error})",
+            issues=["No output from work phase and no session for summary phase"],
+            cost_usd=work_cost,
+            turns_used=work_turns_used,
             confidence=0.0,
-            failure_details=response.error_message,
         )
-        output.failure_category = classify_failure(output)
-        return output
 
-    # ── Parse output ──
-    output = extract_task_output(response.text, task.id)
-    output.cost_usd = response.cost_usd
-    output.turns_used = response.num_turns
-    logger.info(
-        f"[DAG] Task {task.id}: extract_task_output -> "
-        f"status={output.status.value} confidence={output.confidence:.2f} "
-        f"summary='{output.summary[:80]}' "
-        f"artifacts={len(output.artifacts)} issues={len(output.issues)}"
-    )
-
-    # ── JSON Recovery: if no JSON was found but multi-signal detection says ──
-    # the agent DID work, send a lightweight follow-up query to the same session
-    # asking ONLY for the JSON summary. This costs ~$0.01 and saves the $2+ task.
-    needs_recovery = (
-        not output.is_successful()
-        and response.session_id
-        and output.confidence == 0.0
-        and response.num_turns >= 5  # Agent did at least some work
-        and len(response.text) >= 200  # Non-trivial output
-    )
-    # Also try recovery if multi-signal scored it as completed but with low confidence
-    if not needs_recovery and output.is_successful() and output.confidence <= 0.7:
-        # Already marked completed by multi-signal, but let's try to get proper JSON
-        needs_recovery = bool(response.session_id)
-
-    if needs_recovery and response.session_id:
-        output = await _attempt_json_recovery(
-            task=task,
-            ctx=ctx,
-            session_id=response.session_id,
-            system_prompt=system_prompt,
-            original_output=output,
-            original_cost=response.cost_usd,
-            original_turns=response.num_turns,
-        )
+    # ── Artifact validation: verify claimed files exist on disk ──
+    if output.is_successful() and output.artifacts:
+        output = _validate_artifacts(output, ctx.project_dir)
 
     # ── Detect max_turns exhaustion ──
-    if response.num_turns >= max_turns and not output.is_successful():
+    total_turns = max_turns  # The combined limit
+    if output.turns_used >= total_turns and not output.is_successful():
         logger.warning(
             f"[DAG] Task {task.id} ({role_name}): max_turns exhausted "
-            f"({response.num_turns}/{max_turns} turns, ${response.cost_usd:.4f}). "
+            f"({output.turns_used}/{total_turns} turns, ${output.cost_usd:.4f}). "
             f"Output status={output.status.value}, confidence={output.confidence:.2f}"
         )
         if not output.failure_category:
             output.failure_category = FailureCategory.TIMEOUT
             output.failure_details = (
-                f"Agent exhausted max_turns ({response.num_turns}/{max_turns}) "
+                f"Agent exhausted max_turns ({output.turns_used}/{total_turns}) "
                 f"without completing. Role: {role_name}."
             )
     elif not output.is_successful() and not output.failure_category:
         output.failure_category = classify_failure(output)
 
+    total_elapsed = time.monotonic() - t0
     log_level = logging.INFO if output.is_successful() else logging.WARNING
     logger.log(
         log_level,
-        f"[DAG] Task {task.id} ({role_name}) finished in {elapsed:.1f}s: "
+        f"[DAG] Task {task.id} ({role_name}) finished in {total_elapsed:.1f}s: "
         f"status={output.status.value}, confidence={output.confidence:.2f}, "
-        f"{response.num_turns}/{max_turns} turns, ${output.cost_usd:.4f}"
+        f"{output.turns_used}/{total_turns} turns, ${output.cost_usd:.4f}"
     )
     return output
 
 
-async def _attempt_json_recovery(
+def _validate_artifacts(output: TaskOutput, project_dir: str) -> TaskOutput:
+    """Verify that artifacts claimed by the agent actually exist on disk.
+
+    Checks each file path in ``output.artifacts`` against the filesystem.
+    Removes phantom files and adjusts confidence accordingly.
+    Does NOT fail the task — just corrects the artifact list and logs warnings.
+    """
+    if not output.artifacts:
+        return output
+
+    project_path = Path(project_dir)
+    verified: list[str] = []
+    phantom: list[str] = []
+
+    for artifact_path in output.artifacts:
+        # Try multiple resolution strategies
+        candidates = [
+            Path(artifact_path),                    # Absolute path
+            project_path / artifact_path,            # Relative to project
+            project_path / artifact_path.lstrip("/"),  # Strip leading /
+        ]
+        found = any(c.exists() for c in candidates)
+        if found:
+            verified.append(artifact_path)
+        else:
+            phantom.append(artifact_path)
+
+    if phantom:
+        logger.warning(
+            f"[DAG] Task {output.task_id}: artifact validation — "
+            f"{len(phantom)} phantom files removed: {phantom[:5]}"
+        )
+        output.artifacts = verified
+        output.issues.append(
+            f"Artifact validation: {len(phantom)} claimed files not found on disk"
+        )
+        # Reduce confidence proportionally to phantom ratio
+        if len(verified) == 0 and len(phantom) > 0:
+            # All artifacts are phantom — significant confidence reduction
+            output.confidence = max(output.confidence - 0.3, 0.1)
+        else:
+            phantom_ratio = len(phantom) / (len(verified) + len(phantom))
+            output.confidence = max(
+                output.confidence - (phantom_ratio * 0.2), 0.1
+            )
+    else:
+        logger.info(
+            f"[DAG] Task {output.task_id}: all {len(verified)} artifacts verified on disk"
+        )
+
+    return output
+
+
+async def _run_summary_phase(
     task: TaskInput,
     ctx: _ExecutionContext,
     session_id: str,
     system_prompt: str,
-    original_output: TaskOutput,
-    original_cost: float,
-    original_turns: int,
-) -> TaskOutput:
-    """Send a lightweight follow-up query to extract JSON from an agent that did work.
+    work_cost: float,
+    work_turns: int,
+) -> TaskOutput | None:
+    """Phase 2 of Two-Phase Architecture: extract structured JSON from the agent.
 
-    The agent already completed its task but didn't produce the required JSON
-    summary. We resume the same session with a short prompt asking ONLY for
-    the JSON block, with tools disabled (max_turns=5, no tools).
+    Resumes the same session with tools disabled and asks ONLY for the JSON
+    output block. The agent has full context of what it did in Phase 1.
 
-    Cost: ~$0.01-0.05. Saves: the entire $2-5 task from being wasted.
+    This runs as a mandatory step (not just fallback), guaranteeing the agent
+    always gets a dedicated chance to produce its receipt.
+
+    Cost: ~$0.01-0.05 per call.
+    Returns: TaskOutput if JSON was successfully extracted, None otherwise.
     """
-    recovery_prompt = (
-        "You have completed your work. Now produce ONLY the required JSON output block.\n"
-        "Do NOT do any more work. Do NOT use any tools. Just output the JSON summary "
-        "of what you already did.\n\n"
+    summary_prompt = (
+        "Your work phase is complete. Now produce ONLY the required JSON output block.\n"
+        "Do NOT do any more work. Do NOT use any tools.\n\n"
+        "Reflect on everything you did and produce an accurate JSON summary:\n\n"
         "```json\n"
         "{\n"
         f'  "task_id": "{task.id}",\n'
         '  "status": "completed",\n'
         '  "summary": "what you did in 2-3 sentences",\n'
-        '  "artifacts": ["list/of/files.py"],\n'
+        '  "artifacts": ["list/of/files/you/created/or/modified.py"],\n'
         '  "issues": [],\n'
-        '  "confidence": 0.95\n'
+        '  "blockers": [],\n'
+        '  "followups": ["any remaining work"],\n'
+        '  "confidence": 0.95,\n'
+        '  "structured_artifacts": [\n'
+        '    {\n'
+        '      "type": "file_manifest",\n'
+        '      "title": "Files Modified",\n'
+        '      "data": {"files": {"path/to/file.py": "description"}}\n'
+        '    }\n'
+        '  ]\n'
         "}\n"
-        "```"
+        "```\n\n"
+        "IMPORTANT: Output ONLY the JSON block above. No explanations, no tools."
     )
 
     logger.info(
-        f"[DAG] Task {task.id}: attempting JSON recovery via session resume "
-        f"(session={session_id[:12]}..., original_turns={original_turns})"
+        f"[DAG] Task {task.id}: SUMMARY phase — resuming session "
+        f"{session_id[:12]}..., tools=disabled, max_turns={_SUMMARY_PHASE_TURNS}"
     )
 
     try:
-        recovery_response = await asyncio.wait_for(
+        summary_response = await asyncio.wait_for(
             ctx.sdk.query_with_retry(
-                prompt=recovery_prompt,
+                prompt=summary_prompt,
                 system_prompt=system_prompt,
                 cwd=ctx.project_dir,
                 session_id=session_id,
-                max_turns=5,
+                max_turns=_SUMMARY_PHASE_TURNS,
                 max_budget_usd=1.0,
                 tools=[],  # Disable ALL tools — just produce text
-                max_retries=0,  # Don't retry the recovery itself
+                max_retries=0,  # Don't retry the summary itself
             ),
-            timeout=60,  # 1 minute max for recovery
+            timeout=90,  # 90 seconds max for summary
         )
     except Exception as exc:
         logger.warning(
-            f"[DAG] Task {task.id}: JSON recovery failed ({type(exc).__name__}: {exc}). "
-            f"Keeping original output."
+            f"[DAG] Task {task.id}: SUMMARY phase failed "
+            f"({type(exc).__name__}: {exc})"
         )
-        return original_output
+        return None
 
-    if recovery_response.is_error:
+    if summary_response.is_error:
         logger.warning(
-            f"[DAG] Task {task.id}: JSON recovery returned error: "
-            f"{recovery_response.error_message[:100]}. Keeping original output."
+            f"[DAG] Task {task.id}: SUMMARY phase error: "
+            f"{summary_response.error_message[:100]}"
         )
-        return original_output
+        return None
 
-    # Try to parse the recovery response
-    recovered = extract_task_output(recovery_response.text, task.id)
-    total_cost = original_cost + recovery_response.cost_usd
-    total_turns = original_turns + recovery_response.num_turns
+    # Parse the summary response
+    output = extract_task_output(summary_response.text, task.id)
+    output.cost_usd = work_cost + summary_response.cost_usd
+    output.turns_used = work_turns + summary_response.num_turns
 
-    if recovered.is_successful() and recovered.confidence > original_output.confidence:
-        recovered.cost_usd = total_cost
-        recovered.turns_used = total_turns
-        logger.info(
-            f"[DAG] Task {task.id}: JSON recovery SUCCESS! "
-            f"confidence={recovered.confidence:.2f} (was {original_output.confidence:.2f}), "
-            f"recovery_cost=${recovery_response.cost_usd:.4f}"
-        )
-        return recovered
-
-    # Recovery didn't improve things — keep original (which may be
-    # a multi-signal COMPLETED with lower confidence)
     logger.info(
-        f"[DAG] Task {task.id}: JSON recovery did not improve output "
-        f"(recovered={recovered.status.value}/{recovered.confidence:.2f}, "
-        f"original={original_output.status.value}/{original_output.confidence:.2f}). "
-        f"Keeping original."
+        f"[DAG] Task {task.id}: SUMMARY phase result — "
+        f"status={output.status.value} confidence={output.confidence:.2f} "
+        f"summary_cost=${summary_response.cost_usd:.4f}"
     )
-    # Still add the recovery cost
-    original_output.cost_usd = total_cost
-    original_output.turns_used = total_turns
-    return original_output
+
+    if output.is_successful() and output.confidence > 0.0:
+        return output
+
+    # Summary phase didn't produce valid JSON either
+    logger.info(
+        f"[DAG] Task {task.id}: SUMMARY phase did not produce valid JSON. "
+        f"Falling back to work phase output."
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------

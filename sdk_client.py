@@ -994,6 +994,7 @@ class ClaudeSDKManager:
         cost_usd = 0.0
         duration_ms = 0
         num_turns = 0
+        observed_turns = 0  # Local turn counter based on ToolUseBlock messages
         last_seen_text = ""  # Track to avoid duplicate stream callbacks
         message_count = 0
         tool_uses: list[str] = []  # Track tools used for logging
@@ -1055,6 +1056,17 @@ class ClaudeSDKManager:
                                 tool_info = f"🔧 {tool_name}"
 
                             tool_uses.append(tool_name)
+                            observed_turns += 1
+
+                            # Emit turn_progress event so callers can track
+                            if emitter.is_active:
+                                await emitter._emit(
+                                    "turn_progress",
+                                    turns_used=observed_turns,
+                                    max_turns=max_turns,
+                                    remaining=max(0, max_turns - observed_turns),
+                                    pct=round(observed_turns / max(max_turns, 1) * 100, 1),
+                                )
 
                             # Emit granular tool_start event
                             if emitter.is_active:
