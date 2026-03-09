@@ -463,6 +463,14 @@ export default function ProjectView() {
           const remStr = event.is_remediation ? ' 🔧' : '';
           const action = event.summary || event.text?.slice(0, 100) || 'working...';
           setLastTicker(`${updateAgent}${remStr}: ${action}${progressStr}`);
+          // BUG FIX: clean up liveAgentStream when agent transitions to error/done via agent_update
+          if (agentStatus !== 'working') {
+            setLiveAgentStream(prev => {
+              const next = { ...prev };
+              delete next[updateAgent];
+              return next;
+            });
+          }
         }
         break;
       }
@@ -519,6 +527,14 @@ export default function ProjectView() {
         setSdkCalls(prev => [...prev, {
           agent: event.agent!, startTime: event.timestamp, status: 'running',
         }]);
+        // BUG FIX: seed liveAgentStream so the "Live" section appears immediately on agent_started
+        setLiveAgentStream(prev => ({
+          ...prev,
+          [event.agent!]: {
+            text: event.task?.slice(0, 200) || 'starting...',
+            timestamp: Date.now(),
+          },
+        }));
         break;
 
       case 'agent_finished':
@@ -747,6 +763,7 @@ export default function ProjectView() {
         setDagGraph(null);
         setDagTaskStatus({});
         setHealingEvents([]);
+        setLiveAgentStream({});
         setHasMoreMessages(false);
         setApprovalRequest(null);
         if (id) { try { localStorage.removeItem(`nexus_dag_${id}`); } catch { /* ignore */ } }
@@ -772,6 +789,16 @@ export default function ProjectView() {
             };
           }
           setAgentStates(prev => ({ ...prev, ...restored }));
+          // BUG FIX: also seed liveAgentStream for agents that are still working on reconnect
+          const liveEntries: Record<string, { text: string; timestamp: number }> = {};
+          for (const [name, s] of Object.entries(event.agent_states as Record<string, any>)) {
+            if ((s.state ?? 'idle') === 'working') {
+              liveEntries[name] = { text: s.task || 'working...', timestamp: Date.now() };
+            }
+          }
+          if (Object.keys(liveEntries).length > 0) {
+            setLiveAgentStream(prev => ({ ...prev, ...liveEntries }));
+          }
         }
         if (event.loop_progress) {
           setLoopProgress(event.loop_progress);
