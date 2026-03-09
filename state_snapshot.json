@@ -1,14 +1,35 @@
 {
-  "timestamp": 1773070153.006594,
-  "timestamp_human": "2026-03-09 17:29:13",
+  "timestamp": 1773072457.698323,
+  "timestamp_human": "2026-03-09 18:07:37",
   "projects": {
     "web-claude-bot": {
       "status": "idle",
-      "turn_count": 0,
+      "turn_count": 1,
       "total_cost_usd": 0.0,
       "current_agent": null,
       "pending_messages": 0,
-      "agent_states": {}
+      "agent_states": {
+        "orchestrator": {
+          "state": "working",
+          "task": "preparing workspace...",
+          "current_tool": ""
+        },
+        "backend_developer": {
+          "state": "error",
+          "task": "Add granular real-time streaming events to sdk_client.py and dashboard/events.py including: per-chunk text streaming eve",
+          "current_tool": ""
+        },
+        "frontend_developer": {
+          "state": "done",
+          "task": "Refactor the monolithic 68K-line ProjectView.tsx into well-structured, focused sub-components by extracting: AgentOrches",
+          "current_tool": ""
+        },
+        "researcher": {
+          "state": "working",
+          "task": "Research best practices for real-time multi-agent dashboards, streaming terminal UIs, live DAG visualizations, and agent",
+          "current_tool": ""
+        }
+      }
     },
     "family-finance": {
       "status": "idle",

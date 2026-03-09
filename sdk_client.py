@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import os
 import threading
@@ -380,6 +381,290 @@ _circuit_breaker = CircuitBreaker(
 
 
 # ============================================================
+# Performance Tracker (for ETA estimation)
+# ============================================================
+
+class _PerformanceTracker:
+    """Tracks historical agent query durations for ETA estimation.
+
+    Maintains a rolling window of the last N durations per agent role.
+    Used by _GranularEventEmitter to estimate remaining time for
+    currently running agents.
+
+    Thread-safe via threading.Lock (critical section is tiny — no I/O).
+    """
+
+    def __init__(self, window_size: int = 20):
+        self._window_size: int = window_size
+        self._durations: dict[str, collections.deque] = {}
+        self._lock: threading.Lock = threading.Lock()
+
+    def record(self, agent_role: str, duration_seconds: float) -> None:
+        """Record a completed query duration for an agent role."""
+        with self._lock:
+            if agent_role not in self._durations:
+                self._durations[agent_role] = collections.deque(
+                    maxlen=self._window_size
+                )
+            self._durations[agent_role].append(duration_seconds)
+
+    def get_avg_duration(self, agent_role: str) -> float:
+        """Get the rolling average duration for an agent role.
+
+        Returns 0.0 if no historical data is available.
+        """
+        with self._lock:
+            durations = self._durations.get(agent_role)
+            if not durations:
+                return 0.0
+            return sum(durations) / len(durations)
+
+    @property
+    def stats(self) -> dict[str, dict]:
+        """Snapshot of all tracked agent performance data."""
+        with self._lock:
+            return {
+                role: {
+                    "avg_duration": round(sum(d) / len(d), 1) if d else 0,
+                    "samples": len(d),
+                    "last": round(d[-1], 1) if d else 0,
+                }
+                for role, d in self._durations.items()
+            }
+
+
+# Module-level performance tracker (shared across all queries)
+_performance_tracker = _PerformanceTracker(window_size=20)
+
+
+# ============================================================
+# Granular Event Emitter (helper for _consume_stream)
+# ============================================================
+
+class _GranularEventEmitter:
+    """Emits granular streaming events during SDK query consumption.
+
+    Handles throttling (via EventThrottler), thinking state tracking,
+    tool start/end pairing, and periodic ETA estimation.
+
+    Created per _consume_stream() call with an optional on_event callback.
+    If on_event is None, all methods are no-ops for zero overhead.
+
+    Event types emitted:
+    - agent_text_chunk: Throttled per-chunk text updates (max 4/sec/agent)
+    - agent_thinking: Boolean indicator when agent is reasoning (no tools yet)
+    - tool_start: Fired when a ToolUseBlock is encountered
+    - tool_end: Fired when a ToolResultBlock is encountered or stream ends
+    - agent_eta: Periodic ETA estimate based on historical performance
+    """
+
+    def __init__(
+        self,
+        on_event,
+        agent_role: str | None,
+        request_id: str = "",
+    ):
+        self._on_event = on_event
+        self._agent_role: str = agent_role or "unknown"
+        self._request_id: str = request_id
+        self._start_time: float = time.monotonic()
+        self._thinking_active: bool = False
+        self._has_used_tools: bool = False
+        self._last_eta_time: float = 0.0
+        self._text_offset: int = 0
+        self._message_count: int = 0
+        # Track active tools by tool_use_id → (tool_name, start_monotonic)
+        self._active_tools: dict[str, tuple[str, float]] = {}
+
+    @property
+    def is_active(self) -> bool:
+        """Whether the emitter has a callback and will emit events."""
+        return self._on_event is not None
+
+    async def _emit(self, event_type: str, **data) -> None:
+        """Emit a single event through the on_event callback."""
+        if not self._on_event:
+            return
+        event = {
+            "type": event_type,
+            "agent": self._agent_role,
+            "timestamp": time.time(),
+            **data,
+        }
+        try:
+            await self._on_event(event)
+        except Exception as e:
+            logger.error(
+                "[%s] Granular event emission error (%s): %s",
+                self._request_id, event_type, e,
+            )
+
+    async def on_text_chunk(self, new_text: str, full_text_len: int) -> None:
+        """Handle new text from the agent stream.
+
+        Emits agent_thinking (start) if no tools have been used yet,
+        and emits throttled agent_text_chunk events.
+        """
+        if not self._on_event or not new_text:
+            return
+
+        # Detect thinking phase: text being generated before any tool use
+        if not self._has_used_tools and not self._thinking_active:
+            self._thinking_active = True
+            await self._emit("agent_thinking", active=True)
+
+        # Import throttler lazily to avoid circular imports
+        from dashboard.events import text_chunk_throttler
+
+        throttle_key = f"{self._agent_role}:agent_text_chunk"
+        # Prepare the text chunk (last 500 chars for bandwidth efficiency)
+        preview = new_text[-500:] if len(new_text) > 500 else new_text
+        chunk_event = {
+            "type": "agent_text_chunk",
+            "agent": self._agent_role,
+            "text": preview,
+            "offset": self._text_offset,
+            "timestamp": time.time(),
+        }
+
+        if text_chunk_throttler.should_emit(throttle_key):
+            await self._emit("agent_text_chunk", text=preview, offset=self._text_offset)
+        else:
+            text_chunk_throttler.set_pending(throttle_key, chunk_event)
+
+        self._text_offset += len(new_text)
+
+    async def on_tool_start(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        tool_info: str,
+        tool_use_id: str = "",
+    ) -> None:
+        """Emit tool_start when a ToolUseBlock is encountered.
+
+        Also ends the thinking phase if still active.
+        """
+        if not self._on_event:
+            return
+
+        # End thinking phase when tools start
+        if self._thinking_active:
+            self._thinking_active = False
+            await self._emit("agent_thinking", active=False)
+
+        self._has_used_tools = True
+        tid = tool_use_id or f"tool_{int(time.monotonic() * 1000000)}"
+        self._active_tools[tid] = (tool_name, time.monotonic())
+
+        await self._emit(
+            "tool_start",
+            tool_name=tool_name,
+            tool_input=tool_input,
+            description=tool_info,
+            tool_use_id=tid,
+        )
+
+    async def on_tool_end(
+        self, tool_use_id: str, success: bool = True
+    ) -> None:
+        """Emit tool_end when a ToolResultBlock is encountered."""
+        if not self._on_event:
+            return
+
+        tool_name, start_time = self._active_tools.pop(
+            tool_use_id, ("unknown", time.monotonic())
+        )
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        await self._emit(
+            "tool_end",
+            tool_name=tool_name,
+            tool_use_id=tool_use_id,
+            success=success,
+            duration_ms=duration_ms,
+        )
+
+    async def maybe_emit_eta(self, num_turns: int, max_turns: int) -> None:
+        """Emit agent_eta periodically (every 5 seconds).
+
+        Uses historical performance data when available, falls back to
+        turn-based progress estimation.
+        """
+        if not self._on_event:
+            return
+
+        now = time.monotonic()
+        if now - self._last_eta_time < 5.0:
+            return  # Throttle to once per 5 seconds
+        self._last_eta_time = now
+        self._message_count += 1
+
+        elapsed = now - self._start_time
+        avg = _performance_tracker.get_avg_duration(self._agent_role)
+
+        if avg > 0:
+            # Historical data available — estimate from average duration
+            eta = max(0.0, avg - elapsed)
+            progress = min(95.0, (elapsed / avg) * 100.0)
+        elif max_turns > 0 and num_turns > 0:
+            # Fallback: estimate from turn progress
+            turn_progress = num_turns / max_turns
+            progress = min(95.0, turn_progress * 100.0)
+            estimated_total = elapsed / turn_progress if turn_progress > 0 else elapsed * 2
+            eta = max(0.0, estimated_total - elapsed)
+        else:
+            # No data — report elapsed only
+            eta = 0.0
+            progress = 0.0
+
+        await self._emit(
+            "agent_eta",
+            eta_seconds=round(eta, 1),
+            elapsed_seconds=round(elapsed, 1),
+            progress_pct=round(progress, 1),
+        )
+
+    async def flush(self) -> None:
+        """Flush any pending state at the end of a stream.
+
+        Emits pending throttled text chunks, ends thinking phase,
+        and closes any outstanding tool_start events.
+        """
+        if not self._on_event:
+            return
+
+        # Flush pending throttled text chunk
+        from dashboard.events import text_chunk_throttler
+
+        throttle_key = f"{self._agent_role}:agent_text_chunk"
+        pending = text_chunk_throttler.pop_pending(throttle_key)
+        if pending:
+            # Emit the pending event directly
+            try:
+                await self._on_event(pending)
+            except Exception as e:
+                logger.error(
+                    "[%s] Error flushing pending text chunk: %s",
+                    self._request_id, e,
+                )
+        text_chunk_throttler.reset(throttle_key)
+
+        # End thinking if still active
+        if self._thinking_active:
+            self._thinking_active = False
+            await self._emit("agent_thinking", active=False)
+
+        # Close any outstanding tool_start events (tools that never got a result)
+        for tid in list(self._active_tools.keys()):
+            await self.on_tool_end(tid, success=True)
+
+    def record_completion(self, duration_seconds: float) -> None:
+        """Record this query's duration for future ETA estimations."""
+        _performance_tracker.record(self._agent_role, duration_seconds)
+
+
+# ============================================================
 # Claude SDK Manager
 # ============================================================
 
@@ -418,6 +703,7 @@ class ClaudeSDKManager:
         tools: list[str] | None = None,
         agent_role: str | None = None,
         retry_attempt: int = 0,
+        on_event=None,
     ) -> SDKResponse:
         """Send a query to Claude Agent SDK with connection pooling.
 
@@ -436,9 +722,13 @@ class ClaudeSDKManager:
                 None uses default tools. Different from allowed_tools.
             agent_role: Optional agent role name for per-role timeout lookup
                 (e.g. "researcher", "developer"). Falls back to global
-                AGENT_TIMEOUT_SECONDS if not specified.
+                AGENT_TIMEOUT_SECONDS if not specified. Also used to tag
+                granular streaming events with the agent identity.
             retry_attempt: Current retry attempt number (0 = first try).
                 Used for timeout escalation — first retry gets 50% longer.
+            on_event: Optional async callback for granular streaming events.
+                Receives dicts with 'type' field: agent_text_chunk,
+                agent_thinking, tool_start, tool_end, agent_eta.
 
         Returns:
             SDKResponse with text, session_id, cost, error classification, etc.
@@ -494,7 +784,11 @@ class ClaudeSDKManager:
         try:
             # Run the stream consumption with timeout
             result = await asyncio.wait_for(
-                self._consume_stream(prompt, options, on_stream, on_tool_use, request_id),
+                self._consume_stream(
+                    prompt, options, on_stream, on_tool_use, request_id,
+                    on_event=on_event, agent_role=agent_role,
+                    max_turns=max_turns,
+                ),
                 timeout=effective_timeout,
             )
 
@@ -580,11 +874,20 @@ class ClaudeSDKManager:
         on_stream=None,
         on_tool_use=None,
         request_id: str = "",
+        on_event=None,
+        agent_role: str | None = None,
+        max_turns: int = 10,
     ) -> SDKResponse:
         """Consume the SDK async stream and return the final SDKResponse.
 
         With include_partial_messages=True, we get intermediate AssistantMessage
         objects showing tool use and partial text in real time.
+
+        When on_event is provided, emits granular streaming events:
+        - agent_text_chunk: per-chunk text (throttled to max 4/sec/agent)
+        - agent_thinking: boolean when agent is reasoning before tool use
+        - tool_start/tool_end: paired events for each tool execution
+        - agent_eta: periodic ETA estimates based on historical performance
         """
         text_parts: list[str] = []
         result_session_id = ""
@@ -594,6 +897,13 @@ class ClaudeSDKManager:
         last_seen_text = ""  # Track to avoid duplicate stream callbacks
         message_count = 0
         tool_uses: list[str] = []  # Track tools used for logging
+
+        # Granular event emitter (no-ops if on_event is None)
+        emitter = _GranularEventEmitter(
+            on_event=on_event,
+            agent_role=agent_role,
+            request_id=request_id,
+        )
 
         # Explicitly manage the async generator lifecycle to prevent the anyio
         # cancel-scope bug. If we let the generator escape and get GC'd in a
@@ -645,6 +955,21 @@ class ClaudeSDKManager:
                                 tool_info = f"🔧 {tool_name}"
 
                             tool_uses.append(tool_name)
+
+                            # Emit granular tool_start event
+                            if emitter.is_active:
+                                tool_use_id = getattr(block, "id", "") or f"tool_{int(time.monotonic() * 1000000)}"
+                                # Truncate tool_input for the event
+                                truncated_for_event = {}
+                                for k, v in (tool_input or {}).items():
+                                    if isinstance(v, str) and len(v) > 200:
+                                        truncated_for_event[k] = v[:200] + "..."
+                                    else:
+                                        truncated_for_event[k] = v
+                                await emitter.on_tool_start(
+                                    tool_name, truncated_for_event,
+                                    tool_info, tool_use_id,
+                                )
 
                             # Fire on_tool_use callback with structured data
                             if on_tool_use:

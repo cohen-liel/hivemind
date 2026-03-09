@@ -5,6 +5,8 @@ Enhanced with:
 - Sequence IDs: monotonic per-project counter for gap-free replay
 - In-memory ring buffer: fast replay for recent reconnects without DB hit
 - Batch write queue: non-blocking DB writes to avoid slowing the publisher
+- Event throttling: rate-limits high-frequency events (agent_text_chunk)
+- Granular event types: tool_start/tool_end, agent_thinking, agent_eta
 """
 
 from __future__ import annotations
@@ -25,14 +27,24 @@ logger = logging.getLogger(__name__)
 _MAX_CONSECUTIVE_FAILURES = 10
 
 # Ring buffer size per project (in-memory, for fast replay)
-_RING_BUFFER_SIZE = 500
+# Increased from 500 to handle higher event volume from granular streaming
+_RING_BUFFER_SIZE = 1000
 
-# Events that should be persisted to DB (skip ephemeral ones like ping)
+# Events that should be persisted to DB (skip ephemeral ones like ping, text_chunk)
 _PERSIST_EVENT_TYPES = frozenset({
     "agent_update", "agent_result", "agent_final", "project_status",
     "tool_use", "agent_started", "agent_finished", "delegation",
     "loop_progress", "approval_request", "history_cleared",
     "task_complete", "task_error",
+    # Granular streaming events (persisted for replay/analytics)
+    "tool_start", "tool_end", "agent_thinking", "agent_eta",
+    # NOTE: agent_text_chunk intentionally excluded — too frequent for DB
+})
+
+# High-frequency event types that should be skipped in the ring buffer
+# to prevent memory pressure from very chatty events
+_SKIP_BUFFER_EVENT_TYPES = frozenset({
+    "agent_text_chunk",
 })
 
 
@@ -69,6 +81,85 @@ class _TrackedQueue:
     def is_dead(self) -> bool:
         """A subscriber is considered dead if it has too many consecutive failures."""
         return self.failures >= _MAX_CONSECUTIVE_FAILURES
+
+
+class EventThrottler:
+    """Rate-limits event emission per (agent, event_type) key.
+
+    Designed for high-frequency events like agent_text_chunk that would
+    flood WebSocket connections if emitted at full streaming rate.
+
+    The throttler enforces a minimum interval between emissions for each key.
+    When an event is throttled, it is stored as a "pending" event so the
+    most recent state is never lost — the caller can flush pending events
+    at the end of a stream.
+
+    Thread-safe: uses only simple dict operations with monotonic timestamps
+    (no locks needed since dict operations are atomic in CPython).
+    """
+
+    def __init__(self, max_per_second: float = 4.0):
+        if max_per_second <= 0:
+            raise ValueError("max_per_second must be positive")
+        self._min_interval: float = 1.0 / max_per_second
+        self._last_emit: dict[str, float] = {}
+        self._pending: dict[str, dict] = {}
+
+    @property
+    def min_interval(self) -> float:
+        """Minimum interval between emissions in seconds."""
+        return self._min_interval
+
+    def should_emit(self, key: str) -> bool:
+        """Check if an event for this key can be emitted now.
+
+        Returns True if enough time has passed since the last emission,
+        and updates the last-emit timestamp. Returns False if the event
+        should be throttled.
+        """
+        now = time.monotonic()
+        last = self._last_emit.get(key, 0.0)
+        if now - last >= self._min_interval:
+            self._last_emit[key] = now
+            return True
+        return False
+
+    def set_pending(self, key: str, event: dict) -> None:
+        """Store a throttled event as pending. The latest event wins.
+
+        When an event is throttled, store it so it can be flushed later.
+        This ensures the final state is never lost even when throttled.
+        """
+        self._pending[key] = event
+
+    def pop_pending(self, key: str) -> dict | None:
+        """Retrieve and remove the pending event for a key.
+
+        Returns None if no pending event exists. Used to flush the last
+        throttled event at the end of a stream.
+        """
+        return self._pending.pop(key, None)
+
+    def reset(self, key: str) -> None:
+        """Reset throttle state for a key (e.g., when an agent finishes)."""
+        self._last_emit.pop(key, None)
+        self._pending.pop(key, None)
+
+    def cleanup(self, max_age: float = 60.0) -> None:
+        """Remove stale entries older than max_age seconds.
+
+        Call periodically (e.g., every minute) to prevent unbounded growth
+        of the throttle dictionaries from agents that have finished.
+        """
+        now = time.monotonic()
+        stale = [k for k, t in self._last_emit.items() if now - t > max_age]
+        for k in stale:
+            del self._last_emit[k]
+            self._pending.pop(k, None)
+
+
+# Module-level throttler for text chunk events (max 4 per second per agent)
+text_chunk_throttler = EventThrottler(max_per_second=4.0)
 
 
 class EventBus:
@@ -175,7 +266,11 @@ class EventBus:
         if project_id:
             seq = self._next_sequence(project_id)
             event["sequence_id"] = seq
-            self._buffer_event(project_id, event)
+            # Skip ring buffer for high-frequency ephemeral events
+            # to prevent memory pressure (text chunks are fire-and-forget)
+            event_type = event.get("type", "")
+            if event_type not in _SKIP_BUFFER_EVENT_TYPES:
+                self._buffer_event(project_id, event)
 
         # Fan out to WebSocket subscribers
         async with self._lock:
@@ -214,6 +309,36 @@ class EventBus:
                     self._write_queue.put_nowait(event)
                 except asyncio.QueueFull:
                     logger.warning("EventBus: write queue full, dropping DB write for %s", event_type)
+
+    async def publish_throttled(
+        self, event: dict, throttle_key: str | None = None
+    ) -> bool:
+        """Publish an event with optional rate-limiting.
+
+        If throttle_key is provided, the event is rate-limited using the
+        module-level text_chunk_throttler. Returns True if the event was
+        published immediately, False if it was throttled (stored as pending).
+
+        Throttled events are stored so the latest state is preserved.
+        Call flush_throttled() to emit any pending events when a stream ends.
+        """
+        if throttle_key:
+            if not text_chunk_throttler.should_emit(throttle_key):
+                text_chunk_throttler.set_pending(throttle_key, event)
+                return False
+        await self.publish(event)
+        return True
+
+    async def flush_throttled(self, throttle_key: str) -> None:
+        """Publish any pending throttled event for the given key.
+
+        Call this at the end of an agent's stream to ensure the final
+        text chunk is delivered even if it was throttled.
+        """
+        pending = text_chunk_throttler.pop_pending(throttle_key)
+        if pending:
+            await self.publish(pending)
+        text_chunk_throttler.reset(throttle_key)
 
     def get_buffered_events(self, project_id: str, since_sequence: int = 0) -> list[dict]:
         """Get events from the in-memory ring buffer after a given sequence.
