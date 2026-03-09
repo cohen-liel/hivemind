@@ -450,9 +450,9 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
             last_update_at: Date.now(),
           },
         },
-        sdkCalls: [...state.sdkCalls, {
-          agent: event.agent, startTime: event.timestamp, status: 'running',
-        }],
+        sdkCalls: state.sdkCalls.some(c => c.agent === event.agent && c.status === 'running')
+          ? state.sdkCalls  // Already tracked from delegation event
+          : [...state.sdkCalls, { agent: event.agent, startTime: event.timestamp, status: 'running' }],
         liveAgentStream: {
           ...state.liveAgentStream,
           [event.agent]: {
@@ -556,10 +556,26 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         };
       }
 
+      // Add an sdkCall entry so the Trace tab shows the sub-agent immediately
+      // (WS_AGENT_STARTED may arrive later after SDK initialization delay)
+      let newSdkCalls = state.sdkCalls;
+      if (event.to_agent) {
+        // Only add if there isn't already a running call for this agent
+        const alreadyRunning = state.sdkCalls.some(
+          c => c.agent === event.to_agent && c.status === 'running'
+        );
+        if (!alreadyRunning) {
+          newSdkCalls = [...state.sdkCalls, {
+            agent: event.to_agent, startTime: event.timestamp, status: 'running',
+          }];
+        }
+      }
+
       return {
         ...state,
         activities: newActivities,
         agentStates: newAgentStates,
+        sdkCalls: newSdkCalls,
         lastSequenceId: trackSequence(state, event),
       };
     }
@@ -581,8 +597,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       const event = action.event;
       if (!event.text) return state;
 
+      // Prefer the explicit event.agent field; fall back to regex extraction from text.
+      // Always lowercase to match agent state keys ("orchestrator" not "Orchestrator").
       const agentMatch = event.text.match(/\*(\w+)\*/);
-      const resultAgent = agentMatch ? agentMatch[1] : (event.agent || 'agent');
+      const resultAgent = (event.agent || (agentMatch ? agentMatch[1] : 'agent')).toLowerCase();
 
       let newAgentStates = state.agentStates;
       if (resultAgent && resultAgent !== 'agent' && state.agentStates[resultAgent]) {
@@ -673,9 +691,16 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
             current_tool: undefined,
           };
         }
+        // Close all running sdkCalls so Trace doesn't show perpetual "running..."
+        const closedSdkCalls = state.sdkCalls.map(c =>
+          c.status === 'running'
+            ? { ...c, status: 'done', endTime: event.timestamp }
+            : c
+        );
         return {
           ...state,
           agentStates: resetAgentStates,
+          sdkCalls: closedSdkCalls,
           loopProgress: null,
           lastTicker: '',
           liveAgentStream: {},

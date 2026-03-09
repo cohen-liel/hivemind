@@ -1164,6 +1164,16 @@ class OrchestratorManager:
             nexus_dir.mkdir(parents=True, exist_ok=True)
 
             # ── Step 0: Load project context ──
+            self.agent_states["orchestrator"] = {
+                "state": "working",
+                "task": "loading project context...",
+                "current_tool": "reading memory, manifest, file tree",
+            }
+            await self._emit_event(
+                "agent_update", agent="orchestrator",
+                summary="Loading project context (memory, manifest, file tree)...",
+                text="loading project context...",
+            )
             await self._send_result("🧠 **Orchestrator** loading project context...")
             manifest, memory_snapshot, file_tree = await self._load_project_context()
 
@@ -1178,6 +1188,16 @@ class OrchestratorManager:
                 await self._send_result(f"📚 Loaded: {', '.join(context_parts)}")
 
             # ── Step 1: PM creates the plan ──
+            self.agent_states["orchestrator"] = {
+                "state": "working",
+                "task": "PM creating execution plan...",
+                "current_tool": "PM Agent analyzing request",
+            }
+            await self._emit_event(
+                "agent_update", agent="orchestrator",
+                summary="PM Agent is creating the execution plan...",
+                text="PM creating execution plan...",
+            )
             await self._send_result(
                 f"🗺️ **PM Agent** is analyzing your request and creating an execution plan...\n"
                 f"_Request: {user_message[:150]}{'...' if len(user_message) > 150 else ''}_"
@@ -1210,6 +1230,18 @@ class OrchestratorManager:
 
             # Emit the full graph to the frontend for visualization
             await self._emit_event("task_graph", graph=graph.model_dump())
+
+            # Update orchestrator state — now executing the DAG
+            self.agent_states["orchestrator"] = {
+                "state": "working",
+                "task": f"executing {len(graph.tasks)} tasks...",
+                "current_tool": "DAG Executor",
+            }
+            await self._emit_event(
+                "agent_update", agent="orchestrator",
+                summary=f"Executing DAG: {len(graph.tasks)} tasks across agents...",
+                text=f"executing {len(graph.tasks)} tasks...",
+            )
 
             # Cache serialized graph for /live recovery endpoint (cross-tab/refresh)
             self._current_dag_graph = graph.model_dump()
@@ -1285,6 +1317,25 @@ class OrchestratorManager:
         finally:
             self.is_running = False
             self.turn_count += 1
+
+            # Emit agent_finished for ALL agents still in 'working' state
+            # so the frontend never shows stale ACTIVE cards after task ends.
+            for agent_name, agent_state in list(self.agent_states.items()):
+                if agent_state.get("state") == "working":
+                    self.agent_states[agent_name] = {
+                        "state": "done",
+                        "task": agent_state.get("task", ""),
+                        "cost": agent_state.get("cost", 0),
+                    }
+                    await self._emit_event(
+                        "agent_finished",
+                        agent=agent_name,
+                        cost=agent_state.get("cost", 0),
+                        turns=agent_state.get("turns", 0),
+                        duration=0,
+                        is_error=False,
+                    )
+
             # Emit agent_finished for the Orchestrator itself so the Trace
             # row shows duration/cost instead of perpetual "running..."
             self.agent_states["orchestrator"] = {
@@ -2107,10 +2158,16 @@ class OrchestratorManager:
                 # Execute sub-agents
                 logger.info(f"[{self.project_id}] Running {len(delegations)} sub-agent tasks...")
                 # Mark orchestrator as "waiting" while sub-agents work
+                agent_names = list({d.agent for d in delegations})
                 self.agent_states["orchestrator"] = {
                     "state": "idle",
-                    "task": f"waiting for {len(delegations)} sub-agent(s)",
+                    "task": f"waiting for {', '.join(agent_names)}",
                 }
+                await self._emit_event(
+                    "agent_update", agent="orchestrator",
+                    text=f"waiting for {len(delegations)} sub-agent(s)",
+                    summary=f"Orchestrator waiting for: {', '.join(agent_names)}",
+                )
                 # Execute sub-agents.  Each sub-agent query runs in an
                 # isolated event loop (via isolated_query), so the anyio
                 # cancel-scope bug is contained.  We still keep the retry
@@ -2363,6 +2420,20 @@ class OrchestratorManager:
                 pass
             if not self.is_paused:
                 self.is_running = False
+
+            # Emit agent_finished for ALL agents still in 'working' state
+            # so the frontend never shows stale ACTIVE cards after task ends.
+            for agent_name, agent_state in list(self.agent_states.items()):
+                if agent_state.get("state") == "working":
+                    await self._emit_event(
+                        "agent_finished",
+                        agent=agent_name,
+                        cost=agent_state.get("cost", 0),
+                        turns=agent_state.get("turns", 0),
+                        duration=0,
+                        is_error=False,
+                    )
+
             # Always emit project_status so frontend knows the state changed
             await self._emit_event("project_status", status="paused" if self.is_paused else "idle")
             # Reset all agent states to idle — clear task so page-refresh doesn't

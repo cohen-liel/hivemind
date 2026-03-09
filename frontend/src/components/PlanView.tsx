@@ -78,7 +78,7 @@ function extractPlan(activities: ActivityEntry[]): PlanStep[] {
 
   // Find plan from orchestrator — check agent_text AND agent_result (plan summary)
   for (const a of activities) {
-    if ((a.type === 'agent_text' || a.type === 'agent_result') && a.agent === 'orchestrator' && a.content) {
+    if ((a.type === 'agent_text' || a.type === 'agent_result') && a.agent?.toLowerCase() === 'orchestrator' && a.content) {
       const lines = a.content.split('\n');
       for (const line of lines) {
         const match = line.match(/^\s*(?:(\d+)[.)]\s+|[-*]\s+)(.+)/);
