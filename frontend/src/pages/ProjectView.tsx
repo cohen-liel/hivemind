@@ -55,6 +55,11 @@ export default function ProjectView() {
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
   const [resumableTask, setResumableTask] = useState<{ last_message: string; current_loop: number; total_cost_usd: number } | null>(null);
+  const [dagGraph, setDagGraph] = useState<WSEvent['graph'] | null>(null);
+  const [healingEvents, setHealingEvents] = useState<Array<{
+    timestamp: number; failed_task: string; failure_category: string;
+    remediation_task: string; remediation_role: string;
+  }>>([]);
 
   const loadProject = useCallback(async () => {
     if (!id) return;
@@ -181,18 +186,23 @@ export default function ProjectView() {
         // Live progress from agents — show what each agent is doing RIGHT NOW
         const updateAgent = event.agent || (event.text?.match(/\*(\w+)\*/)?.[1]);
         if (updateAgent) {
+          const agentStatus = event.status === 'error' ? 'error' as const
+            : event.status === 'done' ? 'done' as const : 'working' as const;
           setAgentStates(prev => ({
             ...prev,
             [updateAgent]: {
               ...prev[updateAgent],
               name: updateAgent,
-              state: 'working',
-              current_tool: event.text?.slice(0, 150),
+              state: agentStatus,
+              current_tool: event.summary || event.text?.slice(0, 150),
+              cost: event.cost ?? prev[updateAgent]?.cost ?? 0,
             },
           }));
-          // Show agent name + action in ticker
-          const action = event.text?.slice(0, 100) || 'working...';
-          setLastTicker(`${updateAgent}: ${action}`);
+          // Show agent name + action + progress in ticker
+          const progressStr = event.progress ? ` (${event.progress})` : '';
+          const remStr = event.is_remediation ? ' 🔧' : '';
+          const action = event.summary || event.text?.slice(0, 100) || 'working...';
+          setLastTicker(`${updateAgent}${remStr}: ${action}${progressStr}`);
         }
         break;
       }
@@ -369,6 +379,8 @@ export default function ProjectView() {
             }
             return reset;
           });
+          setDagGraph(null);
+          setHealingEvents([]);
         } else if (event.status === 'idle') {
           // Task ended — only reset stale 'working' states; preserve done/error
           setAgentStates(prev => {
@@ -381,6 +393,34 @@ export default function ProjectView() {
           setLoopProgress(null);
           setLastTicker('');
         }
+        break;
+
+      case 'task_graph' as WSEvent['type']:
+        if (event.graph) {
+          setDagGraph(event.graph);
+          // Add activity entry for the plan
+          setActivities(prev => [...prev, {
+            id: nextId(), type: 'agent_text', timestamp: event.timestamp,
+            agent: 'PM', content: `📋 **DAG Plan:** ${event.graph?.vision || 'Execution plan created'} (${event.graph?.tasks?.length || 0} tasks)`,
+          }]);
+          setLastTicker(`Plan: ${event.graph.vision?.slice(0, 80) || 'DAG created'}`);
+        }
+        break;
+
+      case 'self_healing' as WSEvent['type']:
+        setHealingEvents(prev => [...prev, {
+          timestamp: event.timestamp,
+          failed_task: event.failed_task || '',
+          failure_category: event.failure_category || 'unknown',
+          remediation_task: event.remediation_task || '',
+          remediation_role: event.remediation_role || '',
+        }]);
+        setActivities(prev => [...prev, {
+          id: nextId(), type: 'agent_text', timestamp: event.timestamp,
+          agent: 'system',
+          content: `🔧 **Self-healing:** Task ${event.failed_task} failed (${event.failure_category}). Auto-fix: ${event.remediation_task} (${event.remediation_role})`,
+        }]);
+        setLastTicker(`🔧 Self-healing: ${event.failure_category} → ${event.remediation_role}`);
         break;
 
       case 'approval_request' as WSEvent['type']:
@@ -398,6 +438,8 @@ export default function ProjectView() {
         setSdkCalls([]);
         setFiles(null);
         setMessageOffset(0);
+        setDagGraph(null);
+        setHealingEvents([]);
         setHasMoreMessages(false);
         setApprovalRequest(null);
         loadProject();
@@ -875,14 +917,77 @@ export default function ProjectView() {
           {/* Left panel: selected tab content */}
           <div className="overflow-y-auto overflow-x-hidden min-w-0" style={{ width: '65%', maxWidth: '65%', flexShrink: 0 }}>
             {desktopTab === 'nexus' && (
-              <ConductorMode
-                agents={agentStateList}
-                progress={loopProgress}
-                activities={activities}
-                totalCost={project.total_cost_usd}
-                status={project.status}
-                messageDraft={message}
-              />
+              <>
+                <ConductorMode
+                  agents={agentStateList}
+                  progress={loopProgress}
+                  activities={activities}
+                  totalCost={project.total_cost_usd}
+                  status={project.status}
+                  messageDraft={message}
+                />
+                {/* DAG Visualization */}
+                {dagGraph && dagGraph.tasks && dagGraph.tasks.length > 0 && (
+                  <div className="px-6 pb-4">
+                    <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                        DAG Execution Plan
+                      </h3>
+                      <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>{dagGraph.vision}</p>
+                      <div className="space-y-2">
+                        {dagGraph.tasks.map(task => {
+                          const agentState = agentStates[task.role];
+                          const stateColor = agentState?.state === 'done' ? 'var(--accent-green)'
+                            : agentState?.state === 'working' ? 'var(--accent-blue)'
+                            : agentState?.state === 'error' ? 'var(--accent-red)'
+                            : 'var(--text-muted)';
+                          const stateIcon = agentState?.state === 'done' ? '✅'
+                            : agentState?.state === 'working' ? '⏳'
+                            : agentState?.state === 'error' ? '❌'
+                            : task.is_remediation ? '🔧' : '⏸️';
+                          return (
+                            <div key={task.id} className="flex items-start gap-2 p-2 rounded-lg" style={{ background: 'var(--bg-elevated)', border: `1px solid ${agentState?.state === 'working' ? 'var(--accent-blue)' : 'var(--border-dim)'}` }}>
+                              <span className="text-sm flex-shrink-0">{stateIcon}</span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-mono font-bold" style={{ color: stateColor }}>{task.role}</span>
+                                  {task.is_remediation && <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'var(--glow-amber)', color: 'var(--accent-amber)' }}>fix</span>}
+                                  {task.depends_on.length > 0 && (
+                                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                                      ← {task.depends_on.join(', ')}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--text-secondary)' }}>{task.goal}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {/* Self-Healing Events */}
+                {healingEvents.length > 0 && (
+                  <div className="px-6 pb-4">
+                    <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
+                        🔧 Self-Healing ({healingEvents.length})
+                      </h3>
+                      <div className="space-y-2">
+                        {healingEvents.map((h, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                            <span className="px-1.5 py-0.5 rounded" style={{ background: 'var(--glow-red)', color: 'var(--accent-red)', fontSize: '10px' }}>{h.failure_category}</span>
+                            <span>{h.failed_task}</span>
+                            <span style={{ color: 'var(--text-muted)' }}>→</span>
+                            <span className="font-mono" style={{ color: 'var(--accent-green)' }}>{h.remediation_role}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
             {desktopTab === 'agents' && (
               <div className="p-6">

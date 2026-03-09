@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 SKILL_AGENT_MAP: dict[str, list[str]] = {
 
-    # ── Layer 1: Brain ────────────────────────────────────────────────────
+    # ── Layer 1: Brain ────────────────────────────────────────────────────────────
     "planning-with-files":  ["pm", "developer"],
     "mermaid-diagrams":     ["pm", "researcher"],
-    "strategic-compact":    ["pm"],
-    "session-logs":         ["orchestrator"],
+    "strategic-compact":    ["pm", "memory"],
+    "session-logs":         ["orchestrator", "memory"],
     "model-usage":          ["orchestrator"],
 
     # ── Layer 2: Frontend Developer ───────────────────────────────────────
@@ -82,7 +82,7 @@ SKILL_AGENT_MAP: dict[str, list[str]] = {
 
     # ── Layer 3: Researcher ───────────────────────────────────────────────
     "web-scraping":         ["researcher"],
-    "summarize":            ["researcher"],
+    "summarize":            ["researcher", "memory"],
     "article-writing":      ["researcher"],
     "market-research":      ["researcher"],
     "investor-materials":   ["researcher"],

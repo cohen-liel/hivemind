@@ -938,6 +938,10 @@ class OrchestratorManager:
         from memory_agent import update_project_memory
 
         try:
+            # Ensure .nexus/ directory exists for memory persistence
+            nexus_dir = Path(self.project_dir) / ".nexus"
+            nexus_dir.mkdir(parents=True, exist_ok=True)
+
             await self._notify("🧠 **Loading project memory...**")
 
             # Step 0: Load project memory for context continuity

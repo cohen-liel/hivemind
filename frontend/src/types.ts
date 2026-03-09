@@ -71,7 +71,7 @@ export interface WSEvent {
   type: 'agent_update' | 'agent_result' | 'agent_final' | 'project_status'
     | 'tool_use' | 'agent_started' | 'agent_finished' | 'delegation' | 'loop_progress'
     | 'approval_request' | 'replay_batch' | 'live_state_sync' | 'history_cleared'
-    | 'task_complete' | 'task_error';
+    | 'task_complete' | 'task_error' | 'task_graph' | 'self_healing';
   project_id: string;
   project_name?: string;
   text?: string;
@@ -99,6 +99,28 @@ export interface WSEvent {
   turn?: number;
   max_turns?: number;
   max_budget?: number;
+  // task_graph fields (DAG visualization)
+  graph?: {
+    vision?: string;
+    tasks?: Array<{
+      id: string;
+      role: string;
+      goal: string;
+      depends_on: string[];
+      required_artifacts?: string[];
+      is_remediation?: boolean;
+    }>;
+  };
+  // self_healing fields
+  failed_task?: string;
+  failure_category?: string;
+  remediation_task?: string;
+  remediation_role?: string;
+  // agent_update extended fields
+  progress?: string;
+  artifacts_count?: number;
+  is_remediation?: boolean;
+  summary?: string;
 }
 
 export type ActivityType = 'tool_use' | 'agent_started' | 'agent_finished'

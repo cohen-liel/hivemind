@@ -159,6 +159,8 @@ class TaskInput(BaseModel):
 class TaskOutput(BaseModel):
     """What an agent returns — the contract coming OUT."""
 
+    model_config = {"extra": "allow"}  # Allow dynamic attrs like _progress
+
     task_id: str
     status: TaskStatus
     summary: str = Field(..., description="2-3 sentences describing what was done")
