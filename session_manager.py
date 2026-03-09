@@ -7,6 +7,7 @@ for transient database errors.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -311,6 +312,16 @@ class SessionManager:
         if not self._db:
             raise RuntimeError("SessionManager not initialized. Call initialize() first.")
         return self._db
+
+    @contextlib.asynccontextmanager
+    async def _connect(self):
+        """Async context manager that yields the persistent DB connection.
+
+        Provides a uniform ``async with self._connect() as db:`` interface
+        for all methods that need the connection.
+        """
+        db = await self._get_db()
+        yield db
 
     # --- Session CRUD ---
 
@@ -1156,28 +1167,28 @@ class SessionManager:
 
         Used on startup to offer task resumption.
         """
-        async with self._connect() as db:
-            cursor = await db.execute(
-                """SELECT os.*, p.name as project_name, p.project_dir
-                   FROM orchestrator_state os
-                   JOIN projects p ON os.project_id = p.project_id
-                   WHERE os.status = 'running'
-                   ORDER BY os.updated_at DESC""",
-            )
-            rows = await cursor.fetchall()
-            result = []
-            for row in rows:
-                entry = dict(row)
-                try:
-                    entry["shared_context"] = json.loads(entry.get("shared_context", "[]"))
-                except (json.JSONDecodeError, TypeError):
-                    entry["shared_context"] = []
-                try:
-                    entry["agent_states"] = json.loads(entry.get("agent_states", "{}"))
-                except (json.JSONDecodeError, TypeError):
-                    entry["agent_states"] = {}
-                result.append(entry)
-            return result
+        db = await self._get_db()
+        cursor = await db.execute(
+            """SELECT os.*, p.name as project_name, p.project_dir
+               FROM orchestrator_state os
+               JOIN projects p ON os.project_id = p.project_id
+               WHERE os.status = 'running'
+               ORDER BY os.updated_at DESC""",
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            entry = dict(row)
+            try:
+                entry["shared_context"] = json.loads(entry.get("shared_context", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                entry["shared_context"] = []
+            try:
+                entry["agent_states"] = json.loads(entry.get("agent_states", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                entry["agent_states"] = {}
+            result.append(entry)
+        return result
 
     # ── Agent Performance Tracking ────────────────────────────────────
 
