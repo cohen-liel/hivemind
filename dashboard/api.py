@@ -645,6 +645,8 @@ def create_app() -> FastAPI:
             "background_tasks": len(manager._background_tasks),
             "turn_count": manager.turn_count,
             "total_cost_usd": manager.total_cost_usd,
+            "dag_graph": getattr(manager, '_current_dag_graph', None),
+            "dag_task_statuses": getattr(manager, '_dag_task_statuses', {}),
         }
 
     @app.put("/api/projects/{project_id}")

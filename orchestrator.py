@@ -209,6 +209,10 @@ class OrchestratorManager:
         # Effective budget (respects per-project override)
         self._effective_budget: float = MAX_BUDGET_USD
 
+        # DAG execution state — exposed via /live for cross-tab/refresh recovery
+        self._dag_task_statuses: dict[str, str] = {}   # task_id → "working"/"completed"/"failed"
+        self._current_dag_graph: dict | None = None     # serialized TaskGraph for the active session
+
     @property
     def agent_names(self) -> list[str]:
         names = ["orchestrator"]
@@ -981,7 +985,7 @@ class OrchestratorManager:
             nexus_dir = Path(self.project_dir) / ".nexus"
             nexus_dir.mkdir(parents=True, exist_ok=True)
 
-            await self._notify("🧠 **Loading project memory...**")
+            await self._send_result("🧠 **Loading project memory...**")
 
             # Step 0: Load project memory for context continuity
             # Each loader is individually guarded so a single failure
@@ -1008,7 +1012,7 @@ class OrchestratorManager:
             if memory_snapshot:
                 await self._notify("📚 Found existing project memory — PM will use it for context.")
 
-            await self._notify("🗺️ **PM Agent** is creating the execution plan...")
+            await self._send_result("🗺️ **PM Agent** is creating the execution plan...")
 
             # Step 1: PM Agent → TaskGraph (now with memory context)
             try:
@@ -1025,7 +1029,7 @@ class OrchestratorManager:
 
             # Report the plan with artifact requirements
             artifact_count = sum(len(t.required_artifacts) for t in graph.tasks)
-            await self._notify(
+            await self._send_result(
                 f"📋 **Plan ready:** {graph.vision}\n"
                 f"Tasks: {len(graph.tasks)} | "
                 f"Epics: {len(graph.epic_breakdown)} | "
@@ -1034,6 +1038,10 @@ class OrchestratorManager:
 
             # Emit the full graph to the frontend for visualization
             await self._emit_event("task_graph", graph=graph.model_dump())
+
+            # Cache serialized graph for /live recovery endpoint (cross-tab/refresh)
+            self._current_dag_graph = graph.model_dump()
+            self._dag_task_statuses = {}
 
             # Session IDs shared across tasks (agent resume)
             session_id_store: dict[str, str] = {}
@@ -1099,15 +1107,17 @@ class OrchestratorManager:
             "state": "working",
             "task": task.goal[:120],
         }
-        # BUG FIX: emit agent_started (not agent_update) so frontend tracks
+        self._dag_task_statuses[task.id] = "working"
         # activity feed, network trace, elapsed time, and SDK calls correctly.
         await self._emit_event(
             "agent_started",
             agent=task.role.value,
             task=task.goal[:300],
+            task_id=task.id,
+            is_remediation=task.is_remediation,
         )
-        await self._notify(
-            f"🔄 {prefix}**{task.role.value}** starting: {task.goal[:80]}...{required}"
+        await self._send_result(
+            f"🔄 {prefix}**{task.role.value}** — `{task.id}`\n_{task.goal[:120]}..._{required}"
         )
 
     async def _on_dag_task_done(self, task: "TaskInput", output: "TaskOutput"):
@@ -1127,19 +1137,21 @@ class OrchestratorManager:
             "turns": output.turns_used,
             "duration": 0,  # Will be set by frontend from timestamps
         }
-        # BUG FIX: emit agent_finished (not agent_update) so frontend tracks
+        self._dag_task_statuses[task.id] = "completed" if output.is_successful() else "failed"
         # activity feed, network trace, and properly transitions agent state.
         await self._emit_event(
             "agent_finished",
             agent=task.role.value,
             cost=output.cost_usd,
             turns=output.turns_used,
-            duration=0,  # DAG doesn't track per-task wall time; frontend calculates from started_at
+            duration=0,
             is_error=not output.is_successful(),
+            task_id=task.id,
+            task_status=output.status.value,
         )
-        await self._notify(
+        await self._send_result(
             f"{icon} {prefix}**{task.role.value}** [{output.status.value}]{progress_str} "
-            f"${output.cost_usd:.4f} — {output.summary[:100]}{artifact_info}"
+            f"— `{task.id}` — ${output.cost_usd:.4f}\n_{output.summary[:120]}_{artifact_info}"
         )
 
     async def _on_dag_remediation(
