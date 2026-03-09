@@ -54,6 +54,16 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 | F6 | Rate limiting middleware | 🔲 Future sprint |
 | A1 | Extract services layer from api.py | 🔲 Future sprint |
 | A3 | Pydantic response models on all endpoints | 🔲 Future sprint |
+| S1 | api.py — SPA path traversal via `/{full_path:path}` | ✅ FIXED: `.resolve()` + `is_relative_to()` |
+| S3 | api.py — API key timing attack | ✅ FIXED: `hmac.compare_digest()` in middleware + WS |
+| S5 | config.py — CORS wildcard `*` default | ✅ FIXED: default `localhost:5173,localhost:8080` |
+| S6 | orchestrator.py — unbounded recursion in retry | ✅ FIXED: cumulative `_retry_count` parameter |
+| S8 | server.py — binds `0.0.0.0` by default | ✅ FIXED: default `127.0.0.1`, env override |
+| S12 | events.py — shared mutable event dict | ✅ FIXED: shallow copy `{**event}` |
+| S13 | scheduler.py — naive `datetime.now()` | ✅ FIXED: `ZoneInfo('Asia/Jerusalem')`, env configurable |
+| DB | session_manager.py — missing indexes | ✅ FIXED: 3 new indexes added |
+| BIO | orchestrator.py — blocking `Path.iterdir()`/`read_text()` | ✅ FIXED: `asyncio.to_thread()` wrapping |
+| SV | api.py — update_settings missing cross-field validation | ✅ FIXED: budget relationship + timeout cap |
 
 ## Key Improvements This Session (2026-03-08)
 

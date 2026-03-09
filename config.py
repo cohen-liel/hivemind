@@ -64,7 +64,7 @@ def _get(key: str, default: str, type_fn: Callable[[str], T] = str) -> T:
 
 
 # CORS origins (comma-separated)
-CORS_ORIGINS: list[str] = [x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()]
+CORS_ORIGINS: list[str] = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8080").split(",") if x.strip()]
 
 # Claude CLI path — configurable for Docker / non-standard installations
 CLAUDE_CLI_PATH: str = os.getenv("CLAUDE_CLI_PATH", "claude")

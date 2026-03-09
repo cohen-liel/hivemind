@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -260,7 +261,7 @@ def create_app() -> FastAPI:
         async def check_api_key(request: Request, call_next):
             if request.url.path.startswith("/api/") and request.url.path not in ("/api/health", "/api/stats"):
                 key = request.headers.get("X-API-Key", "")
-                if key != DASHBOARD_API_KEY:
+                if not hmac.compare_digest(key, DASHBOARD_API_KEY):
                     return JSONResponse({"error": "Unauthorized"}, status_code=401)
             return await call_next(request)
 
@@ -866,10 +867,19 @@ def create_app() -> FastAPI:
             errors.append("max_budget_usd cannot exceed $10,000")
         if req.agent_timeout_seconds is not None and req.agent_timeout_seconds < 10:
             errors.append("agent_timeout_seconds must be >= 10")
+        if req.agent_timeout_seconds is not None and req.agent_timeout_seconds > 7200:
+            errors.append("agent_timeout_seconds cannot exceed 7200 (2 hours)")
         if req.sdk_max_turns_per_query is not None and req.sdk_max_turns_per_query < 1:
             errors.append("sdk_max_turns_per_query must be >= 1")
         if req.sdk_max_budget_per_query is not None and req.sdk_max_budget_per_query <= 0:
             errors.append("sdk_max_budget_per_query must be > 0")
+        if req.sdk_max_budget_per_query is not None:
+            effective_budget = req.max_budget_usd if req.max_budget_usd is not None else cfg.MAX_BUDGET_USD
+            if req.sdk_max_budget_per_query > effective_budget:
+                errors.append(
+                    f"sdk_max_budget_per_query ({req.sdk_max_budget_per_query}) "
+                    f"cannot exceed max_budget_usd ({effective_budget})"
+                )
         if req.max_user_message_length is not None and req.max_user_message_length < 100:
             errors.append("max_user_message_length must be >= 100")
         if req.max_orchestrator_loops is not None and req.max_orchestrator_loops < 1:
@@ -1526,7 +1536,7 @@ def create_app() -> FastAPI:
         # Security: enforce API key on WebSocket if configured
         if DASHBOARD_API_KEY:
             client_key = ws.query_params.get("api_key", "")
-            if client_key != DASHBOARD_API_KEY:
+            if not hmac.compare_digest(client_key, DASHBOARD_API_KEY):
                 await ws.close(code=4003, reason="Unauthorized")
                 return
 
@@ -1617,8 +1627,8 @@ def create_app() -> FastAPI:
     if frontend_dist.exists():
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str):
-            file_path = frontend_dist / full_path
-            if full_path and file_path.exists() and file_path.is_file():
+            file_path = (frontend_dist / full_path).resolve()
+            if full_path and file_path.is_relative_to(frontend_dist.resolve()) and file_path.exists() and file_path.is_file():
                 return FileResponse(file_path)
             return FileResponse(frontend_dist / "index.html")
 

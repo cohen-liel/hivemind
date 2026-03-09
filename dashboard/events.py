@@ -164,6 +164,8 @@ class EventBus:
         full queues (slow consumers) rather than blocking the publisher.
         Automatically removes dead subscribers.
         """
+        # Copy to prevent shared mutable state across subscribers
+        event = {**event}
         if "timestamp" not in event:
             event["timestamp"] = time.time()
 

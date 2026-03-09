@@ -108,6 +108,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_lookup
 CREATE INDEX IF NOT EXISTS idx_messages_project
     ON messages(project_id, timestamp);
 
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp
+    ON messages(timestamp);
+
 CREATE INDEX IF NOT EXISTS idx_task_history_project
     ON task_history(project_id, completed_at);
 
@@ -116,6 +119,12 @@ CREATE INDEX IF NOT EXISTS idx_away_digest_user
 
 CREATE INDEX IF NOT EXISTS idx_schedules_enabled
     ON schedules(enabled, schedule_time);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_project
+    ON sessions(project_id);
+
+CREATE INDEX IF NOT EXISTS idx_activity_project
+    ON activity_log(project_id, sequence_id);
 
 CREATE TABLE IF NOT EXISTS lessons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

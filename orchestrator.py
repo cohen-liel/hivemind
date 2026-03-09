@@ -904,8 +904,13 @@ class OrchestratorManager:
 
     # --- Core orchestration loop ---
 
-    async def _run_orchestrator(self, user_message: str):
-        """Main orchestrator loop."""
+    async def _run_orchestrator(self, user_message: str, *, _retry_count: int = 0):
+        """Main orchestrator loop.
+
+        Uses a cumulative retry count (_retry_count) to bound retries on
+        spurious anyio CancelledErrors.  Previous implementation used
+        unbounded tail-call recursion which reset the counter each time.
+        """
         start_time = time.monotonic()
         self._last_user_message = user_message  # Track for state persistence
 
@@ -918,7 +923,7 @@ class OrchestratorManager:
         )
 
         # Build initial prompt with conversation history for context
-        workspace = self._get_workspace_context()
+        workspace = await asyncio.to_thread(self._get_workspace_context)
 
         # Pre-flight check: verify project directory exists
         if not Path(self.project_dir).exists():
@@ -956,7 +961,7 @@ class OrchestratorManager:
         complexity = self._estimate_task_complexity(user_message)
 
         # If the manifest already exists, this is a continuation — inject it and override complexity
-        existing_manifest = self._read_project_manifest()
+        existing_manifest = await asyncio.to_thread(self._read_project_manifest)
         if existing_manifest:
             # Keep EPIC if already detected — manifest only sets a *minimum* of LARGE
             complexity = complexity if complexity == "EPIC" else "LARGE"
@@ -1017,7 +1022,7 @@ class OrchestratorManager:
             logger.debug(f"[{self.project_id}] Experience injection failed (non-fatal): {e}")
 
         task_history_id = None  # Guard: prevents NameError in except blocks
-        _anyio_retries = 0
+        _anyio_retries = _retry_count  # Cumulative across retries
         _MAX_ANYIO_RETRIES = 3  # Max times to auto-retry on spurious CancelledError
         _should_retry = False
         try:
@@ -1566,7 +1571,7 @@ class OrchestratorManager:
 
                 # Inject current task ledger into the review prompt so the
                 # orchestrator always has the persistent goal + progress visible
-                todo_content = self._read_todo()
+                todo_content = await asyncio.to_thread(self._read_todo)
                 if todo_content:
                     orchestrator_input += (
                         f"\n\n📋 TASK LEDGER (.nexus/todo.md):\n"
@@ -1700,9 +1705,9 @@ class OrchestratorManager:
             # NOTE: _on_task_done callback handles auto-restart if queue has pending messages
 
         # If we set the retry flag due to spurious anyio CancelledError,
-        # re-enter the orchestrator loop (tail-call style, max 3 retries).
+        # re-enter the orchestrator loop with cumulative retry count (bounded).
         if _should_retry:
-            return await self._run_orchestrator(user_message)
+            return await self._run_orchestrator(user_message, _retry_count=_anyio_retries)
 
     async def _run_sub_agents(self, delegations: list[Delegation]) -> dict[str, list[SDKResponse]]:
         """Execute sub-agent tasks with smart scheduling.
@@ -1800,7 +1805,7 @@ class OrchestratorManager:
                     if agent_context:
                         sub_prompt += f"\n\n{agent_context}"
 
-                workspace = self._get_workspace_context()
+                workspace = await asyncio.to_thread(self._get_workspace_context)
                 if workspace:
                     sub_prompt += f"\n\n{workspace}"
 
@@ -1842,7 +1847,7 @@ class OrchestratorManager:
                         self.user_id, self.project_id, agent_role
                     )
                     # Build enriched retry prompt — smart diagnostics based on error type
-                    workspace_now = self._get_workspace_context()
+                    workspace_now = await asyncio.to_thread(self._get_workspace_context)
                     error_lower = error_msg.lower()
 
                     # Tailor guidance to the error type

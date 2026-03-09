@@ -3,9 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import state
+
+# Timezone for schedule matching (configurable via env var)
+_SCHEDULER_TZ = ZoneInfo(os.getenv("SCHEDULER_TIMEZONE", "Asia/Jerusalem"))
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +31,7 @@ async def _check_due_schedules():
     if not state.session_mgr:
         return
 
-    now = datetime.now()
+    now = datetime.now(tz=_SCHEDULER_TZ)
     current_time = now.strftime("%H:%M")
 
     due = await state.session_mgr.get_due_schedules(current_time)
