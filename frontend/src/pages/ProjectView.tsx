@@ -213,10 +213,15 @@ export default function ProjectView() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [resumableTask, setResumableTask] = useState<{ last_message: string; current_loop: number; total_cost_usd: number } | null>(null);
   const [dagGraph, setDagGraph] = useState<WSEvent['graph'] | null>(null);
+  const [dagTaskStatus, setDagTaskStatus] = useState<Record<string, 'pending' | 'working' | 'completed' | 'failed'>>({});
   const [healingEvents, setHealingEvents] = useState<Array<{
     timestamp: number; failed_task: string; failure_category: string;
     remediation_task: string; remediation_role: string;
   }>>([]);
+  // Live agent stream: what each agent is doing RIGHT NOW (thoughts, tool, progress)
+  const [liveAgentStream, setLiveAgentStream] = useState<Record<string, {
+    text: string; tool?: string; timestamp: number; progress?: string;
+  }>>({});
 
   // Track the latest activity timestamp loaded from DB to prevent duplicate WS events
   const activityLoadedUpToRef = useRef<number>(0);
@@ -227,6 +232,34 @@ export default function ProjectView() {
     const timer = setInterval(() => setTick(t => t + 1), 5000);
     return () => clearInterval(timer);
   }, []);
+
+  // Hydrate DAG state from localStorage on mount (survives page refresh)
+  useEffect(() => {
+    if (!id) return;
+    try {
+      const saved = localStorage.getItem(`nexus_dag_${id}`);
+      if (saved) {
+        const { graph, statuses, savedAt } = JSON.parse(saved);
+        const AGE_LIMIT_MS = 24 * 60 * 60 * 1000; // 24 hours
+        if (Date.now() - savedAt < AGE_LIMIT_MS && graph) {
+          setDagGraph(graph);
+          setDagTaskStatus(statuses ?? {});
+        }
+      }
+    } catch { /* corrupted storage — ignore */ }
+  }, [id]);
+
+  // Persist DAG state to localStorage whenever graph or task statuses change
+  useEffect(() => {
+    if (!id || !dagGraph) return;
+    try {
+      localStorage.setItem(`nexus_dag_${id}`, JSON.stringify({
+        graph: dagGraph,
+        statuses: dagTaskStatus,
+        savedAt: Date.now(),
+      }));
+    } catch { /* quota exceeded — ignore */ }
+  }, [id, dagGraph, dagTaskStatus]);
 
   const loadProject = useCallback(async () => {
     if (!id) return;
@@ -412,6 +445,19 @@ export default function ProjectView() {
               started_at: prev[updateAgent]?.started_at ?? (agentStatus === 'working' ? Date.now() : undefined),
             },
           }));
+          // Update live agent stream with current thought/action
+          const liveText = event.summary || event.text || '';
+          if (liveText && agentStatus === 'working') {
+            setLiveAgentStream(prev => ({
+              ...prev,
+              [updateAgent]: {
+                text: liveText.slice(0, 300),
+                tool: prev[updateAgent]?.tool,
+                timestamp: Date.now(),
+                progress: event.progress,
+              },
+            }));
+          }
           // Show agent name + action + progress in ticker
           const progressStr = event.progress ? ` (${event.progress})` : '';
           const remStr = event.is_remediation ? ' 🔧' : '';
@@ -433,12 +479,25 @@ export default function ProjectView() {
           ...prev,
           [event.agent!]: { ...prev[event.agent!], name: event.agent!, current_tool: event.description, last_update_at: Date.now() },
         }));
+        // Update live stream: show the tool being used with its description
+        setLiveAgentStream(prev => ({
+          ...prev,
+          [event.agent!]: {
+            ...prev[event.agent!],
+            tool: event.tool_name,
+            text: event.description || prev[event.agent!]?.text || '',
+            timestamp: Date.now(),
+          },
+        }));
         setLastTicker(`${event.agent}: ${event.description || event.tool_name}`);
         break;
 
       case 'agent_started':
         if (!event.agent) break;
-        // Only add to activity feed if this event is newer than what we loaded from DB
+        // Track DAG task as 'working'
+        if (event.task_id) {
+          setDagTaskStatus(prev => ({ ...prev, [event.task_id!]: 'working' }));
+        }
         if (event.timestamp > activityLoadedUpToRef.current) {
           setActivities(prev => [...prev, {
             id: nextId(), type: 'agent_started', timestamp: event.timestamp,
@@ -464,7 +523,19 @@ export default function ProjectView() {
 
       case 'agent_finished':
         if (!event.agent) break;
-        // Only add to activity feed if this event is newer than what we loaded from DB
+        // Track DAG task as completed or failed
+        if (event.task_id) {
+          setDagTaskStatus(prev => ({
+            ...prev,
+            [event.task_id!]: event.is_error ? 'failed' : 'completed',
+          }));
+        }
+        // Remove from live stream — agent is done
+        setLiveAgentStream(prev => {
+          const next = { ...prev };
+          delete next[event.agent!];
+          return next;
+        });
         if (event.timestamp > activityLoadedUpToRef.current) {
           setActivities(prev => [...prev, {
             id: nextId(), type: 'agent_finished', timestamp: event.timestamp,
@@ -594,6 +665,7 @@ export default function ProjectView() {
         });
         setLoopProgress(null);
         setLastTicker('');
+        setLiveAgentStream({});
         break;
 
       case 'project_status':
@@ -609,6 +681,10 @@ export default function ProjectView() {
           });
           setDagGraph(null);
           setHealingEvents([]);
+          setDagTaskStatus({});
+          setLiveAgentStream({});
+          // Clear persisted DAG so the new plan starts fresh
+          if (id) { try { localStorage.removeItem(`nexus_dag_${id}`); } catch { /* ignore */ } }
         } else if (event.status === 'idle') {
           // Task ended — only reset stale 'working' states; preserve done/error
           setAgentStates(prev => {
@@ -620,13 +696,15 @@ export default function ProjectView() {
           });
           setLoopProgress(null);
           setLastTicker('');
+          setLiveAgentStream({});
         }
         break;
 
       case 'task_graph' as WSEvent['type']:
         if (event.graph) {
           setDagGraph(event.graph);
-          // Add activity entry for the plan
+          // Reset task statuses for the new plan
+          setDagTaskStatus({});
           setActivities(prev => [...prev, {
             id: nextId(), type: 'agent_text', timestamp: event.timestamp,
             agent: 'PM', content: `📋 **DAG Plan:** ${event.graph?.vision || 'Execution plan created'} (${event.graph?.tasks?.length || 0} tasks)`,
@@ -667,9 +745,11 @@ export default function ProjectView() {
         setFiles(null);
         setMessageOffset(0);
         setDagGraph(null);
+        setDagTaskStatus({});
         setHealingEvents([]);
         setHasMoreMessages(false);
         setApprovalRequest(null);
+        if (id) { try { localStorage.removeItem(`nexus_dag_${id}`); } catch { /* ignore */ } }
         loadProject();
         break;
 
@@ -698,6 +778,16 @@ export default function ProjectView() {
         }
         if (event.status === 'running') {
           setLastTicker('agents working...');
+        }
+        // Restore DAG graph and task statuses from backend live state
+        if (event.dag_graph) {
+          setDagGraph(event.dag_graph);
+        }
+        if (event.dag_task_statuses && Object.keys(event.dag_task_statuses).length > 0) {
+          setDagTaskStatus(prev => ({
+            ...prev,
+            ...event.dag_task_statuses as Record<string, 'pending' | 'working' | 'completed' | 'failed'>,
+          }));
         }
         break;
       }
@@ -1012,7 +1102,10 @@ export default function ProjectView() {
         className="lg:hidden flex flex-col z-30"
         style={{
           position: 'fixed',
-          inset: 0,
+          top: 'var(--app-offset, 0px)',
+          left: 0,
+          right: 0,
+          height: 'var(--app-height, 100vh)',
           background: 'var(--bg-void)',
           paddingTop: 'env(safe-area-inset-top, 0px)',
           overflow: 'hidden',
@@ -1334,29 +1427,41 @@ export default function ProjectView() {
                       <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>{dagGraph.vision}</p>
                       <div className="space-y-2">
                         {dagGraph.tasks.map(task => {
-                          const agentState = agentStates[task.role];
-                          const stateColor = agentState?.state === 'done' ? 'var(--accent-green)'
-                            : agentState?.state === 'working' ? 'var(--accent-blue)'
-                            : agentState?.state === 'error' ? 'var(--accent-red)'
+                          const taskStatus = dagTaskStatus[task.id] ?? 'pending';
+                          const stateColor = taskStatus === 'completed' ? 'var(--accent-green)'
+                            : taskStatus === 'working' ? 'var(--accent-blue)'
+                            : taskStatus === 'failed' ? 'var(--accent-red)'
                             : 'var(--text-muted)';
-                          const stateIcon = agentState?.state === 'done' ? '✅'
-                            : agentState?.state === 'working' ? '⏳'
-                            : agentState?.state === 'error' ? '❌'
+                          const stateIcon = taskStatus === 'completed' ? '✅'
+                            : taskStatus === 'working' ? '🔄'
+                            : taskStatus === 'failed' ? '❌'
                             : task.is_remediation ? '🔧' : '⏸️';
+                          const agentEmoji = AGENT_ICONS[task.role] || '🤖';
+                          const borderColor = taskStatus === 'working' ? 'rgba(0,149,255,0.35)'
+                            : taskStatus === 'completed' ? 'rgba(61,214,140,0.25)'
+                            : taskStatus === 'failed' ? 'rgba(245,71,91,0.25)'
+                            : 'var(--border-dim)';
+                          const bgColor = taskStatus === 'working' ? 'rgba(0,149,255,0.06)'
+                            : taskStatus === 'completed' ? 'rgba(61,214,140,0.04)'
+                            : 'var(--bg-elevated)';
                           return (
-                            <div key={task.id} className="flex items-start gap-2 p-2 rounded-lg" style={{ background: 'var(--bg-elevated)', border: `1px solid ${agentState?.state === 'working' ? 'var(--accent-blue)' : 'var(--border-dim)'}` }}>
-                              <span className="text-sm flex-shrink-0">{stateIcon}</span>
+                            <div key={task.id} className="flex items-start gap-2 p-2.5 rounded-lg transition-all" style={{ background: bgColor, border: `1px solid ${borderColor}`, boxShadow: taskStatus === 'working' ? '0 0 10px rgba(0,149,255,0.06)' : 'none' }}>
+                              <span className="text-sm flex-shrink-0 mt-0.5">{stateIcon}</span>
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-mono font-bold" style={{ color: stateColor }}>{task.role}</span>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-xs font-mono font-semibold" style={{ color: stateColor }}>{agentEmoji} {task.role}</span>
+                                  <span className="text-[10px] font-mono opacity-50" style={{ color: 'var(--text-muted)' }}>{task.id}</span>
                                   {task.is_remediation && <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'var(--glow-amber)', color: 'var(--accent-amber)' }}>fix</span>}
-                                  {task.depends_on.length > 0 && (
+                                  {task.depends_on && task.depends_on.length > 0 && (
                                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                                       ← {task.depends_on.join(', ')}
                                     </span>
                                   )}
+                                  {taskStatus === 'working' && (
+                                    <span className="text-[10px] animate-pulse font-medium" style={{ color: 'var(--accent-blue)' }}>running...</span>
+                                  )}
                                 </div>
-                                <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--text-secondary)' }}>{task.goal}</p>
+                                <p className="text-xs mt-0.5 leading-relaxed" style={{ color: 'var(--text-secondary)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{task.goal}</p>
                               </div>
                             </div>
                           );
@@ -1419,9 +1524,77 @@ export default function ProjectView() {
 
           {/* Right panel: permanent activity log + chat input */}
           <div className="flex flex-col min-w-0 overflow-hidden" style={{ width: '35%', maxWidth: '35%', flexShrink: 0, borderLeft: '1px solid var(--border-dim)', background: 'var(--bg-panel)' }}>
-            <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-panel)', zIndex: 10 }}>
+            {/* Header */}
+            <div className="px-4 py-2 flex items-center justify-between flex-shrink-0" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-panel)', zIndex: 10 }}>
               <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Activity Log</h3>
+              {Object.keys(liveAgentStream).filter(a => agentStates[a]?.state === 'working').length > 0 && (
+                <div className="flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-green)' }} />
+                  <span className="text-[10px] font-mono" style={{ color: 'var(--accent-green)' }}>
+                    {Object.keys(liveAgentStream).filter(a => agentStates[a]?.state === 'working').length} running
+                  </span>
+                </div>
+              )}
             </div>
+
+            {/* Live Agent Stream — sticky section showing what each agent is doing NOW */}
+            {(() => {
+              const activeAgents = Object.entries(liveAgentStream).filter(([name]) => agentStates[name]?.state === 'working');
+              if (activeAgents.length === 0) return null;
+              return (
+                <div className="flex-shrink-0 overflow-hidden" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-elevated)', maxHeight: '220px', overflowY: 'auto' }}>
+                  <div className="px-3 pt-2 pb-1">
+                    <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>⚡ Live</span>
+                  </div>
+                  {activeAgents.map(([agentName, entry]) => {
+                    const ac = getAgentAccent(agentName);
+                    const agentState = agentStates[agentName];
+                    const elapsedSec = agentState?.started_at ? Math.round((Date.now() - agentState.started_at) / 1000) : 0;
+                    return (
+                      <div key={agentName} className="px-3 pb-2.5 pt-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        {/* Agent name row */}
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse" style={{ background: ac.color }} />
+                          <span className="text-[11px] font-semibold" style={{ color: ac.color }}>
+                            {AGENT_ICONS[agentName] || '🤖'} {AGENT_LABELS[agentName] || agentName}
+                          </span>
+                          {entry.tool && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-medium flex-shrink-0" style={{ background: `${ac.color}18`, color: ac.color, border: `1px solid ${ac.color}30` }}>
+                              {entry.tool}
+                            </span>
+                          )}
+                          {elapsedSec > 0 && (
+                            <span className="text-[10px] ml-auto font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                              {elapsedSec >= 60 ? `${Math.floor(elapsedSec/60)}m${elapsedSec%60}s` : `${elapsedSec}s`}
+                            </span>
+                          )}
+                        </div>
+                        {/* Current thought / action */}
+                        {entry.text && (
+                          <p className="text-[11px] leading-relaxed pl-3.5" style={{
+                            color: 'var(--text-secondary)',
+                            fontFamily: 'var(--font-mono)',
+                            wordBreak: 'break-word',
+                            display: '-webkit-box',
+                            WebkitLineClamp: 3,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}>
+                            {entry.text}
+                          </p>
+                        )}
+                        {entry.progress && (
+                          <span className="text-[10px] pl-3.5 mt-0.5 block font-mono" style={{ color: 'var(--text-muted)' }}>
+                            {entry.progress}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
             <div className="flex-1 overflow-y-auto min-h-0">
               <ActivityFeed activities={activities} hasMore={hasMoreMessages} onLoadMore={loadEarlierMessages} />
             </div>
