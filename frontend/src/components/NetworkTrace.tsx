@@ -6,6 +6,9 @@ interface SdkCall {
   endTime?: number;
   cost?: number;
   status: string;
+  taskId?: string;
+  turns?: number;
+  failureReason?: string;
 }
 
 interface Props {
@@ -24,7 +27,8 @@ function formatDuration(start: number, end?: number): string {
   if (!end) return 'running...';
   const ms = (end - start) * 1000;
   if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
 
 export default function NetworkTrace({ calls }: Props) {
@@ -44,11 +48,12 @@ export default function NetworkTrace({ calls }: Props) {
   }
 
   const totalCost = calls.reduce((sum, c) => sum + (c.cost || 0), 0);
+  const totalTurns = calls.reduce((sum, c) => sum + (c.turns || 0), 0);
 
   return (
     <div className="p-4">
       {/* Summary bar */}
-      <div className="flex items-center gap-4 mb-3">
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
         <span className="text-xs font-bold uppercase tracking-wider"
           style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
           API Trace
@@ -57,6 +62,12 @@ export default function NetworkTrace({ calls }: Props) {
           style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
           {calls.length} calls
         </span>
+        {totalTurns > 0 && (
+          <span className="text-xs px-2 py-0.5 rounded-md tabular-nums"
+            style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+            {totalTurns} turns
+          </span>
+        )}
         {totalCost > 0 && (
           <span className="text-xs px-2 py-0.5 rounded-md tabular-nums"
             style={{ background: 'var(--glow-green)', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>
@@ -74,9 +85,13 @@ export default function NetworkTrace({ calls }: Props) {
               <th className="px-3 py-2.5 text-left font-medium"
                 style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Agent</th>
               <th className="px-3 py-2.5 text-left font-medium"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Task</th>
+              <th className="px-3 py-2.5 text-left font-medium"
                 style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Time</th>
               <th className="px-3 py-2.5 text-right font-medium"
                 style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Duration</th>
+              <th className="px-3 py-2.5 text-right font-medium"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Turns</th>
               <th className="px-3 py-2.5 text-right font-medium"
                 style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Cost</th>
               <th className="px-3 py-2.5 text-right font-medium"
@@ -95,20 +110,27 @@ export default function NetworkTrace({ calls }: Props) {
               const agentColor = getAgentAccent(call.agent).color;
               return (
                 <tr
-                  key={i}
-                  className="transition-colors"
+                  key={`${call.agent}-${call.taskId || i}-${call.startTime}`}
+                  className="transition-colors group"
                   style={{ borderBottom: i < calls.length - 1 ? '1px solid var(--border-dim)' : 'none' }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                  title={call.failureReason || undefined}
                 >
                   <td className="px-3 py-2.5 font-medium capitalize" style={{ color: agentColor }}>
                     {AGENT_LABELS[call.agent] || call.agent}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    {call.taskId || '-'}
                   </td>
                   <td className="px-3 py-2.5 tabular-nums" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                     {formatTime(call.startTime)}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                     {formatDuration(call.startTime, call.endTime)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                    {call.turns ?? '-'}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                     {call.cost !== undefined ? `$${call.cost.toFixed(4)}` : '-'}

@@ -85,19 +85,26 @@ SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "28800", int)  # 
 # Per-agent timeout map — role-based timeouts (seconds).
 # Roles not listed here fall back to AGENT_TIMEOUT_SECONDS.
 # Overridable via AGENT_TIMEOUT_MAP env var (JSON) or settings_overrides.json.
+# NOTE: These are wall-clock timeouts for the SDK query itself.
+# The DAG executor has its own per-role timeout map (_ROLE_TIMEOUT_SECONDS)
+# which wraps the SDK call with asyncio.wait_for. These values here are
+# the inner timeout used by sdk_client.py for the stream consumption.
 _DEFAULT_AGENT_TIMEOUT_MAP: dict[str, int] = {
-    "researcher": 600,
-    "reviewer": 180,
-    "developer": 300,
-    "frontend_developer": 300,
-    "backend_developer": 300,
-    "database_expert": 300,
-    "tester": 300,
-    "security_auditor": 180,
-    "devops": 240,
-    "ux_critic": 180,
-    "memory": 120,
-    "orchestrator": 600,
+    "researcher": 900,
+    "reviewer": 300,
+    "developer": 900,
+    "frontend_developer": 900,
+    "backend_developer": 900,
+    "database_expert": 600,
+    "tester": 600,
+    "security_auditor": 300,
+    "devops": 600,
+    "ux_critic": 240,
+    "memory": 180,
+    "orchestrator": 900,
+    "test_engineer": 600,
+    "typescript_architect": 900,
+    "python_backend": 900,
 }
 
 # Load override from env/settings_overrides.json, merge with defaults
@@ -119,7 +126,7 @@ TIMEOUT_ESCALATION_FACTOR: float = _get("TIMEOUT_ESCALATION_FACTOR", "1.5", floa
 
 # SDK settings
 SDK_MAX_RETRIES: int = _get("SDK_MAX_RETRIES", "2", int)
-SDK_MAX_TURNS_PER_QUERY: int = _get("SDK_MAX_TURNS_PER_QUERY", "30", int)
+SDK_MAX_TURNS_PER_QUERY: int = _get("SDK_MAX_TURNS_PER_QUERY", "200", int)
 SDK_MAX_BUDGET_PER_QUERY: float = _get("SDK_MAX_BUDGET_PER_QUERY", "20.0", float)
 
 # Session persistence

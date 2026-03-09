@@ -40,6 +40,7 @@ from contracts import (
 from git_discipline import executor_commit
 from sdk_client import CircuitOpenError
 from skills_registry import build_skill_prompt, select_skills_for_task
+import config as cfg
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,58 @@ MAX_TASK_RETRIES = 2          # Direct retries per task
 MAX_REMEDIATION_DEPTH = 2     # Max chain of fix_xxx tasks before giving up
 MAX_TOTAL_REMEDIATIONS = 5    # Max total remediation tasks per graph execution
 MAX_ROUNDS = 50               # Safety limit on execution rounds
-TASK_TIMEOUT_SECONDS = 600    # 10 minute wall-clock timeout per task
+
+# Per-role max_turns — the REAL limit is the wall-clock timeout.
+# max_turns is a safety net, not the primary constraint.
+# Writer roles need many turns (each file read/write = 1 turn).
+# Reader roles need fewer turns but still generous.
+_ROLE_MAX_TURNS: dict[str, int] = {
+    # Writers — complex multi-file tasks
+    "developer": 200,
+    "frontend_developer": 200,
+    "backend_developer": 200,
+    "database_expert": 150,
+    "devops": 150,
+    "typescript_architect": 200,
+    "python_backend": 200,
+    # Readers / analysts — research + report
+    "researcher": 75,
+    "reviewer": 50,
+    "security_auditor": 50,
+    "test_engineer": 100,
+    "tester": 100,
+    "ux_critic": 40,
+    "memory": 30,
+}
+_DEFAULT_MAX_TURNS = 100  # Fallback for unlisted roles
+
+# Per-role wall-clock timeout (seconds) — the PRIMARY limit.
+# Sourced from config.py AGENT_TIMEOUT_MAP, with generous overrides.
+_ROLE_TIMEOUT_SECONDS: dict[str, int] = {
+    "developer": 900,           # 15 min — complex builds
+    "frontend_developer": 900,
+    "backend_developer": 900,
+    "database_expert": 600,     # 10 min
+    "devops": 600,
+    "researcher": 600,          # 10 min — web searches are slow
+    "reviewer": 300,            # 5 min
+    "security_auditor": 300,
+    "test_engineer": 600,
+    "tester": 600,
+    "ux_critic": 240,
+    "memory": 180,
+}
+_DEFAULT_TIMEOUT_SECONDS = 600  # 10 min fallback
+
+
+def _get_max_turns(role: str) -> int:
+    """Return the max_turns limit for a given agent role."""
+    return _ROLE_MAX_TURNS.get(role, _DEFAULT_MAX_TURNS)
+
+
+def _get_task_timeout(role: str) -> int:
+    """Return the wall-clock timeout (seconds) for a given agent role."""
+    return _ROLE_TIMEOUT_SECONDS.get(role, _DEFAULT_TIMEOUT_SECONDS)
 
 # Roles that write/modify files — must run sequentially when file scopes overlap
 _WRITER_ROLES = {
@@ -370,10 +422,23 @@ async def _run_single_task(
     task: TaskInput,
     ctx: _ExecutionContext,
 ) -> TaskOutput:
-    """Run one task: build prompt -> call specialist -> parse TaskOutput."""
+    """Run one task: build prompt -> call specialist -> parse TaskOutput.
+
+    Flow:
+    1. Build prompt from task + upstream context
+    2. Call SDK with per-role max_turns and wall-clock timeout
+    3. Parse JSON output from agent response
+    4. If no JSON found but agent did work → attempt JSON recovery query
+    5. Return TaskOutput (success or classified failure)
+    """
+    role_name = task.role.value
+    max_turns = _get_max_turns(role_name)
+    task_timeout = _get_task_timeout(role_name)
+
     logger.info(
-        f"[DAG] _run_single_task START: {task.id} ({task.role.value}) "
+        f"[DAG] _run_single_task START: {task.id} ({role_name}) "
         f"goal='{task.goal[:100]}' "
+        f"max_turns={max_turns}, timeout={task_timeout}s, "
         f"context_from={task.context_from or 'none'} "
         f"depends_on={task.depends_on or 'none'} "
         f"retry_count={ctx.retries.get(task.id, 0)}"
@@ -391,13 +456,8 @@ async def _run_single_task(
         for tid in task.context_from
         if tid in ctx.completed
     }
-    logger.info(
-        f"[DAG] Task {task.id}: context from {len(context_outputs)} upstream tasks, "
-        f"prompt_len={0}"  # will be updated after prompt build
-    )
 
     # Build the prompt using the typed contract serialiser
-    # v3: Pass the mission vision + epics so every agent sees the big picture
     prompt = task_input_to_prompt(
         task,
         context_outputs,
@@ -407,79 +467,75 @@ async def _run_single_task(
 
     # Get specialist system prompt
     system_prompt = ctx.specialist_prompts.get(
-        task.role.value,
+        role_name,
         ctx.specialist_prompts.get("backend_developer", "You are an expert software engineer.")
     )
 
     # Inject relevant skills
     try:
-        skill_names = select_skills_for_task(task.role.value, task.goal)  # uses default max_skills=2
+        skill_names = select_skills_for_task(role_name, task.goal)
         if skill_names:
             system_prompt = system_prompt + build_skill_prompt(skill_names)
     except Exception as exc:
         logger.warning(f"[DAG] Task {task.id}: skill injection failed (non-fatal): {exc}")
 
-    # Resume session if available (use task_id to avoid collisions for parallel same-role tasks)
-    session_key = f"{ctx.graph.project_id}:{task.role.value}:{task.id}"
+    # Resume session if available
+    session_key = f"{ctx.graph.project_id}:{role_name}:{task.id}"
     session_id = ctx.session_ids.get(session_key)
 
     logger.info(
         f"[DAG] Task {task.id}: calling SDK "
-        f"max_turns=30, max_budget=$15.0, "
+        f"max_turns={max_turns}, timeout={task_timeout}s, max_budget=$15.0, "
         f"session={'resume' if session_id else 'new'}, "
         f"prompt_len={len(prompt)}, system_prompt_len={len(system_prompt)}"
     )
+
+    # ── Build streaming callbacks scoped to this task ──
+    _on_stream = None
+    _on_tool_use = None
+    if ctx.on_agent_stream:
+        async def _on_stream(text):
+            try:
+                await ctx.on_agent_stream(role_name, text, task.id)
+            except Exception:
+                pass
+    if ctx.on_agent_tool_use:
+        async def _on_tool_use(tool_name, tool_info="", tool_input=None):
+            try:
+                await ctx.on_agent_tool_use(role_name, tool_name, tool_info, task.id)
+            except Exception:
+                pass
+
+    # ── Execute the main SDK query ──
     t0 = time.monotonic()
     try:
-        # Build streaming callbacks scoped to this task's agent role
-        _on_stream = None
-        _on_tool_use = None
-        if ctx.on_agent_stream:
-            async def _on_stream(text):
-                try:
-                    await ctx.on_agent_stream(task.role.value, text, task.id)
-                except Exception:
-                    pass
-        if ctx.on_agent_tool_use:
-            async def _on_tool_use(tool_name, tool_info="", tool_input=None):
-                try:
-                    # tool_info is the description string from SDK
-                    await ctx.on_agent_tool_use(task.role.value, tool_name, tool_info, task.id)
-                except Exception:
-                    pass
-
         response = await asyncio.wait_for(
             ctx.sdk.query_with_retry(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 cwd=ctx.project_dir,
                 session_id=session_id,
-                max_turns=30,
+                max_turns=max_turns,
                 max_budget_usd=15.0,
                 on_stream=_on_stream,
                 on_tool_use=_on_tool_use,
             ),
-            timeout=TASK_TIMEOUT_SECONDS,
+            timeout=task_timeout,
         )
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - t0
-        logger.error(f"[DAG] Task {task.id} timed out after {elapsed:.0f}s")
+        logger.error(f"[DAG] Task {task.id} timed out after {elapsed:.0f}s (limit={task_timeout}s)")
         output = TaskOutput(
             task_id=task.id,
             status=TaskStatus.FAILED,
-            summary=f"Task timed out after {elapsed:.0f} seconds",
-            issues=[f"Wall-clock timeout ({TASK_TIMEOUT_SECONDS}s)"],
-            failure_details=f"Task exceeded {TASK_TIMEOUT_SECONDS}s wall-clock timeout",
+            summary=f"Task timed out after {elapsed:.0f} seconds (limit: {task_timeout}s)",
+            issues=[f"Wall-clock timeout ({task_timeout}s) for role {role_name}"],
+            failure_details=f"Task exceeded {task_timeout}s wall-clock timeout",
             confidence=0.0,
         )
         output.failure_category = FailureCategory.TIMEOUT
         return output
     except asyncio.CancelledError:
-        # FIX(task_001): Explicit CancelledError handler — must come before any
-        # generic Exception catch.  Without this, a cancellation (e.g. from
-        # session stop or budget exhaustion) would be misclassified as a task
-        # failure by asyncio.gather(return_exceptions=True) in execute_graph.
-        # Re-raising preserves correct cancellation semantics.
         logger.info(f"[DAG] Task {task.id} was cancelled")
         raise
     except CircuitOpenError as exc:
@@ -496,13 +552,13 @@ async def _run_single_task(
         return output
     elapsed = time.monotonic() - t0
 
-    # Persist session ID
+    # Persist session ID for potential recovery query
     if response.session_id:
         ctx.session_ids[session_key] = response.session_id
 
     logger.info(
         f"[DAG] Task {task.id}: SDK returned in {elapsed:.1f}s "
-        f"is_error={response.is_error} turns={response.num_turns} "
+        f"is_error={response.is_error} turns={response.num_turns}/{max_turns} "
         f"cost=${response.cost_usd:.4f} text_len={len(response.text)} "
         f"session_id={'yes' if response.session_id else 'no'}"
     )
@@ -525,6 +581,7 @@ async def _run_single_task(
         output.failure_category = classify_failure(output)
         return output
 
+    # ── Parse output ──
     output = extract_task_output(response.text, task.id)
     output.cost_usd = response.cost_usd
     output.turns_used = response.num_turns
@@ -535,38 +592,151 @@ async def _run_single_task(
         f"artifacts={len(output.artifacts)} issues={len(output.issues)}"
     )
 
-    # Detect max_turns exhaustion: agent used all turns but didn't fail explicitly.
-    # This is a common pattern where the agent does real work but runs out of turns
-    # before producing the JSON output.
-    max_turns_exhausted = response.num_turns >= 30
-    if max_turns_exhausted and not output.is_successful():
+    # ── JSON Recovery: if no JSON was found but multi-signal detection says ──
+    # the agent DID work, send a lightweight follow-up query to the same session
+    # asking ONLY for the JSON summary. This costs ~$0.01 and saves the $2+ task.
+    needs_recovery = (
+        not output.is_successful()
+        and response.session_id
+        and output.confidence == 0.0
+        and response.num_turns >= 5  # Agent did at least some work
+        and len(response.text) >= 200  # Non-trivial output
+    )
+    # Also try recovery if multi-signal scored it as completed but with low confidence
+    if not needs_recovery and output.is_successful() and output.confidence <= 0.7:
+        # Already marked completed by multi-signal, but let's try to get proper JSON
+        needs_recovery = bool(response.session_id)
+
+    if needs_recovery and response.session_id:
+        output = await _attempt_json_recovery(
+            task=task,
+            ctx=ctx,
+            session_id=response.session_id,
+            system_prompt=system_prompt,
+            original_output=output,
+            original_cost=response.cost_usd,
+            original_turns=response.num_turns,
+        )
+
+    # ── Detect max_turns exhaustion ──
+    if response.num_turns >= max_turns and not output.is_successful():
         logger.warning(
-            f"[DAG] Task {task.id} ({task.role.value}): max_turns exhausted "
-            f"({response.num_turns} turns, ${response.cost_usd:.4f}). "
+            f"[DAG] Task {task.id} ({role_name}): max_turns exhausted "
+            f"({response.num_turns}/{max_turns} turns, ${response.cost_usd:.4f}). "
             f"Output status={output.status.value}, confidence={output.confidence:.2f}"
         )
-        # If the smart fallback in extract_task_output detected work, it already
-        # set status=COMPLETED with confidence=0.6. If not, classify the failure
-        # as TIMEOUT so the retry strategy can handle it appropriately.
-        if not output.is_successful() and not output.failure_category:
+        if not output.failure_category:
             output.failure_category = FailureCategory.TIMEOUT
             output.failure_details = (
-                f"Agent exhausted max_turns ({response.num_turns}) without completing. "
-                f"This usually means the task is too complex for a single pass. "
-                f"Consider breaking it into smaller sub-tasks."
+                f"Agent exhausted max_turns ({response.num_turns}/{max_turns}) "
+                f"without completing. Role: {role_name}."
             )
     elif not output.is_successful() and not output.failure_category:
-        # Auto-classify failure if agent didn't
         output.failure_category = classify_failure(output)
 
     log_level = logging.INFO if output.is_successful() else logging.WARNING
     logger.log(
         log_level,
-        f"[DAG] Task {task.id} ({task.role.value}) finished in {elapsed:.1f}s: "
+        f"[DAG] Task {task.id} ({role_name}) finished in {elapsed:.1f}s: "
         f"status={output.status.value}, confidence={output.confidence:.2f}, "
-        f"{response.num_turns} turns, ${response.cost_usd:.4f}"
+        f"{response.num_turns}/{max_turns} turns, ${output.cost_usd:.4f}"
     )
     return output
+
+
+async def _attempt_json_recovery(
+    task: TaskInput,
+    ctx: _ExecutionContext,
+    session_id: str,
+    system_prompt: str,
+    original_output: TaskOutput,
+    original_cost: float,
+    original_turns: int,
+) -> TaskOutput:
+    """Send a lightweight follow-up query to extract JSON from an agent that did work.
+
+    The agent already completed its task but didn't produce the required JSON
+    summary. We resume the same session with a short prompt asking ONLY for
+    the JSON block, with tools disabled (max_turns=5, no tools).
+
+    Cost: ~$0.01-0.05. Saves: the entire $2-5 task from being wasted.
+    """
+    recovery_prompt = (
+        "You have completed your work. Now produce ONLY the required JSON output block.\n"
+        "Do NOT do any more work. Do NOT use any tools. Just output the JSON summary "
+        "of what you already did.\n\n"
+        "```json\n"
+        "{\n"
+        f'  "task_id": "{task.id}",\n'
+        '  "status": "completed",\n'
+        '  "summary": "what you did in 2-3 sentences",\n'
+        '  "artifacts": ["list/of/files.py"],\n'
+        '  "issues": [],\n'
+        '  "confidence": 0.95\n'
+        "}\n"
+        "```"
+    )
+
+    logger.info(
+        f"[DAG] Task {task.id}: attempting JSON recovery via session resume "
+        f"(session={session_id[:12]}..., original_turns={original_turns})"
+    )
+
+    try:
+        recovery_response = await asyncio.wait_for(
+            ctx.sdk.query_with_retry(
+                prompt=recovery_prompt,
+                system_prompt=system_prompt,
+                cwd=ctx.project_dir,
+                session_id=session_id,
+                max_turns=5,
+                max_budget_usd=1.0,
+                tools=[],  # Disable ALL tools — just produce text
+                max_retries=0,  # Don't retry the recovery itself
+            ),
+            timeout=60,  # 1 minute max for recovery
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[DAG] Task {task.id}: JSON recovery failed ({type(exc).__name__}: {exc}). "
+            f"Keeping original output."
+        )
+        return original_output
+
+    if recovery_response.is_error:
+        logger.warning(
+            f"[DAG] Task {task.id}: JSON recovery returned error: "
+            f"{recovery_response.error_message[:100]}. Keeping original output."
+        )
+        return original_output
+
+    # Try to parse the recovery response
+    recovered = extract_task_output(recovery_response.text, task.id)
+    total_cost = original_cost + recovery_response.cost_usd
+    total_turns = original_turns + recovery_response.num_turns
+
+    if recovered.is_successful() and recovered.confidence > original_output.confidence:
+        recovered.cost_usd = total_cost
+        recovered.turns_used = total_turns
+        logger.info(
+            f"[DAG] Task {task.id}: JSON recovery SUCCESS! "
+            f"confidence={recovered.confidence:.2f} (was {original_output.confidence:.2f}), "
+            f"recovery_cost=${recovery_response.cost_usd:.4f}"
+        )
+        return recovered
+
+    # Recovery didn't improve things — keep original (which may be
+    # a multi-signal COMPLETED with lower confidence)
+    logger.info(
+        f"[DAG] Task {task.id}: JSON recovery did not improve output "
+        f"(recovered={recovered.status.value}/{recovered.confidence:.2f}, "
+        f"original={original_output.status.value}/{original_output.confidence:.2f}). "
+        f"Keeping original."
+    )
+    # Still add the recovery cost
+    original_output.cost_usd = total_cost
+    original_output.turns_used = total_turns
+    return original_output
 
 
 # ---------------------------------------------------------------------------

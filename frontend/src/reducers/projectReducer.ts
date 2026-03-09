@@ -25,6 +25,9 @@ export interface SdkCall {
   endTime?: number;
   cost?: number;
   status: string;
+  taskId?: string;      // DAG task ID (e.g. "task_003") — distinguishes multiple calls by same role
+  turns?: number;       // Number of turns used
+  failureReason?: string; // Why the call failed (if status === 'error')
 }
 
 export interface HealingEvent {
@@ -450,9 +453,9 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
             last_update_at: Date.now(),
           },
         },
-        sdkCalls: state.sdkCalls.some(c => c.agent === event.agent && c.status === 'running')
+        sdkCalls: state.sdkCalls.some(c => c.agent === event.agent && c.status === 'running' && (!event.task_id || c.taskId === event.task_id))
           ? state.sdkCalls  // Already tracked from delegation event
-          : [...state.sdkCalls, { agent: event.agent, startTime: event.timestamp, status: 'running' }],
+          : [...state.sdkCalls, { agent: event.agent, startTime: event.timestamp, status: 'running', taskId: event.task_id }],
         liveAgentStream: {
           ...state.liveAgentStream,
           [event.agent]: {
@@ -486,13 +489,26 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           }]
         : state.activities;
 
-      // Update SDK calls — find last running entry for this agent
+      // Update SDK calls — find the matching running entry for this agent.
+      // Prefer matching by task_id (DAG mode) for accuracy when same role runs multiple tasks.
       const updatedSdkCalls = [...state.sdkCalls];
       let sdkIdx = -1;
-      for (let i = updatedSdkCalls.length - 1; i >= 0; i--) {
-        if (updatedSdkCalls[i].agent === event.agent && updatedSdkCalls[i].status === 'running') {
-          sdkIdx = i;
-          break;
+      if (event.task_id) {
+        // DAG mode: match by task_id first (most precise)
+        for (let i = updatedSdkCalls.length - 1; i >= 0; i--) {
+          if (updatedSdkCalls[i].taskId === event.task_id && updatedSdkCalls[i].status === 'running') {
+            sdkIdx = i;
+            break;
+          }
+        }
+      }
+      if (sdkIdx < 0) {
+        // Fallback: match by agent name (legacy/non-DAG mode)
+        for (let i = updatedSdkCalls.length - 1; i >= 0; i--) {
+          if (updatedSdkCalls[i].agent === event.agent && updatedSdkCalls[i].status === 'running') {
+            sdkIdx = i;
+            break;
+          }
         }
       }
       if (sdkIdx >= 0) {
@@ -501,6 +517,8 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           endTime: event.timestamp,
           cost: event.cost,
           status: event.is_error ? 'error' : 'done',
+          turns: event.turns,
+          failureReason: event.is_error ? event.failure_reason : undefined,
         };
       }
 

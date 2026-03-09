@@ -937,11 +937,12 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
     Tries in order:
     1. Fenced JSON code block (```json ... ```)
     2. Last JSON object in the text
-    3. Fallback: synthesise a FAILED output so the DAG can handle it
+    3. Multi-signal work detection (tool use, file paths, action verbs, text volume)
+    4. Fallback: synthesise a FAILED output so the DAG can handle it
 
     This is the ONLY place where we parse agent text output.
     """
-    # Try fenced block first
+    # ── Step 1: Try fenced JSON block ──
     for match in _JSON_BLOCK_RE.finditer(raw_text):
         try:
             data = json.loads(match.group(1).strip())
@@ -950,7 +951,7 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
         except Exception:
             continue
 
-    # Try last JSON object
+    # ── Step 2: Try last JSON object in text ──
     start = raw_text.rfind("{")
     if start != -1:
         depth = 0
@@ -967,29 +968,114 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
                     except Exception:
                         break
 
-    # Fallback — could not parse JSON. Try to infer status from raw text.
+    # ── Step 3: Multi-signal work detection ──
+    # Instead of a naive keyword list, we score multiple independent signals.
+    # Each signal contributes points. If total score >= threshold → COMPLETED.
     logger.warning(
         f"[extract_task_output] No JSON found for {task_id}. "
-        f"Text length={len(raw_text)}. Attempting text-based inference."
+        f"Text length={len(raw_text)}. Running multi-signal work detection."
     )
 
-    # Heuristic: if the agent did real work (mentions files, commits, etc.)
-    # treat it as partial success rather than outright failure.
+    score = 0.0
+    signals: list[str] = []  # Human-readable log of what we detected
     lower = raw_text.lower() if raw_text else ""
-    did_work = any(indicator in lower for indicator in [
-        "git commit", "git add", "created ", "modified ", "updated ",
-        "wrote ", "implemented", "fixed ", "added ", "refactored",
-        "## summary", "## files changed", "## actions taken",
-        "task completed", "completed via tool use",
-    ])
 
-    # Extract a summary from the text if possible
+    # Signal 1: Tool use indicators (agent used CLI, read/wrote files)
+    _TOOL_PATTERNS = [
+        (r'\$ .+', "shell commands"),           # $ command output
+        (r'running:? `[^`]+`', "tool execution"),  # Running: `cmd`
+        (r'reading:? .+\.\w+', "file reads"),
+        (r'writing:? .+\.\w+', "file writes"),
+        (r'editing:? .+\.\w+', "file edits"),
+        (r'completed via tool use', "tool completion marker"),
+    ]
+    tool_hits = 0
+    for pattern, label in _TOOL_PATTERNS:
+        matches = re.findall(pattern, lower)
+        if matches:
+            tool_hits += len(matches)
+            signals.append(f"{label}({len(matches)}x)")
+    if tool_hits >= 3:
+        score += 0.4
+    elif tool_hits >= 1:
+        score += 0.2
+
+    # Signal 2: File paths mentioned (strong indicator of real work)
+    file_paths = re.findall(
+        r'[\w./-]+\.(?:py|ts|tsx|js|jsx|json|md|yaml|yml|css|html|sql|sh|env|toml|cfg)',
+        raw_text,
+    )
+    unique_files = list(dict.fromkeys(file_paths))[:30]
+    if len(unique_files) >= 5:
+        score += 0.3
+        signals.append(f"files_mentioned({len(unique_files)})")
+    elif len(unique_files) >= 2:
+        score += 0.15
+        signals.append(f"files_mentioned({len(unique_files)})")
+
+    # Signal 3: Action verbs — the agent describes doing things
+    _ACTION_VERBS = [
+        "created ", "modified ", "updated ", "wrote ", "implemented",
+        "fixed ", "added ", "refactored", "installed ", "configured",
+        "deployed", "migrated", "deleted ", "removed ", "replaced ",
+        "built ", "compiled", "tested ", "verified", "committed",
+        "now let me", "i'll now", "next i", "let me update",
+        "i have ", "i've ", "successfully",
+    ]
+    verb_hits = sum(1 for v in _ACTION_VERBS if v in lower)
+    if verb_hits >= 4:
+        score += 0.3
+        signals.append(f"action_verbs({verb_hits})")
+    elif verb_hits >= 2:
+        score += 0.15
+        signals.append(f"action_verbs({verb_hits})")
+
+    # Signal 4: Structured report sections
+    _REPORT_MARKERS = [
+        "## summary", "## files changed", "## actions taken",
+        "## issues found", "## status", "# summary",
+    ]
+    report_hits = sum(1 for m in _REPORT_MARKERS if m in lower)
+    if report_hits >= 2:
+        score += 0.3
+        signals.append(f"report_sections({report_hits})")
+    elif report_hits >= 1:
+        score += 0.1
+        signals.append(f"report_sections({report_hits})")
+
+    # Signal 5: Git activity
+    if "git commit" in lower or "git add" in lower:
+        score += 0.3
+        signals.append("git_activity")
+
+    # Signal 6: Substantial text output (agent was clearly working, not empty)
+    if len(raw_text) >= 2000:
+        score += 0.15
+        signals.append(f"text_volume({len(raw_text)})")
+    elif len(raw_text) >= 500:
+        score += 0.05
+        signals.append(f"text_volume({len(raw_text)})")
+
+    # Signal 7: Code blocks (agent wrote or showed code)
+    code_blocks = re.findall(r'```(?:python|typescript|javascript|bash|sql|\w+)?\n', raw_text)
+    if len(code_blocks) >= 2:
+        score += 0.2
+        signals.append(f"code_blocks({len(code_blocks)})")
+    elif len(code_blocks) >= 1:
+        score += 0.1
+        signals.append(f"code_blocks({len(code_blocks)})")
+
+    logger.info(
+        f"[extract_task_output] {task_id}: work score={score:.2f} "
+        f"signals=[{', '.join(signals)}]"
+    )
+
+    # ── Extract summary from text ──
     inferred_summary = ""
     for marker in ["## SUMMARY", "## Summary", "# Summary"]:
         idx = raw_text.find(marker)
         if idx != -1:
             after = raw_text[idx + len(marker):].strip()
-            # Take first paragraph
             end = after.find("\n\n")
             inferred_summary = after[:end].strip() if end != -1 else after[:300].strip()
             break
@@ -997,31 +1083,44 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
         # Use last 300 chars as summary hint
         inferred_summary = raw_text[-300:].strip()
 
-    # Extract file paths mentioned (common patterns)
-    file_paths = re.findall(r'[\w./]+\.(?:py|ts|tsx|js|jsx|json|md|yaml|yml|css|html)', raw_text)
-    unique_files = list(dict.fromkeys(file_paths))[:20]  # dedupe, limit
+    # ── Decision: score >= 0.4 → COMPLETED ──
+    WORK_THRESHOLD = 0.4
 
-    if did_work:
+    if score >= WORK_THRESHOLD:
+        confidence = min(0.5 + score * 0.3, 0.85)  # Scale: 0.62 to 0.85
         fallback = TaskOutput(
             task_id=task_id,
             status=TaskStatus.COMPLETED,
-            summary=f"Agent completed work but did not produce structured JSON output. Inferred from text: {inferred_summary[:200]}",
+            summary=(
+                f"Agent completed work (inferred, score={score:.2f}). "
+                f"{inferred_summary[:200]}"
+            ),
             artifacts=unique_files,
-            issues=["Agent did not produce TaskOutput JSON — output inferred from text"],
-            confidence=0.6,  # Lower confidence since we inferred
+            issues=["Agent did not produce TaskOutput JSON — output inferred via multi-signal detection"],
+            confidence=confidence,
         )
-        logger.info(f"[extract_task_output] {task_id}: inferred COMPLETED (work detected, {len(unique_files)} files)")
+        logger.info(
+            f"[extract_task_output] {task_id}: inferred COMPLETED "
+            f"(score={score:.2f}, confidence={confidence:.2f}, "
+            f"{len(unique_files)} files, signals={signals})"
+        )
     else:
         fallback = TaskOutput(
             task_id=task_id,
             status=TaskStatus.FAILED,
-            summary=f"Agent returned unparseable output with no clear work indicators. Last output: {inferred_summary[:200]}",
-            issues=["Could not parse TaskOutput JSON and no work indicators found"],
+            summary=(
+                f"Agent output could not be parsed and work score too low "
+                f"({score:.2f} < {WORK_THRESHOLD}). Last output: {inferred_summary[:200]}"
+            ),
+            issues=[f"No JSON output and low work score ({score:.2f}). Signals: {signals}"],
             failure_details=raw_text[-500:] if raw_text else "",
             confidence=0.0,
         )
         fallback.failure_category = classify_failure(fallback)
-        logger.warning(f"[extract_task_output] {task_id}: FAILED (no work detected)")
+        logger.warning(
+            f"[extract_task_output] {task_id}: FAILED "
+            f"(score={score:.2f}, signals={signals})"
+        )
 
     return fallback
 

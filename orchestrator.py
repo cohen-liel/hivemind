@@ -1508,9 +1508,14 @@ class OrchestratorManager:
                 duration=0,  # frontend calculates from started_at
                 is_error=False,
             )
-            # BUG FIX: reset DAG state on session end so /live returns clean state
-            self._dag_task_statuses = {}
-            self._current_dag_graph = None
+            # Checkpoint the final state (including dag_graph) BEFORE clearing
+            # so the DB has the complete execution record for /live recovery.
+            await self._checkpoint_state(status="completed")
+
+            # Keep dag_graph available for /live endpoint (browser refresh).
+            # Only clear dag_task_statuses working states — keep completed/failed.
+            # The graph itself stays until the next session starts.
+            # self._current_dag_graph = None  # REMOVED: keep for /live recovery
             await self._emit_event("project_status", status="idle")
 
     async def _on_dag_task_start(self, task: "TaskInput"):
