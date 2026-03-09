@@ -215,6 +215,10 @@ export default function ProjectView(): React.ReactElement | null {
   const { connected } = useWSSubscribe(handleWSEvent);
   useIOSViewport();
 
+  // ── Action handlers — must be unconditional (Rules of Hooks). ──
+  // Each handler guards internally against id being undefined.
+  const actions = useProjectActions(id, dispatch, toast, loadProject);
+
   // ── Error / Loading early returns ──
   if (loadError) {
     return (
@@ -231,9 +235,6 @@ export default function ProjectView(): React.ReactElement | null {
     );
   }
   if (!project || !id) return <ProjectLoadingSkeleton />;
-
-  // ── Action handlers (extracted to custom hook) ──
-  const actions = useProjectActions(id, dispatch, toast, loadProject);
 
   // ── Computed values ──
   const agentStateList: AgentStateType[] = project.agents.map(

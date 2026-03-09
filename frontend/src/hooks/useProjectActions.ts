@@ -39,13 +39,14 @@ export interface ProjectActions {
 }
 
 export function useProjectActions(
-  projectId: string,
+  projectId: string | undefined,
   dispatch: Dispatch<ProjectAction>,
   toast: Toast,
   loadProject: () => Promise<void>,
 ): ProjectActions {
   const handleSend = useCallback(
     async (msg: string): Promise<void> => {
+      if (!projectId) return;
       dispatch({
         type: 'ADD_ACTIVITY',
         activity: {
@@ -79,6 +80,7 @@ export function useProjectActions(
   );
 
   const handlePause = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
     try {
       await pauseProject(projectId);
       toast.info('Project paused');
@@ -89,6 +91,7 @@ export function useProjectActions(
   }, [projectId, toast, loadProject]);
 
   const handleResume = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
     try {
       await resumeProject(projectId);
       toast.success('Project resumed');
@@ -99,6 +102,7 @@ export function useProjectActions(
   }, [projectId, toast, loadProject]);
 
   const handleStop = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
     try {
       await stopProject(projectId);
       toast.warning('Project stopped');
@@ -109,6 +113,7 @@ export function useProjectActions(
   }, [projectId, toast, loadProject]);
 
   const handleClearHistory = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
     dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: false });
     try {
       await clearHistory(projectId);
@@ -126,6 +131,7 @@ export function useProjectActions(
   }, [projectId, dispatch, toast, loadProject]);
 
   const handleResumeTask = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
     try {
       await resumeInterruptedTask(projectId);
       dispatch({ type: 'SET_RESUMABLE_TASK', task: null });
@@ -140,6 +146,7 @@ export function useProjectActions(
   }, [projectId, dispatch, toast, loadProject]);
 
   const handleDiscardTask = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
     try {
       await discardInterruptedTask(projectId);
       dispatch({ type: 'SET_RESUMABLE_TASK', task: null });
