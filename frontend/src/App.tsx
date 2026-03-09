@@ -155,7 +155,7 @@ function AnimatedRoutes() {
   const location = useLocation();
 
   return (
-    <div key={location.pathname} className="animate-[pageIn_0.2s_ease-out] h-full">
+    <div key={location.pathname} className="animate-[fadeSlideIn_0.2s_ease-out] h-full">
       <Routes location={location}>
         <Route path="/" element={<Dashboard />} />
         <Route path="/project/:id" element={<ProjectView />} />
@@ -180,7 +180,9 @@ export default function App() {
               </div>
               <main className="flex-1 overflow-y-auto min-w-0 pb-14 lg:pb-0">
                 <KeyboardShortcuts />
-                <AnimatedRoutes />
+                <ErrorBoundary>
+                  <AnimatedRoutes />
+                </ErrorBoundary>
               </main>
               {/* Mobile bottom nav */}
               <MobileBottomNav />

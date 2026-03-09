@@ -15,12 +15,12 @@ import Controls from '../components/Controls';
 import CodeBrowser from '../components/CodeBrowser';
 import ConductorMode from '../components/ConductorMode';
 import type { Project, ProjectMessage, FileChanges, WSEvent, ActivityEntry, AgentState as AgentStateType, LoopProgress } from '../types';
+import { SkeletonBlock } from '../components/Skeleton';
 import type { ActivityEvent } from '../api';
 import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 
-let activityIdCounter = 0;
 function nextId(): string {
-  return `a-${++activityIdCounter}`;
+  return crypto.randomUUID();
 }
 
 function messagesToActivities(messages: ProjectMessage[]): ActivityEntry[] {
@@ -210,6 +210,7 @@ export default function ProjectView() {
   const [messageOffset, setMessageOffset] = useState(0);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [resumableTask, setResumableTask] = useState<{ last_message: string; current_loop: number; total_cost_usd: number } | null>(null);
   const [dagGraph, setDagGraph] = useState<WSEvent['graph'] | null>(null);
   const [healingEvents, setHealingEvents] = useState<Array<{
@@ -421,22 +422,22 @@ export default function ProjectView() {
       }
 
       case 'tool_use':
+        if (!event.agent) break;
         if (event.timestamp > activityLoadedUpToRef.current) {
           setActivities(prev => [...prev, {
             id: nextId(), type: 'tool_use', timestamp: event.timestamp,
             agent: event.agent, tool_name: event.tool_name, tool_description: event.description,
           }]);
         }
-        if (event.agent) {
-          setAgentStates(prev => ({
-            ...prev,
-            [event.agent!]: { ...prev[event.agent!], name: event.agent!, current_tool: event.description, last_update_at: Date.now() },
-          }));
-          setLastTicker(`${event.agent}: ${event.description || event.tool_name}`);
-        }
+        setAgentStates(prev => ({
+          ...prev,
+          [event.agent!]: { ...prev[event.agent!], name: event.agent!, current_tool: event.description, last_update_at: Date.now() },
+        }));
+        setLastTicker(`${event.agent}: ${event.description || event.tool_name}`);
         break;
 
       case 'agent_started':
+        if (!event.agent) break;
         // Only add to activity feed if this event is newer than what we loaded from DB
         if (event.timestamp > activityLoadedUpToRef.current) {
           setActivities(prev => [...prev, {
@@ -444,26 +445,25 @@ export default function ProjectView() {
             agent: event.agent, task: event.task,
           }]);
         }
-        if (event.agent) {
-          setAgentStates(prev => ({
-            ...prev,
-            [event.agent!]: {
-              name: event.agent!, state: 'working', task: event.task, current_tool: undefined,
-              cost: prev[event.agent!]?.cost ?? 0, turns: prev[event.agent!]?.turns ?? 0,
-              duration: prev[event.agent!]?.duration ?? 0,
-              last_result: undefined,
-              started_at: Date.now(),
-              last_update_at: Date.now(),
-            },
-          }));
-          setLastTicker(`${event.agent} started${event.task ? ': ' + event.task.slice(0, 60) : ''}`);
-          setSdkCalls(prev => [...prev, {
-            agent: event.agent!, startTime: event.timestamp, status: 'running',
-          }]);
-        }
+        setAgentStates(prev => ({
+          ...prev,
+          [event.agent!]: {
+            name: event.agent!, state: 'working', task: event.task, current_tool: undefined,
+            cost: prev[event.agent!]?.cost ?? 0, turns: prev[event.agent!]?.turns ?? 0,
+            duration: prev[event.agent!]?.duration ?? 0,
+            last_result: undefined,
+            started_at: Date.now(),
+            last_update_at: Date.now(),
+          },
+        }));
+        setLastTicker(`${event.agent} started${event.task ? ': ' + event.task.slice(0, 60) : ''}`);
+        setSdkCalls(prev => [...prev, {
+          agent: event.agent!, startTime: event.timestamp, status: 'running',
+        }]);
         break;
 
       case 'agent_finished':
+        if (!event.agent) break;
         // Only add to activity feed if this event is newer than what we loaded from DB
         if (event.timestamp > activityLoadedUpToRef.current) {
           setActivities(prev => [...prev, {
@@ -472,22 +472,21 @@ export default function ProjectView() {
             duration: event.duration, is_error: event.is_error,
           }]);
         }
-        if (event.agent) {
-          setAgentStates(prev => ({
-            ...prev,
-            [event.agent!]: {
-              ...prev[event.agent!], name: event.agent!,
-              state: event.is_error ? 'error' : 'done', current_tool: undefined,
-              cost: (prev[event.agent!]?.cost ?? 0) + (event.cost ?? 0),
-              turns: (prev[event.agent!]?.turns ?? 0) + (event.turns ?? 0),
-              duration: event.duration ?? 0,
-              delegated_from: undefined, delegated_at: undefined,
-              last_result: prev[event.agent!]?.last_result,
-              started_at: undefined,
-              last_update_at: Date.now(),
-            },
-          }));
-          setSdkCalls(prev => {
+        setAgentStates(prev => ({
+          ...prev,
+          [event.agent!]: {
+            ...prev[event.agent!], name: event.agent!,
+            state: event.is_error ? 'error' : 'done', current_tool: undefined,
+            cost: (prev[event.agent!]?.cost ?? 0) + (event.cost ?? 0),
+            turns: (prev[event.agent!]?.turns ?? 0) + (event.turns ?? 0),
+            duration: event.duration ?? 0,
+            delegated_from: undefined, delegated_at: undefined,
+            last_result: prev[event.agent!]?.last_result,
+            started_at: undefined,
+            last_update_at: Date.now(),
+          },
+        }));
+        setSdkCalls(prev => {
             const updated = [...prev];
             // Find the last running entry for this agent
             let idx = -1;
@@ -507,7 +506,6 @@ export default function ProjectView() {
             }
             return updated;
           });
-        }
         break;
 
       case 'delegation':
@@ -520,13 +518,14 @@ export default function ProjectView() {
         // Optimistically mark delegated agent as 'working' immediately so the UI
         // never shows STANDBY between the delegation event and agent_started.
         if (event.to_agent) {
+          const toAgent = event.to_agent;
           setAgentStates(prev => ({
             ...prev,
-            [event.to_agent!]: {
-              ...prev[event.to_agent!],
-              name: event.to_agent!,
+            [toAgent]: {
+              ...prev[toAgent],
+              name: toAgent,
               state: 'working',
-              task: event.task ?? prev[event.to_agent!]?.task,
+              task: event.task ?? prev[toAgent]?.task,
               delegated_from: event.from_agent,
               delegated_at: Date.now(),
               current_tool: undefined,
@@ -742,15 +741,50 @@ export default function ProjectView() {
 
   if (!project || !id) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-void)' }}>
-        <div className="flex flex-col items-center gap-3 animate-[fadeSlideIn_0.3s_ease-out]">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-            style={{ background: 'var(--glow-blue)' }}>
-            <svg className="w-5 h-5 animate-spin" viewBox="0 0 20 20" fill="none" style={{ color: 'var(--accent-blue)' }}>
-              <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="2" strokeDasharray="36" strokeDashoffset="10" strokeLinecap="round"/>
-            </svg>
+      <div className="min-h-screen" style={{ background: 'var(--bg-void)' }}>
+        {/* Conductor bar skeleton */}
+        <div className="h-14" style={{ background: 'var(--bg-panel)', borderBottom: '1px solid var(--border-dim)' }}>
+          <div className="flex items-center gap-3 px-4 h-full">
+            <SkeletonBlock width="32px" height="32px" className="rounded-lg" />
+            <SkeletonBlock width="140px" height="16px" />
+            <div className="ml-auto flex items-center gap-2">
+              <SkeletonBlock width="60px" height="24px" className="rounded-full" />
+              <SkeletonBlock width="60px" height="24px" className="rounded-full" />
+            </div>
           </div>
-          <span className="text-xs font-medium" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Loading project...</span>
+        </div>
+        {/* Main content skeleton */}
+        <div className="flex gap-4 p-4 animate-[fadeSlideIn_0.3s_ease-out]">
+          {/* Left panel — 2/3 width, two placeholder cards */}
+          <div className="flex-[2] space-y-4">
+            <div className="rounded-2xl p-5 space-y-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+              <SkeletonBlock width="60%" height="14px" />
+              <SkeletonBlock width="100%" height="80px" className="rounded-lg" />
+              <SkeletonBlock width="40%" height="12px" />
+            </div>
+            <div className="rounded-2xl p-5 space-y-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+              <SkeletonBlock width="30%" height="14px" />
+              <SkeletonBlock width="100%" height="120px" className="rounded-lg" />
+            </div>
+          </div>
+          {/* Right sidebar — 1/3 width */}
+          <div className="flex-1 hidden lg:block space-y-4">
+            <div className="rounded-2xl p-4 space-y-3" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+              <SkeletonBlock width="50%" height="12px" />
+              <div className="space-y-2">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="flex items-center gap-2">
+                    <SkeletonBlock width="28px" height="28px" className="rounded-lg" />
+                    <SkeletonBlock width="80px" height="10px" />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-2xl p-4 space-y-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+              <SkeletonBlock width="40%" height="12px" />
+              <SkeletonBlock width="100%" height="60px" className="rounded-lg" />
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -808,7 +842,7 @@ export default function ProjectView() {
     }
   };
   const handleClearHistory = async () => {
-    if (!confirm('Clear all history and start fresh?')) return;
+    setShowClearConfirm(false);
     try {
       await clearHistory(id);
       // Reset ALL frontend state — agent has no memory after clear
@@ -1063,6 +1097,8 @@ export default function ProjectView() {
                 }}
                 className="flex-1 flex flex-col items-center justify-center py-1.5 transition-colors"
                 style={{ color: mobileView === item.id ? 'var(--accent-blue)' : 'var(--text-muted)' }}
+                aria-label={item.label}
+                aria-current={mobileView === item.id ? 'page' : undefined}
               >
                 {item.icon}
                 <span className="text-[9px] mt-0.5">{item.label}</span>
@@ -1078,7 +1114,7 @@ export default function ProjectView() {
             {(project.status === 'running' || project.status === 'paused') && (
               <div className="flex items-center gap-0.5 pl-1 ml-1" style={{ borderLeft: '1px solid var(--border-dim)' }}>
                 {project.status === 'running' && (
-                  <button onClick={handlePause} className="p-1.5" style={{ color: 'var(--accent-amber)' }}>
+                  <button onClick={handlePause} className="p-1.5" style={{ color: 'var(--accent-amber)' }} aria-label="Pause project">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                       <rect x="4" y="3" width="3" height="10" rx="0.5"/>
                       <rect x="9" y="3" width="3" height="10" rx="0.5"/>
@@ -1086,13 +1122,13 @@ export default function ProjectView() {
                   </button>
                 )}
                 {project.status === 'paused' && (
-                  <button onClick={handleResume} className="p-1.5" style={{ color: 'var(--accent-green)' }}>
+                  <button onClick={handleResume} className="p-1.5" style={{ color: 'var(--accent-green)' }} aria-label="Resume project">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                       <path d="M4 3l9 5-9 5V3z"/>
                     </svg>
                   </button>
                 )}
-                <button onClick={handleStop} className="p-1.5" style={{ color: 'var(--accent-red)' }}>
+                <button onClick={handleStop} className="p-1.5" style={{ color: 'var(--accent-red)' }} aria-label="Stop project">
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                     <rect x="3" y="3" width="10" height="10" rx="1"/>
                   </svg>
@@ -1101,7 +1137,7 @@ export default function ProjectView() {
             )}
             {/* Clear history button — visible when idle */}
             {project.status === 'idle' && activities.length > 0 && (
-              <button onClick={handleClearHistory} className="p-1.5 ml-1" style={{ color: 'var(--text-muted)' }}
+              <button onClick={() => setShowClearConfirm(true)} className="p-1.5 ml-1" style={{ color: 'var(--text-muted)' }}
                 title="Clear history">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                   <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4"/>
@@ -1199,7 +1235,7 @@ export default function ProjectView() {
             ))}
             {/* Clear history — desktop */}
             {project.status === 'idle' && activities.length > 0 && (
-              <button onClick={handleClearHistory} className="ml-auto p-1.5 rounded-lg transition-all hover:bg-[var(--bg-elevated)]"
+              <button onClick={() => setShowClearConfirm(true)} className="ml-auto p-1.5 rounded-lg transition-all hover:bg-[var(--bg-elevated)]"
                 style={{ color: 'var(--text-muted)' }} title="Clear history">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                   <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4"/>
@@ -1413,6 +1449,75 @@ export default function ProjectView() {
           projectId={id}
           onClose={() => setApprovalRequest(null)}
         />
+      )}
+
+      {/* Clear History Confirmation Modal */}
+      {showClearConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center animate-[fadeSlideIn_0.15s_ease-out]"
+          style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+          onClick={() => setShowClearConfirm(false)}
+        >
+          <div
+            className="rounded-2xl w-full max-w-sm mx-4 overflow-hidden"
+            style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-dim)',
+              boxShadow: '0 25px 50px rgba(0,0,0,0.4)',
+            }}
+            onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-labelledby="clear-confirm-title"
+          >
+            {/* Red accent stripe */}
+            <div className="h-1 w-full" style={{ background: 'linear-gradient(90deg, var(--accent-red), var(--accent-amber))' }} />
+            <div className="p-5">
+              <div className="flex items-start gap-3 mb-4">
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
+                  style={{ background: 'var(--glow-red)' }}
+                >
+                  🗑️
+                </div>
+                <div>
+                  <h3
+                    id="clear-confirm-title"
+                    className="text-base font-bold"
+                    style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}
+                  >
+                    Clear History?
+                  </h3>
+                  <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                    This will permanently delete all conversation history, agent states, and activity logs for this project. The agent will start fresh with no memory.
+                  </p>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowClearConfirm(false)}
+                  className="px-4 py-2 text-sm font-medium rounded-xl transition-all"
+                  style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-dim)' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleClearHistory}
+                  className="px-4 py-2 text-sm font-semibold rounded-xl transition-all text-white active:scale-[0.97]"
+                  style={{
+                    background: 'var(--accent-red)',
+                    boxShadow: '0 2px 10px var(--glow-red)',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 20px rgba(245,71,91,0.4)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 2px 10px var(--glow-red)'; }}
+                >
+                  Clear All History
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
