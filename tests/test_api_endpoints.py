@@ -48,6 +48,8 @@ def _make_mock_session_mgr():
     smgr.delete_schedule = AsyncMock(return_value=True)
     smgr.set_project_budget = AsyncMock()
     smgr.clear_project_data = AsyncMock()
+    smgr.get_recent_messages = AsyncMock(return_value=[])
+    smgr.load_orchestrator_state = AsyncMock(return_value=None)
     return smgr
 
 

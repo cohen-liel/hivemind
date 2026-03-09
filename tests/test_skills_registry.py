@@ -37,14 +37,20 @@ class TestModuleConstants:
     def test_skill_agent_map_has_known_entries(self):
         """Check that the expected skill→agent mappings are present."""
         m = skills_registry.SKILL_AGENT_MAP
-        assert m.get("frontend-design") == "developer"
-        assert m.get("claude-api") == "developer"
-        assert m.get("webapp-testing") == "tester"
+        assert m.get("frontend-design") == ["frontend_developer"]
+        assert m.get("claude-api") == ["backend_developer"]
+        assert m.get("webapp-testing") == ["frontend_developer", "test_engineer"]
 
     def test_skill_agent_map_values_are_valid_roles(self):
-        valid_roles = {"developer", "reviewer", "tester", "devops", "orchestrator", "researcher"}
-        for skill, role in skills_registry.SKILL_AGENT_MAP.items():
-            assert role in valid_roles, f"Skill '{skill}' mapped to invalid role '{role}'"
+        valid_roles = {
+            "pm", "developer", "reviewer", "tester", "devops", "orchestrator",
+            "researcher", "memory", "frontend_developer", "backend_developer",
+            "test_engineer", "security_auditor", "devops_engineer", "database_expert",
+        }
+        for skill, roles in skills_registry.SKILL_AGENT_MAP.items():
+            assert isinstance(roles, list), f"Skill '{skill}' value should be a list, got {type(roles)}"
+            for role in roles:
+                assert role in valid_roles, f"Skill '{skill}' mapped to invalid role '{role}'"
 
     def test_skills_cache_is_dict(self):
         assert isinstance(skills_registry._skills_cache, dict)
@@ -144,10 +150,10 @@ class TestGetSkillsForAgent:
     def test_returns_only_cached_skills(self):
         """Should only return skills that are both in SKILL_AGENT_MAP AND in cache."""
         skills_registry._skills_cache.clear()
-        # "frontend-design" is mapped to "developer" in SKILL_AGENT_MAP
+        # "frontend-design" is mapped to ["frontend_developer"] in SKILL_AGENT_MAP
         # but only include it in results if it's also in the cache
         skills_registry._skills_cache["frontend-design"] = "content"
-        result = skills_registry.get_skills_for_agent("developer")
+        result = skills_registry.get_skills_for_agent("frontend_developer")
         assert "frontend-design" in result
 
     def test_no_results_for_unknown_role(self):
@@ -156,9 +162,9 @@ class TestGetSkillsForAgent:
         assert result == []
 
     def test_tester_gets_webapp_testing(self):
-        """webapp-testing is mapped to tester."""
+        """webapp-testing is mapped to test_engineer."""
         skills_registry._skills_cache["webapp-testing"] = "testing content"
-        result = skills_registry.get_skills_for_agent("tester")
+        result = skills_registry.get_skills_for_agent("test_engineer")
         assert "webapp-testing" in result
 
 

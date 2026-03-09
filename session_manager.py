@@ -123,9 +123,6 @@ CREATE INDEX IF NOT EXISTS idx_schedules_enabled
 CREATE INDEX IF NOT EXISTS idx_sessions_project
     ON sessions(project_id);
 
-CREATE INDEX IF NOT EXISTS idx_activity_project
-    ON activity_log(project_id, sequence_id);
-
 CREATE TABLE IF NOT EXISTS lessons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL,
@@ -157,6 +154,9 @@ CREATE TABLE IF NOT EXISTS activity_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_activity_project_seq
+    ON activity_log(project_id, sequence_id);
+
+CREATE INDEX IF NOT EXISTS idx_activity_project
     ON activity_log(project_id, sequence_id);
 
 CREATE INDEX IF NOT EXISTS idx_activity_project_ts
