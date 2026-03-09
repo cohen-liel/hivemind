@@ -1,6 +1,6 @@
 import type { AgentState } from '../types';
 import { useState, useEffect } from 'react';
-import { AGENT_ICONS, AGENT_LABELS, AGENT_ACCENTS, getAgentAccent } from '../constants';
+import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 
 interface Props {
   agents: AgentState[];

@@ -445,7 +445,6 @@ function LoopProgressBubble({ entry }: { entry: ActivityEntry }) {
   const turn = entry.turn ?? 0;
   const maxTurns = entry.max_turns ?? 0;
   const cost = entry.cost ?? 0;
-  const maxBudget = entry.max_budget ?? 0;
 
   const turnPct = maxTurns > 0 ? Math.min((turn / maxTurns) * 100, 100) : 0;
 

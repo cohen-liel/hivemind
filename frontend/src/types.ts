@@ -121,6 +121,16 @@ export interface WSEvent {
   artifacts_count?: number;
   is_remediation?: boolean;
   summary?: string;
+  // live_state_sync fields
+  agent_states?: Record<string, {
+    state?: string;
+    task?: string;
+    current_tool?: string;
+    cost?: number;
+    turns?: number;
+    duration?: number;
+  }>;
+  loop_progress?: LoopProgress;
 }
 
 export type ActivityType = 'tool_use' | 'agent_started' | 'agent_finished'
