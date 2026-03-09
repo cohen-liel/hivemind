@@ -780,7 +780,7 @@ class OrchestratorManager:
             await self._notify("Session is already running.")
             return
 
-        use_dag = self.multi_agent and os.getenv("USE_DAG_EXECUTOR", "true").lower() == "true"
+        use_dag = self.multi_agent and os.getenv("USE_DAG_EXECUTOR", "false").lower() == "true"
         logger.info(
             f"[{self.project_id}] Starting session: "
             f"multi_agent={self.multi_agent} dag={use_dag} message={user_message[:80]}"
