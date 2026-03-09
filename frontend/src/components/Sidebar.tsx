@@ -45,6 +45,39 @@ export default function Sidebar({ onProjectsChange }: Props) {
 
   useWSSubscribe(handleWSEvent);
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMeta = e.metaKey || e.ctrlKey;
+      if (!isMeta) return;
+      // Don't intercept if user is typing in an input
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      switch (e.key) {
+        case 'n':
+        case 'N':
+          e.preventDefault();
+          navigate('/new');
+          break;
+        case '1':
+          e.preventDefault();
+          navigate('/');
+          break;
+        case '2':
+          e.preventDefault();
+          navigate('/schedules');
+          break;
+        case ',':
+          e.preventDefault();
+          navigate('/settings');
+          break;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [navigate]);
+
   const currentProjectId = location.pathname.startsWith('/project/')
     ? location.pathname.split('/project/')[1]
     : null;
@@ -81,6 +114,8 @@ export default function Sidebar({ onProjectsChange }: Props) {
         background: 'var(--bg-panel)',
         borderRight: '1px solid var(--border-dim)',
       }}
+      role="navigation"
+      aria-label="Main navigation"
     >
       {/* Header */}
       <div className="flex items-center gap-2.5 px-4 h-14 flex-shrink-0"
@@ -96,7 +131,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
             </div>
             <span className="text-sm font-bold truncate"
               style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
-              Claude Bot
+              Nexus
             </span>
           </div>
         )}
@@ -136,6 +171,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
             <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
           </svg>
           {!collapsed && <span>New Project</span>}
+          {!collapsed && <kbd className="ml-auto text-[9px] px-1 py-0.5 rounded" style={{ background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)' }}>⌘N</kbd>}
         </button>
       </div>
 
@@ -160,6 +196,11 @@ export default function Sidebar({ onProjectsChange }: Props) {
             >
               {item.icon}
               {!collapsed && <span>{item.label}</span>}
+              {!collapsed && (
+                <kbd className="ml-auto text-[9px] px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+                  {item.path === '/' ? '⌘ 1' : '⌘ 2'}
+                </kbd>
+              )}
             </button>
           );
         })}
@@ -247,6 +288,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
               stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
           </svg>
           {!collapsed && <span>Settings</span>}
+          {!collapsed && <kbd className="ml-auto text-[9px] px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>⌘ ,</kbd>}
         </button>
       </div>
     </aside>

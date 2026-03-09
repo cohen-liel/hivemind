@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { getProjects } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { AGENT_ICONS } from '../constants';
+import { DashboardSkeleton } from '../components/Skeleton';
+import ErrorState from '../components/ErrorState';
 import type { Project, WSEvent } from '../types';
 
 interface DashboardLiveState {
@@ -18,14 +20,22 @@ export default function Dashboard() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const navigate = useNavigate();
 
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   const loadData = useCallback(async () => {
     try {
       const p = await getProjects();
       setProjects(p);
-    } catch {
-      // API not ready yet
+      setError(null);
+    } catch (e: unknown) {
+      if (projects.length === 0) {
+        setError(e instanceof Error ? e.message : 'Failed to load');
+      }
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }, [projects.length]);
 
   useEffect(() => {
     loadData();
@@ -114,8 +124,25 @@ export default function Dashboard() {
   const runningCount = projects.filter(p => p.status === 'running').length;
   const totalCost = projects.reduce((sum, p) => sum + (p.total_cost_usd || 0), 0);
 
+  // Loading state
+  if (loading && projects.length === 0) {
+    return <DashboardSkeleton />;
+  }
+
+  // Error state (only when no projects loaded yet)
+  if (error && projects.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-void)' }}>
+        <ErrorState
+          variant="connection"
+          onRetry={() => { setLoading(true); loadData(); }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen safe-area-top" style={{ background: 'var(--bg-void)' }}>
+    <div className="min-h-screen safe-area-top page-enter" style={{ background: 'var(--bg-void)' }}>
       {/* Hero Header */}
       <header className="relative overflow-hidden" style={{ borderBottom: '1px solid var(--border-dim)' }}>
         {/* Gradient mesh background */}

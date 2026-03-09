@@ -26,28 +26,31 @@ function formatDuration(start: number, end?: number): string {
 }
 
 const AGENT_COLORS: Record<string, string> = {
-  developer: 'text-blue-400',
-  reviewer: 'text-purple-400',
-  tester: 'text-amber-400',
-  devops: 'text-cyan-400',
-  orchestrator: 'text-gray-400',
+  developer: 'var(--accent-blue)',
+  reviewer: 'var(--accent-purple)',
+  tester: 'var(--accent-amber)',
+  devops: 'var(--accent-cyan)',
+  orchestrator: 'var(--text-secondary)',
 };
 
-const STATUS_BADGES: Record<string, { bg: string; text: string; label: string }> = {
-  running: { bg: 'bg-blue-500/20', text: 'text-blue-400', label: 'Running' },
-  done: { bg: 'bg-green-500/20', text: 'text-green-400', label: 'Done' },
-  error: { bg: 'bg-red-500/20', text: 'text-red-400', label: 'Error' },
+const STATUS_CONFIG: Record<string, { bg: string; color: string; label: string }> = {
+  running: { bg: 'var(--glow-blue)', color: 'var(--accent-blue)', label: 'Running' },
+  done: { bg: 'var(--glow-green)', color: 'var(--accent-green)', label: 'Done' },
+  error: { bg: 'var(--glow-red)', color: 'var(--accent-red)', label: 'Error' },
 };
 
 export default function NetworkTrace({ calls }: Props) {
   if (calls.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-500 text-sm px-4">
-        <div className="w-12 h-12 rounded-full bg-gray-800 flex items-center justify-center mb-3 text-xl">
-          {'\u{1F4E1}'}
+      <div className="flex flex-col items-center justify-center h-full px-4">
+        <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3 text-2xl"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)' }}>
+          📡
         </div>
-        <p className="font-medium text-gray-400">No API calls yet</p>
-        <p className="text-gray-600 text-xs mt-1">SDK calls will appear here as agents work</p>
+        <p className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>No API calls yet</p>
+        <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+          SDK calls will appear here as agents work
+        </p>
       </div>
     );
   }
@@ -55,48 +58,76 @@ export default function NetworkTrace({ calls }: Props) {
   const totalCost = calls.reduce((sum, c) => sum + (c.cost || 0), 0);
 
   return (
-    <div className="p-3">
+    <div className="p-4">
       {/* Summary bar */}
-      <div className="flex items-center gap-4 mb-3 px-1">
-        <span className="text-xs text-gray-500">{calls.length} calls</span>
+      <div className="flex items-center gap-4 mb-3">
+        <span className="text-xs font-bold uppercase tracking-wider"
+          style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+          API Trace
+        </span>
+        <span className="text-xs px-2 py-0.5 rounded-md"
+          style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+          {calls.length} calls
+        </span>
         {totalCost > 0 && (
-          <span className="text-xs text-gray-500 font-mono">${totalCost.toFixed(4)}</span>
+          <span className="text-xs px-2 py-0.5 rounded-md"
+            style={{ background: 'var(--glow-green)', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>
+            ${totalCost.toFixed(4)}
+          </span>
         )}
       </div>
 
       {/* Table */}
-      <div className="bg-gray-900/50 border border-gray-800/50 rounded-xl overflow-hidden">
+      <div className="rounded-xl overflow-hidden"
+        style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
         <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-gray-800/50 text-gray-600">
-              <th className="px-3 py-2 text-left font-medium">Agent</th>
-              <th className="px-3 py-2 text-left font-medium">Time</th>
-              <th className="px-3 py-2 text-right font-medium">Duration</th>
-              <th className="px-3 py-2 text-right font-medium">Cost</th>
-              <th className="px-3 py-2 text-right font-medium">Status</th>
+            <tr style={{ borderBottom: '1px solid var(--border-dim)' }}>
+              <th className="px-3 py-2.5 text-left font-medium"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Agent</th>
+              <th className="px-3 py-2.5 text-left font-medium"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Time</th>
+              <th className="px-3 py-2.5 text-right font-medium"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Duration</th>
+              <th className="px-3 py-2.5 text-right font-medium"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Cost</th>
+              <th className="px-3 py-2.5 text-right font-medium"
+                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Status</th>
             </tr>
           </thead>
           <tbody>
             {calls.map((call, i) => {
-              const badge = STATUS_BADGES[call.status] || STATUS_BADGES.running;
-              const agentColor = AGENT_COLORS[call.agent] || 'text-gray-400';
+              const badge = STATUS_CONFIG[call.status] || STATUS_CONFIG.running;
+              const agentColor = AGENT_COLORS[call.agent] || 'var(--text-secondary)';
               return (
-                <tr key={i} className="border-b border-gray-800/30 hover:bg-gray-800/20">
-                  <td className={`px-3 py-2 font-medium capitalize ${agentColor}`}>
+                <tr
+                  key={i}
+                  className="transition-colors"
+                  style={{ borderBottom: i < calls.length - 1 ? '1px solid var(--border-dim)' : 'none' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <td className="px-3 py-2.5 font-medium capitalize" style={{ color: agentColor }}>
                     {call.agent}
                   </td>
-                  <td className="px-3 py-2 text-gray-500 font-mono">
+                  <td className="px-3 py-2.5" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                     {formatTime(call.startTime)}
                   </td>
-                  <td className="px-3 py-2 text-right text-gray-400 font-mono">
+                  <td className="px-3 py-2.5 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                     {formatDuration(call.startTime, call.endTime)}
                   </td>
-                  <td className="px-3 py-2 text-right text-gray-400 font-mono">
+                  <td className="px-3 py-2.5 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                     {call.cost !== undefined ? `$${call.cost.toFixed(4)}` : '-'}
                   </td>
-                  <td className="px-3 py-2 text-right">
-                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium
-                      ${badge.bg} ${badge.text}`}>
+                  <td className="px-3 py-2.5 text-right">
+                    <span
+                      className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold"
+                      style={{
+                        background: badge.bg,
+                        color: badge.color,
+                        border: `1px solid ${badge.color}20`,
+                      }}
+                    >
                       {badge.label}
                     </span>
                   </td>

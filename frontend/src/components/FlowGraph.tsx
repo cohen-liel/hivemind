@@ -7,20 +7,21 @@ interface Props {
   onSelectAgent?: (name: string) => void;
 }
 
+// Colors aligned with the CSS design system variables
 const AGENT_COLORS: Record<string, { stroke: string; fill: string; text: string; glow: string }> = {
-  orchestrator: { stroke: '#6b7280', fill: '#1f2937', text: '#d1d5db', glow: 'rgba(107,114,128,0.3)' },
-  developer: { stroke: '#3b82f6', fill: '#1e3a5f', text: '#93c5fd', glow: 'rgba(59,130,246,0.4)' },
-  reviewer: { stroke: '#a855f7', fill: '#3b1f5e', text: '#c4b5fd', glow: 'rgba(168,85,247,0.4)' },
-  tester: { stroke: '#f59e0b', fill: '#4a3419', text: '#fcd34d', glow: 'rgba(245,158,11,0.4)' },
-  devops: { stroke: '#06b6d4', fill: '#164e63', text: '#67e8f9', glow: 'rgba(6,182,212,0.4)' },
+  orchestrator: { stroke: '#4a4e63', fill: '#13151d', text: '#8b90a5', glow: 'rgba(74,78,99,0.3)' },
+  developer: { stroke: '#638cff', fill: '#0f1a33', text: '#93b4ff', glow: 'rgba(99,140,255,0.4)' },
+  reviewer: { stroke: '#a78bfa', fill: '#1a1033', text: '#c4b5fd', glow: 'rgba(167,139,250,0.4)' },
+  tester: { stroke: '#f5a623', fill: '#2a1f0d', text: '#fcd34d', glow: 'rgba(245,166,35,0.4)' },
+  devops: { stroke: '#22d3ee', fill: '#0d2a33', text: '#67e8f9', glow: 'rgba(34,211,238,0.4)' },
 };
 
 function stateColor(state: string): string {
   switch (state) {
-    case 'working': return '#3b82f6';
-    case 'done': return '#22c55e';
-    case 'error': return '#ef4444';
-    default: return '#4b5563';
+    case 'working': return '#638cff';
+    case 'done': return '#3dd68c';
+    case 'error': return '#f5475b';
+    default: return '#4a4e63';
   }
 }
 
@@ -53,12 +54,12 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
     <div className="w-full flex justify-center">
       <svg viewBox="0 0 400 320" className="w-full max-w-[400px]" style={{ filter: 'drop-shadow(0 0 8px rgba(0,0,0,0.3))' }}>
         <defs>
-          {/* Arrow marker */}
+          {/* Arrow markers */}
           <marker id="arrow" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
-            <polygon points="0 0, 10 3.5, 0 7" fill="#4b5563" />
+            <polygon points="0 0, 10 3.5, 0 7" fill="#4a4e63" />
           </marker>
           <marker id="arrow-active" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
-            <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6" />
+            <polygon points="0 0, 10 3.5, 0 7" fill="#638cff" />
           </marker>
         </defs>
 
@@ -75,7 +76,7 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
               <line
                 x1={from.x} y1={from.y}
                 x2={to.x} y2={to.y}
-                stroke={isActive ? '#3b82f6' : '#374151'}
+                stroke={isActive ? '#638cff' : '#191c27'}
                 strokeWidth={isActive ? 2 : 1}
                 strokeDasharray={isActive ? '6 3' : 'none'}
                 markerEnd={isActive ? 'url(#arrow-active)' : 'url(#arrow)'}
@@ -83,7 +84,7 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
               />
               {/* Animated dot traveling along the line when active */}
               {isActive && (
-                <circle r="3" fill="#3b82f6" opacity="0.8">
+                <circle r="3" fill="#638cff" opacity="0.8">
                   <animateMotion
                     dur="1.5s"
                     repeatCount="indefinite"
@@ -106,7 +107,7 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
               className="cursor-pointer"
             >
               {isWorking && (
-                <circle cx={pos.x} cy={pos.y} r="32" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.3">
+                <circle cx={pos.x} cy={pos.y} r="32" fill="none" stroke="#638cff" strokeWidth="1.5" opacity="0.3">
                   <animate attributeName="r" values="28;36;28" dur="2s" repeatCount="indefinite" />
                   <animate attributeName="opacity" values="0.3;0.1;0.3" dur="2s" repeatCount="indefinite" />
                 </circle>
@@ -116,7 +117,8 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
               <text x={pos.x} y={pos.y + 1} textAnchor="middle" dominantBaseline="central" fontSize="20">
                 {AGENT_ICONS.orchestrator}
               </text>
-              <text x={pos.x} y={pos.y + 42} textAnchor="middle" fill={colors.text} fontSize="10" fontWeight="600">
+              <text x={pos.x} y={pos.y + 42} textAnchor="middle" fill={colors.text} fontSize="10" fontWeight="600"
+                fontFamily="'DM Sans', sans-serif">
                 Orchestrator
               </text>
               {/* State badge */}
@@ -151,14 +153,16 @@ export default function FlowGraph({ agents, onSelectAgent }: Props) {
               <text x={pos.x} y={pos.y + 1} textAnchor="middle" dominantBaseline="central" fontSize="18">
                 {icon}
               </text>
-              <text x={pos.x} y={pos.y + 36} textAnchor="middle" fill={colors.text} fontSize="9" fontWeight="600">
+              <text x={pos.x} y={pos.y + 36} textAnchor="middle" fill={colors.text} fontSize="9" fontWeight="600"
+                fontFamily="'DM Sans', sans-serif">
                 {agent.name.charAt(0).toUpperCase() + agent.name.slice(1)}
               </text>
               {/* State badge */}
               <circle cx={pos.x + 17} cy={pos.y - 17} r="4" fill={stateColor(agent.state)} />
               {/* Current tool text */}
               {isWorking && agent.current_tool && (
-                <text x={pos.x} y={pos.y + 48} textAnchor="middle" fill="#93c5fd" fontSize="7" opacity="0.7">
+                <text x={pos.x} y={pos.y + 48} textAnchor="middle" fill="#93b4ff" fontSize="7" opacity="0.7"
+                  fontFamily="'JetBrains Mono', monospace">
                   {agent.current_tool.slice(0, 25)}
                 </text>
               )}

@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { getSettings, updateSettings, persistSettings } from '../api';
+import { SettingsSkeleton } from '../components/Skeleton';
+import ErrorState from '../components/ErrorState';
+import { useToast } from '../components/Toast';
 import type { Settings } from '../types';
 
 interface EditableField {
@@ -11,9 +14,10 @@ interface EditableField {
   max?: number;
 }
 
-const EDITABLE_FIELDS: { title: string; fields: EditableField[] }[] = [
+const EDITABLE_FIELDS: { title: string; icon: string; fields: EditableField[] }[] = [
   {
     title: 'Agent Limits',
+    icon: '🤖',
     fields: [
       { key: 'max_turns_per_cycle', label: 'Max Turns per Cycle', desc: 'Maximum turns before pausing', type: 'number', min: 1, max: 1000 },
       { key: 'max_budget_usd', label: 'Max Budget (USD)', desc: 'Budget limit per session', type: 'float', min: 0.1, max: 1000 },
@@ -23,6 +27,7 @@ const EDITABLE_FIELDS: { title: string; fields: EditableField[] }[] = [
   },
   {
     title: 'SDK Settings',
+    icon: '⚙️',
     fields: [
       { key: 'sdk_max_turns_per_query', label: 'Max Turns per Query', desc: 'Turns per sub-agent query', type: 'number', min: 1, max: 200 },
       { key: 'sdk_max_budget_per_query', label: 'Max Budget per Query (USD)', desc: 'Budget per sub-agent query', type: 'float', min: 0.1, max: 100 },
@@ -30,6 +35,7 @@ const EDITABLE_FIELDS: { title: string; fields: EditableField[] }[] = [
   },
   {
     title: 'General',
+    icon: '📝',
     fields: [
       { key: 'max_user_message_length', label: 'Max Message Length', desc: 'User message size limit in chars', type: 'number', min: 100, max: 100000 },
     ],
@@ -39,15 +45,17 @@ const EDITABLE_FIELDS: { title: string; fields: EditableField[] }[] = [
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const toast = useToast();
 
-  useEffect(() => {
+  const loadSettings = () => {
+    setLoading(true);
+    setError('');
     getSettings()
       .then((s) => {
         setSettings(s);
-        // Initialize draft with current values
         const d: Record<string, number> = {};
         const raw = s as unknown as Record<string, unknown>;
         for (const section of EDITABLE_FIELDS) {
@@ -57,19 +65,31 @@ export default function SettingsPage() {
         }
         setDraft(d);
       })
-      .catch(() => setError('Could not load settings. Is the backend running?'));
+      .catch(() => setError('Could not load settings. Is the backend running?'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadSettings();
   }, []);
 
   const handleSave = async () => {
     setSaving(true);
-    setSaved(false);
     try {
       await updateSettings(draft);
       await persistSettings(draft).catch(() => {});
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
+      toast.success('Settings saved successfully');
+      // Update the settings reference so hasChanges resets
+      setSettings(prev => {
+        if (!prev) return prev;
+        const updated = { ...prev } as unknown as Record<string, unknown>;
+        for (const [k, v] of Object.entries(draft)) {
+          updated[k] = v;
+        }
+        return updated as unknown as Settings;
+      });
     } catch {
-      setError('Failed to save settings');
+      toast.error('Failed to save settings');
     } finally {
       setSaving(false);
     }
@@ -80,47 +100,66 @@ export default function SettingsPage() {
     return s.fields.some(f => draft[f.key] !== raw[f.key]);
   }) : false;
 
-  if (error) {
+  if (loading) {
+    return <SettingsSkeleton />;
+  }
+
+  if (error && !settings) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold text-white mb-4">Settings</h1>
-        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">
-          {error}
-        </div>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-void)' }}>
+        <ErrorState variant="connection" onRetry={loadSettings} />
       </div>
     );
   }
 
-  if (!settings) {
-    return (
-      <div className="p-8">
-        <h1 className="text-2xl font-bold text-white mb-4">Settings</h1>
-        <div className="text-gray-500 animate-pulse">Loading...</div>
-      </div>
-    );
-  }
+  if (!settings) return null;
 
   return (
-    <div className="p-8 max-w-2xl">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white mb-2">Settings</h1>
-        <p className="text-gray-400 text-sm">
-          Edit configuration values. Changes take effect immediately for new sessions.
-        </p>
-      </div>
-
-      <div className="space-y-6">
-        {EDITABLE_FIELDS.map(section => (
-          <div key={section.title} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-800">
-              <h2 className="text-sm font-semibold text-gray-300">{section.title}</h2>
+    <div className="min-h-screen safe-area-top page-enter" style={{ background: 'var(--bg-void)' }}>
+      {/* Header */}
+      <header className="relative overflow-hidden" style={{ borderBottom: '1px solid var(--border-dim)' }}>
+        <div className="absolute inset-0" style={{
+          background: 'radial-gradient(ellipse at 30% 50%, rgba(167,139,250,0.06) 0%, transparent 50%)',
+        }} />
+        <div className="relative max-w-2xl mx-auto px-4 sm:px-6 py-6">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
+              style={{ background: 'rgba(167,139,250,0.1)', boxShadow: '0 0 20px rgba(167,139,250,0.1)' }}>
+              ⚙️
             </div>
-            <div className="divide-y divide-gray-800/50">
-              {section.fields.map(field => (
-                <div key={field.key} className="px-4 py-3 flex items-center justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
+                Settings
+              </h1>
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Changes take effect immediately for new sessions
+              </p>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+        {EDITABLE_FIELDS.map(section => (
+          <div
+            key={section.title}
+            className="rounded-2xl overflow-hidden"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+          >
+            <div className="px-5 py-3.5 flex items-center gap-2.5" style={{ borderBottom: '1px solid var(--border-dim)' }}>
+              <span className="text-base">{section.icon}</span>
+              <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{section.title}</h2>
+            </div>
+            <div>
+              {section.fields.map((field, i) => (
+                <div
+                  key={field.key}
+                  className="px-5 py-3.5 flex items-center justify-between gap-4"
+                  style={{ borderBottom: i < section.fields.length - 1 ? '1px solid var(--border-dim)' : 'none' }}
+                >
                   <div className="min-w-0">
-                    <div className="text-sm text-gray-300">{field.label}</div>
-                    <div className="text-xs text-gray-600 mt-0.5">{field.desc}</div>
+                    <div className="text-sm" style={{ color: 'var(--text-primary)' }}>{field.label}</div>
+                    <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{field.desc}</div>
                   </div>
                   <input
                     type="number"
@@ -134,8 +173,13 @@ export default function SettingsPage() {
                     min={field.min}
                     max={field.max}
                     step={field.type === 'float' ? 0.1 : 1}
-                    className="w-24 bg-gray-800 border border-gray-700/50 text-white text-sm font-mono
-                               px-2.5 py-1.5 rounded-lg focus:border-blue-500 focus:outline-none text-right"
+                    className="w-24 text-sm text-right px-2.5 py-1.5 rounded-xl focus:outline-none transition-colors"
+                    style={{
+                      background: 'var(--bg-elevated)',
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-mono)',
+                    }}
                   />
                 </div>
               ))}
@@ -144,49 +188,57 @@ export default function SettingsPage() {
         ))}
 
         {/* Read-only info */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-800">
-            <h2 className="text-sm font-semibold text-gray-300">Read-Only</h2>
+        <div
+          className="rounded-2xl overflow-hidden"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
+        >
+          <div className="px-5 py-3.5 flex items-center gap-2.5" style={{ borderBottom: '1px solid var(--border-dim)' }}>
+            <span className="text-base">🔒</span>
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Read-Only</h2>
           </div>
-          <div className="divide-y divide-gray-800/50">
-            <div className="px-4 py-3 flex items-center justify-between gap-4">
+          <div>
+            <div className="px-5 py-3.5 flex items-center justify-between gap-4" style={{ borderBottom: '1px solid var(--border-dim)' }}>
               <div className="min-w-0">
-                <div className="text-sm text-gray-300">Projects Base Directory</div>
-                <div className="text-xs text-gray-600 mt-0.5">Set via CLAUDE_PROJECTS_DIR env var</div>
+                <div className="text-sm" style={{ color: 'var(--text-primary)' }}>Projects Base Directory</div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Set via CLAUDE_PROJECTS_DIR env var</div>
               </div>
-              <div className="text-sm font-mono text-gray-500 bg-gray-800 px-2.5 py-1 rounded flex-shrink-0 truncate max-w-[200px]">
+              <div className="text-xs px-2.5 py-1 rounded-lg flex-shrink-0 truncate max-w-[200px]"
+                style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                 {settings.projects_base_dir}
               </div>
             </div>
-            <div className="px-4 py-3 flex items-center justify-between gap-4">
+            <div className="px-5 py-3.5 flex items-center justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-sm text-gray-300">Session Expiry</div>
-                <div className="text-xs text-gray-600 mt-0.5">Set via SESSION_EXPIRY_HOURS env var</div>
+                <div className="text-sm" style={{ color: 'var(--text-primary)' }}>Session Expiry</div>
+                <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Set via SESSION_EXPIRY_HOURS env var</div>
               </div>
-              <div className="text-sm font-mono text-gray-500 bg-gray-800 px-2.5 py-1 rounded flex-shrink-0">
+              <div className="text-xs px-2.5 py-1 rounded-lg flex-shrink-0"
+                style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                 {settings.session_expiry_hours}h
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Save button */}
-      <div className="mt-6 flex items-center gap-3">
-        <button
-          onClick={handleSave}
-          disabled={!hasChanges || saving}
-          className={`px-5 py-2 rounded-lg text-sm font-medium transition-all
-            ${hasChanges && !saving
-              ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_12px_rgba(59,130,246,0.3)]'
-              : 'bg-gray-800 text-gray-600 cursor-not-allowed'}`}
-        >
-          {saving ? 'Saving...' : 'Save Changes'}
-        </button>
-        {saved && (
-          <span className="text-sm text-green-400 animate-[fadeSlideIn_0.3s_ease-out]">
-            Settings saved
-          </span>
+        {/* Save button - sticky */}
+        {hasChanges && (
+          <div
+            className="sticky bottom-4 flex items-center justify-center"
+            style={{ animation: 'slideUp 0.3s ease-out' }}
+          >
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-6 py-2.5 text-sm font-medium rounded-xl transition-all active:scale-95 text-white"
+              style={{
+                background: saving ? 'var(--bg-elevated)' : 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)',
+                boxShadow: saving ? 'none' : '0 4px 20px var(--glow-blue)',
+                color: saving ? 'var(--text-muted)' : 'white',
+              }}
+            >
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
         )}
       </div>
     </div>

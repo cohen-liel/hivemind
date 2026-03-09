@@ -413,21 +413,28 @@ export default function ProjectView() {
 
   if (loadError) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-center px-4">
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-6 py-5 max-w-sm mx-auto">
-            <div className="text-red-400 text-sm font-medium mb-2">Failed to load project</div>
-            <div className="text-red-400/70 text-xs mb-4">{loadError}</div>
-            <button
-              onClick={() => {
-                setLoadError(null);
-                loadProject().catch((e) => setLoadError(e.message || 'Failed to load project'));
-              }}
-              className="px-4 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-medium rounded-lg transition-colors"
-            >
-              Retry
-            </button>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-void)' }}>
+        <div className="text-center px-4 max-w-sm mx-auto animate-[fadeSlideIn_0.3s_ease-out]">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center text-2xl"
+            style={{ background: 'var(--glow-red)', border: '1px solid rgba(245,71,91,0.2)' }}>
+            ⚠️
           </div>
+          <h3 className="text-sm font-bold mb-1" style={{ color: 'var(--accent-red)' }}>Failed to load project</h3>
+          <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>{loadError}</p>
+          <button
+            onClick={() => {
+              setLoadError(null);
+              loadProject().catch((e) => setLoadError(e.message || 'Failed to load project'));
+            }}
+            className="px-4 py-2 text-xs font-medium rounded-xl transition-all active:scale-95"
+            style={{
+              background: 'var(--glow-red)',
+              color: 'var(--accent-red)',
+              border: '1px solid rgba(245,71,91,0.2)',
+            }}
+          >
+            ↻ Retry
+          </button>
         </div>
       </div>
     );
@@ -435,8 +442,16 @@ export default function ProjectView() {
 
   if (!project || !id) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-500">
-        <div className="animate-pulse text-sm">Loading...</div>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-void)' }}>
+        <div className="flex flex-col items-center gap-3 animate-[fadeSlideIn_0.3s_ease-out]">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+            style={{ background: 'var(--glow-blue)' }}>
+            <svg className="w-5 h-5 animate-spin" viewBox="0 0 20 20" fill="none" style={{ color: 'var(--accent-blue)' }}>
+              <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="2" strokeDasharray="36" strokeDashoffset="10" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <span className="text-xs font-medium" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Loading project...</span>
+        </div>
       </div>
     );
   }
@@ -564,17 +579,33 @@ export default function ProjectView() {
 
       {/* Resume interrupted task banner */}
       {resumableTask && (
-        <div className="bg-amber-900/40 border-b border-amber-500/30 px-4 py-3 flex items-center justify-between gap-3 z-50">
-          <div className="flex-1 min-w-0">
-            <div className="text-amber-200 text-sm font-medium">⚠️ Interrupted Task Found</div>
-            <div className="text-amber-200/60 text-xs truncate">
-              {resumableTask.last_message.slice(0, 100)}
-              {' — '}{resumableTask.current_loop} rounds, ${resumableTask.total_cost_usd.toFixed(4)}
+        <div className="px-4 py-3 flex items-center justify-between gap-3 z-50" style={{
+          background: 'linear-gradient(90deg, rgba(245,166,35,0.08), rgba(245,166,35,0.04))',
+          borderBottom: '1px solid rgba(245,166,35,0.15)',
+          animation: 'slideUp 0.3s ease-out',
+        }}>
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+              background: 'rgba(245,166,35,0.12)',
+            }}>
+              <span className="text-sm">⚠️</span>
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-medium" style={{ color: 'var(--accent-amber)' }}>Interrupted Task Found</div>
+              <div className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+                {resumableTask.last_message.slice(0, 100)}
+                {' — '}{resumableTask.current_loop} rounds, ${resumableTask.total_cost_usd.toFixed(4)}
+              </div>
             </div>
           </div>
           <div className="flex gap-2 shrink-0">
             <button
-              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs rounded-md transition-colors"
+              className="px-4 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95"
+              style={{
+                background: 'var(--accent-amber)',
+                color: '#000',
+                boxShadow: '0 2px 8px rgba(245,166,35,0.3)',
+              }}
               onClick={async () => {
                 if (!id) return;
                 try {
@@ -588,10 +619,15 @@ export default function ProjectView() {
                 }
               }}
             >
-              Resume
+              Resume Task
             </button>
             <button
-              className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded-md transition-colors"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95"
+              style={{
+                background: 'var(--bg-elevated)',
+                color: 'var(--text-muted)',
+                border: '1px solid var(--border-dim)',
+              }}
               onClick={async () => {
                 if (!id) return;
                 try {

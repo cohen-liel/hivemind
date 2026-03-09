@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { getFileTree, readFile } from '../api';
 import type { FileTreeEntry, FileContent } from '../types';
 
@@ -61,6 +61,22 @@ export default function CodeBrowser({ projectId }: Props) {
     setLoading(false);
   };
 
+  // Memoize line rendering for large files
+  const renderedLines = useMemo(() => {
+    if (!fileContent?.content) return null;
+    return fileContent.content.split('\n').map((line, i) => (
+      <div key={i} className="flex transition-colors"
+        style={{ borderRadius: '2px' }}
+        onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.02)'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+      >
+        <span className="w-12 text-right pr-4 select-none flex-shrink-0"
+          style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{i + 1}</span>
+        <span className="flex-1" style={{ color: 'var(--text-primary)' }}>{line || ' '}</span>
+      </div>
+    ));
+  }, [fileContent?.content]);
+
   const renderEntry = (entry: FileTreeEntry, depth = 0) => {
     const isExpanded = expandedDirs.has(entry.path);
     const isSelected = selectedFile === entry.path;
@@ -69,13 +85,19 @@ export default function CodeBrowser({ projectId }: Props) {
       <div key={entry.path}>
         <button
           onClick={() => entry.type === 'dir' ? toggleDir(entry.path) : openFile(entry.path)}
-          className={`w-full text-left px-2 py-1.5 text-sm flex items-center gap-2 rounded
-                     hover:bg-gray-700/50 transition-colors
-                     ${isSelected ? 'bg-blue-900/30 text-blue-300' : 'text-gray-300'}`}
-          style={{ paddingLeft: `${depth * 16 + 8}px` }}
+          className="w-full text-left px-2 py-1.5 text-sm flex items-center gap-2 rounded-lg transition-colors"
+          style={{
+            paddingLeft: `${depth * 16 + 8}px`,
+            background: isSelected ? 'var(--glow-blue)' : 'transparent',
+            color: isSelected ? 'var(--accent-blue)' : 'var(--text-secondary)',
+          }}
+          onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+          onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = isSelected ? 'var(--glow-blue)' : 'transparent'; }}
         >
           {entry.type === 'dir' && (
-            <span className="text-xs text-gray-500">{isExpanded ? '\u25BC' : '\u25B6'}</span>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {isExpanded ? '\u25BC' : '\u25B6'}
+            </span>
           )}
           <span className="text-sm">{getIcon(entry.name, entry.type)}</span>
           <span className="truncate">{entry.name}</span>
@@ -88,16 +110,28 @@ export default function CodeBrowser({ projectId }: Props) {
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 h-full">
+    <div className="flex flex-col lg:flex-row gap-4 h-full p-4">
       {/* File tree */}
-      <div className={`${selectedFile ? 'hidden lg:block' : ''} lg:w-64 flex-shrink-0 bg-gray-900 border border-gray-800 rounded-xl overflow-y-auto`}
-           style={{ maxHeight: 'calc(100vh - 200px)' }}>
-        <div className="p-3 border-b border-gray-800">
-          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Files</h3>
+      <div
+        className={`${selectedFile ? 'hidden lg:block' : ''} lg:w-64 flex-shrink-0 rounded-xl overflow-y-auto`}
+        style={{
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-dim)',
+          maxHeight: 'calc(100vh - 200px)',
+        }}
+      >
+        <div className="p-3" style={{ borderBottom: '1px solid var(--border-dim)' }}>
+          <h3 className="text-xs font-bold uppercase tracking-wider"
+            style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+            Files
+          </h3>
         </div>
         <div className="p-1">
           {tree.length === 0 ? (
-            <p className="text-sm text-gray-500 p-3">No files found</p>
+            <div className="flex flex-col items-center justify-center py-8">
+              <div className="text-2xl mb-2">📂</div>
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No files found</p>
+            </div>
           ) : (
             tree.map(entry => renderEntry(entry))
           )}
@@ -106,39 +140,65 @@ export default function CodeBrowser({ projectId }: Props) {
 
       {/* File content */}
       {selectedFile && (
-        <div className="flex-1 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div className="flex items-center justify-between p-3 border-b border-gray-800">
+        <div className="flex-1 rounded-xl overflow-hidden animate-[fadeSlideIn_0.2s_ease-out]"
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
+          <div className="flex items-center justify-between px-4 py-2.5"
+            style={{ borderBottom: '1px solid var(--border-dim)' }}>
             <div className="flex items-center gap-2 min-w-0">
               <button
                 onClick={() => { setSelectedFile(null); setFileContent(null); }}
-                className="lg:hidden text-gray-400 hover:text-white text-sm"
+                className="lg:hidden p-1 rounded-lg transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; }}
+                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
               >
-                &larr;
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M15 18l-6-6 6-6"/>
+                </svg>
               </button>
-              <span className="text-sm text-gray-300 font-mono truncate">{selectedFile}</span>
+              <span className="text-xs truncate"
+                style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                {selectedFile}
+              </span>
             </div>
             <button
               onClick={() => { setSelectedFile(null); setFileContent(null); }}
-              className="text-gray-500 hover:text-white text-sm"
+              className="p-1 rounded-lg transition-colors"
+              style={{ color: 'var(--text-muted)' }}
+              onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; }}
+              onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
             >
-              &times;
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M18 6L6 18M6 6l12 12"/>
+              </svg>
             </button>
           </div>
           <div className="overflow-auto" style={{ maxHeight: 'calc(100vh - 260px)' }}>
             {loading ? (
-              <div className="p-4 text-gray-500">Loading...</div>
+              <div className="flex items-center gap-2 p-4">
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 16 16" fill="none" style={{ color: 'var(--accent-blue)' }}>
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round"/>
+                </svg>
+                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading...</span>
+              </div>
             ) : fileContent?.error ? (
-              <div className="p-4 text-red-400">{fileContent.error}</div>
+              <div className="p-4 text-sm" style={{ color: 'var(--accent-red)' }}>{fileContent.error}</div>
             ) : fileContent?.content !== undefined ? (
-              <pre className="p-4 text-sm font-mono text-gray-300 leading-relaxed whitespace-pre overflow-x-auto">
-                {fileContent.content.split('\n').map((line, i) => (
-                  <div key={i} className="flex hover:bg-gray-800/30">
-                    <span className="w-12 text-right pr-4 text-gray-600 select-none flex-shrink-0">{i + 1}</span>
-                    <span className="flex-1">{line || ' '}</span>
-                  </div>
-                ))}
+              <pre className="p-4 text-sm leading-relaxed whitespace-pre overflow-x-auto"
+                style={{ fontFamily: 'var(--font-mono)' }}>
+                {renderedLines}
               </pre>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state when no file selected (desktop) */}
+      {!selectedFile && tree.length > 0 && (
+        <div className="hidden lg:flex flex-1 items-center justify-center">
+          <div className="text-center">
+            <div className="text-3xl mb-3">📄</div>
+            <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Select a file to view</p>
           </div>
         </div>
       )}

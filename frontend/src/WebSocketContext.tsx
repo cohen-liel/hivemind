@@ -24,8 +24,8 @@ const WSContext = createContext<WSContextValue>({
 const _projectSequences: Record<string, number> = {};
 
 function _trackSequence(event: WSEvent) {
-  if (event.project_id && typeof (event as Record<string, unknown>).sequence_id === 'number') {
-    const seq = (event as Record<string, unknown>).sequence_id as number;
+  if (event.project_id && typeof (event as unknown as Record<string, unknown>).sequence_id === 'number') {
+    const seq = (event as unknown as Record<string, unknown>).sequence_id as number;
     const current = _projectSequences[event.project_id] ?? 0;
     if (seq > current) {
       _projectSequences[event.project_id] = seq;

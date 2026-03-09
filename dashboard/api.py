@@ -201,6 +201,11 @@ def create_app() -> FastAPI:
 
     # CORS — configurable via CORS_ORIGINS env var
     from config import CORS_ORIGINS
+    if "*" in CORS_ORIGINS:
+        logger.warning(
+            "CORS is configured with wildcard origin (*). "
+            "Set CORS_ORIGINS env var to restrict access in production."
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
@@ -297,14 +302,22 @@ def create_app() -> FastAPI:
         )
         return response
 
-    # --- Request ID middleware for tracing ---
+    # --- Request ID + logging middleware for tracing ---
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):
-        """Attach a unique request_id to every HTTP request for log tracing."""
+        """Attach a unique request_id and log method/path/duration for every API request."""
         request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex[:12])
         request.state.request_id = request_id
+        start = time.time()
         response = await call_next(request)
+        duration_ms = (time.time() - start) * 1000
         response.headers["X-Request-ID"] = request_id
+        # Log API requests (skip static assets for cleaner logs)
+        if request.url.path.startswith("/api/"):
+            logger.info(
+                f"[{request_id}] {request.method} {request.url.path} "
+                f"→ {response.status_code} ({duration_ms:.0f}ms)"
+            )
         return response
 
     # --- Health check ---
@@ -797,8 +810,38 @@ def create_app() -> FastAPI:
 
     @app.put("/api/settings")
     async def update_settings(req: UpdateSettingsRequest):
-        """Update editable settings (runtime only, does not persist to .env)."""
+        """Update editable settings (runtime only, does not persist to .env).
+
+        Validates all values before applying to prevent invalid configuration
+        from crashing the system at runtime.
+        """
         import config as cfg
+
+        # --- Validate ranges before applying any changes ---
+        errors: list[str] = []
+        if req.max_turns_per_cycle is not None and req.max_turns_per_cycle < 1:
+            errors.append("max_turns_per_cycle must be >= 1")
+        if req.max_budget_usd is not None and req.max_budget_usd <= 0:
+            errors.append("max_budget_usd must be > 0")
+        if req.max_budget_usd is not None and req.max_budget_usd > 10_000:
+            errors.append("max_budget_usd cannot exceed $10,000")
+        if req.agent_timeout_seconds is not None and req.agent_timeout_seconds < 10:
+            errors.append("agent_timeout_seconds must be >= 10")
+        if req.sdk_max_turns_per_query is not None and req.sdk_max_turns_per_query < 1:
+            errors.append("sdk_max_turns_per_query must be >= 1")
+        if req.sdk_max_budget_per_query is not None and req.sdk_max_budget_per_query <= 0:
+            errors.append("sdk_max_budget_per_query must be > 0")
+        if req.max_user_message_length is not None and req.max_user_message_length < 100:
+            errors.append("max_user_message_length must be >= 100")
+        if req.max_orchestrator_loops is not None and req.max_orchestrator_loops < 1:
+            errors.append("max_orchestrator_loops must be >= 1")
+        if req.max_orchestrator_loops is not None and req.max_orchestrator_loops > 1000:
+            errors.append("max_orchestrator_loops cannot exceed 1000")
+
+        if errors:
+            return JSONResponse({"error": "; ".join(errors)}, status_code=400)
+
+        # --- Apply validated changes ---
         updated = {}
         if req.max_turns_per_cycle is not None:
             cfg.MAX_TURNS_PER_CYCLE = req.max_turns_per_cycle
@@ -822,6 +865,7 @@ def create_app() -> FastAPI:
             cfg.MAX_ORCHESTRATOR_LOOPS = req.max_orchestrator_loops
             updated["max_orchestrator_loops"] = req.max_orchestrator_loops
 
+        logger.info(f"Settings updated: {updated}")
         return {"ok": True, "updated": updated}
 
     @app.post("/api/settings/persist")
