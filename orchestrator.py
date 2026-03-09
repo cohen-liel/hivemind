@@ -218,6 +218,11 @@ class OrchestratorManager:
         self._dag_task_statuses: dict[str, str] = {}   # task_id → "working"/"completed"/"failed"
         self._current_dag_graph: dict | None = None     # serialized TaskGraph for the active session
 
+        # Agent silence watchdog — detects agents that stop producing output
+        self._watchdog_task: asyncio.Task | None = None
+        # Track which agents have already had a silence alert emitted (avoids spamming)
+        self._silence_alerted: set[str] = set()
+
     # Checkpoint every N orchestrator rounds (periodic safety-net)
     _CHECKPOINT_INTERVAL_ROUNDS = 3
 
@@ -486,6 +491,110 @@ class OrchestratorManager:
                 await self.on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
+
+    # ── Stuckness event broadcasting ──
+
+    async def _emit_stuckness_event(self, stuck_info: dict):
+        """Broadcast a stuckness_detected event for the dashboard.
+
+        Maps internal stuck_info dict (signal, severity, strategy, details)
+        to the public event schema with category, severity, description,
+        affected_agent, and suggested_action.
+        """
+        # Map internal signal names to public category names
+        category = stuck_info["signal"]  # text_similarity, repeated_errors, etc.
+        severity = stuck_info["severity"]  # 'warning' | 'critical'
+        description = stuck_info["details"]
+        suggested_action = stuck_info["strategy"]
+
+        # Determine affected agent — most categories are orchestrator-level,
+        # but we check agent_states for the currently active agent
+        affected_agent: str | None = None
+        for name, state in self.agent_states.items():
+            if state.get("state") == "working" and name != "orchestrator":
+                affected_agent = name
+                break
+
+        await self._emit_event(
+            "stuckness_detected",
+            category=category,
+            severity=severity,
+            description=description,
+            affected_agent=affected_agent,
+            suggested_action=suggested_action,
+        )
+
+    # ── Agent silence watchdog ──
+
+    _SILENCE_CHECK_INTERVAL_SECONDS = 15
+    _SILENCE_THRESHOLD_SECONDS = 45
+
+    def _start_silence_watchdog(self):
+        """Start the agent silence watchdog task. Called on session start."""
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            return  # Already running
+        self._silence_alerted.clear()
+        self._watchdog_task = asyncio.create_task(self._silence_watchdog_loop())
+        logger.info(f"[{self.project_id}] Agent silence watchdog started")
+
+    async def _stop_silence_watchdog(self):
+        """Cancel the agent silence watchdog task. Called on session stop/cleanup."""
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            logger.info(f"[{self.project_id}] Agent silence watchdog stopped")
+        self._watchdog_task = None
+        self._silence_alerted.clear()
+
+    async def _silence_watchdog_loop(self):
+        """Background loop: check every 15s for agents with no activity for 45+ seconds."""
+        try:
+            while True:
+                await asyncio.sleep(self._SILENCE_CHECK_INTERVAL_SECONDS)
+
+                if not self.is_running:
+                    continue
+
+                now = time.time()
+                for agent_name, state in list(self.agent_states.items()):
+                    if state.get("state") != "working":
+                        # Agent is not active — clear any prior silence alert
+                        self._silence_alerted.discard(agent_name)
+                        continue
+
+                    last_activity_at = state.get("last_activity_at")
+                    if last_activity_at is None:
+                        # No activity timestamp yet — skip (agent may have just started)
+                        continue
+
+                    silent_seconds = now - last_activity_at
+                    if silent_seconds >= self._SILENCE_THRESHOLD_SECONDS:
+                        if agent_name in self._silence_alerted:
+                            continue  # Already alerted for this silence period
+
+                        last_activity_type = state.get("last_activity_type", "unknown")
+                        self._silence_alerted.add(agent_name)
+                        logger.warning(
+                            f"[{self.project_id}] Agent '{agent_name}' silent for "
+                            f"{silent_seconds:.0f}s (last activity: {last_activity_type})"
+                        )
+                        await self._emit_event(
+                            "agent_silent",
+                            agent_name=agent_name,
+                            silent_seconds=round(silent_seconds, 1),
+                            last_activity_type=last_activity_type,
+                        )
+                    else:
+                        # Agent has recent activity — clear alert flag so we can re-alert later
+                        self._silence_alerted.discard(agent_name)
+
+        except asyncio.CancelledError:
+            pass  # Normal shutdown
+        except Exception as e:
+            logger.error(f"[{self.project_id}] Silence watchdog error: {e}", exc_info=True)
 
     def _detect_stuck(self) -> dict | None:
         """Detect if the orchestrator is stuck and suggest an escalation strategy.
@@ -975,6 +1084,9 @@ class OrchestratorManager:
         )
         await self.session_mgr.invalidate_session(self.user_id, self.project_id, "orchestrator")
 
+        # Start the agent silence watchdog (monitors for silent agents)
+        self._start_silence_watchdog()
+
         if use_dag:
             self._task = asyncio.create_task(
                 self._run_dag_session(user_message)
@@ -1048,6 +1160,9 @@ class OrchestratorManager:
         self.is_paused = False
         self._pause_event.set()
         self._approval_event.set()  # Unblock any pending approval
+
+        # Cancel the agent silence watchdog
+        await self._stop_silence_watchdog()
 
         # Cancel main orchestrator task
         if self._task and not self._task.done():
@@ -1415,8 +1530,12 @@ class OrchestratorManager:
         self.agent_states[task.role.value] = {
             "state": "working",
             "task": task.goal[:120],
+            "last_activity_at": time.time(),
+            "last_activity_type": "started",
         }
         self._dag_task_statuses[task.id] = "working"
+        # Clear any prior silence alert for this agent (it just started)
+        self._silence_alerted.discard(task.role.value)
         # activity feed, network trace, elapsed time, and SDK calls correctly.
         await self._emit_event(
             "agent_started",
@@ -1550,6 +1669,10 @@ class OrchestratorManager:
         # Update agent_states so heartbeat knows the agent is alive
         if agent_role in self.agent_states:
             self.agent_states[agent_role]["last_stream_at"] = time.time()
+            self.agent_states[agent_role]["last_activity_at"] = time.time()
+            self.agent_states[agent_role]["last_activity_type"] = "stream"
+            # Agent is active — clear silence alert
+            self._silence_alerted.discard(agent_role)
         await self._emit_event(
             "agent_update",
             agent=agent_role,
@@ -1566,6 +1689,10 @@ class OrchestratorManager:
             self.agent_states[agent_role]["current_tool"] = tool_display
             count = self.agent_states[agent_role].get("tool_count", 0) + 1
             self.agent_states[agent_role]["tool_count"] = count
+            self.agent_states[agent_role]["last_activity_at"] = time.time()
+            self.agent_states[agent_role]["last_activity_type"] = "tool_use"
+            # Agent is active — clear silence alert
+            self._silence_alerted.discard(agent_role)
         summary = f"Using tool: {tool_name}"
         if description:
             summary += f" \u2014 {description[:100]}"
@@ -1883,6 +2010,8 @@ class OrchestratorManager:
                 self.agent_states["orchestrator"] = {
                     "state": "working",
                     "task": "planning & delegating" if self.multi_agent else "working",
+                    "last_activity_at": time.time(),
+                    "last_activity_type": "started",
                 }
                 await self._emit_event(
                     "agent_started",
@@ -2159,7 +2288,11 @@ class OrchestratorManager:
                     self.agent_states[d.agent] = {
                         "state": "working",
                         "task": d.task[:300],
+                        "last_activity_at": time.time(),
+                        "last_activity_type": "started",
                     }
+                    # Clear any prior silence alert for this agent
+                    self._silence_alerted.discard(d.agent)
                 # Emit delegation events (frontend will confirm 'working' state)
                 for d in delegations:
                     await self._emit_event(
@@ -2320,6 +2453,9 @@ class OrchestratorManager:
                     signal = stuck_info['signal']
                     details = stuck_info['details']
                     strategy = stuck_info['strategy']
+
+                    # Broadcast stuckness_detected event for dashboard alerts
+                    await self._emit_stuckness_event(stuck_info)
 
                     if severity == 'critical':
                         # Critical: pause and notify user
@@ -2608,7 +2744,11 @@ class OrchestratorManager:
                 self.agent_states[agent_role] = {
                     "state": "working",
                     "task": delegation.task[:300],
+                    "last_activity_at": time.time(),
+                    "last_activity_type": "started",
                 }
+                # Clear any prior silence alert for this agent
+                self._silence_alerted.discard(agent_role)
                 await self._emit_event(
                     "agent_started",
                     agent=agent_role,
@@ -3560,6 +3700,11 @@ class OrchestratorManager:
         async def on_stream(text: str):
             emoji = AGENT_EMOJI.get(agent_role, "🔧")
             await self._notify(f"{emoji} *{agent_role}*\n{text[-500:]}")
+            # Track activity for silence watchdog
+            if agent_role in self.agent_states:
+                self.agent_states[agent_role]["last_activity_at"] = time.time()
+                self.agent_states[agent_role]["last_activity_type"] = "stream"
+                self._silence_alerted.discard(agent_role)
 
         # Tool use callback: emit tool_use events for dashboard
         async def on_tool_use(tool_name: str, tool_info: str, tool_input: dict):
@@ -3569,6 +3714,10 @@ class OrchestratorManager:
                 # Track tool count for progress insight
                 count = self.agent_states[agent_role].get("tool_count", 0) + 1
                 self.agent_states[agent_role]["tool_count"] = count
+                self.agent_states[agent_role]["last_activity_at"] = time.time()
+                self.agent_states[agent_role]["last_activity_type"] = "tool_use"
+                # Agent is active — clear silence alert
+                self._silence_alerted.discard(agent_role)
             await self._emit_event(
                 "tool_use",
                 agent=agent_role,

@@ -609,9 +609,13 @@ def create_app() -> FastAPI:
         - Shared context summary
         - Pending messages in queue
         - Pending approval
+        - Diagnostics: health_score, warnings_count, last_stuckness, seconds_since_progress
 
         Falls back to DB-persisted orchestrator_state when no in-memory manager exists.
         """
+        # Always compute diagnostics from the EventBus (available even without a manager)
+        diagnostics = event_bus.get_diagnostics(project_id)
+
         manager, user_id = _find_manager(project_id)
         if not manager:
             # Fallback: try to load last known state from DB
@@ -635,6 +639,7 @@ def create_app() -> FastAPI:
                         # BUG FIX: include DAG fields so fallback path matches success path
                         "dag_graph": saved.get("dag_graph"),
                         "dag_task_statuses": saved.get("dag_task_statuses", {}),
+                        "diagnostics": diagnostics,
                     }
             return {
                 "status": "idle",
@@ -643,6 +648,7 @@ def create_app() -> FastAPI:
                 "shared_context_count": 0,
                 "pending_messages": 0,
                 "pending_approval": None,
+                "diagnostics": diagnostics,
             }
 
         loop_progress = None
@@ -672,6 +678,7 @@ def create_app() -> FastAPI:
             "total_cost_usd": manager.total_cost_usd,
             "dag_graph": getattr(manager, '_current_dag_graph', None),
             "dag_task_statuses": getattr(manager, '_dag_task_statuses', {}),
+            "diagnostics": diagnostics,
         }
 
     @app.put("/api/projects/{project_id}")

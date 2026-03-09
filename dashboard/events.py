@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 # Type alias for the async status callback used by heartbeat.
 # Must return a dict with at least {"status": str, "active_agents": int}.
+# Enhanced: may also return "agents" (list of per-agent dicts) and
+# "last_progress_ts" (float timestamp of last meaningful progress).
 StatusFn = Callable[[], Coroutine[Any, Any, dict]]
 
 logger = logging.getLogger(__name__)
@@ -200,12 +202,93 @@ class EventBus:
         # Per-project heartbeat background tasks
         self._heartbeat_tasks: dict[str, asyncio.Task] = {}
 
+        # ------------------------------------------------------------------
+        # Diagnostics state — tracked per-project for health scoring
+        # ------------------------------------------------------------------
+        # Timestamp of the last stuckness event per project
+        self._last_stuckness: dict[str, float] = {}
+        # Timestamp of the last error event per project
+        self._last_error: dict[str, float] = {}
+        # Timestamp of the last meaningful progress per project
+        self._last_progress: dict[str, float] = {}
+        # Count of active warnings per project
+        self._warnings_count: dict[str, int] = {}
+
     def set_session_manager(self, session_mgr: SessionManager):
         """Connect the EventBus to the session manager for DB persistence.
 
         Must be called once during app initialization.
         """
         self._session_mgr = session_mgr
+
+    # ------------------------------------------------------------------
+    # Diagnostics tracking — record events that affect health scoring
+    # ------------------------------------------------------------------
+
+    def record_stuckness(self, project_id: str) -> None:
+        """Record that a stuckness event occurred for a project."""
+        now = time.time()
+        self._last_stuckness[project_id] = now
+        self._warnings_count[project_id] = self._warnings_count.get(project_id, 0) + 1
+
+    def record_error(self, project_id: str) -> None:
+        """Record that an error event occurred for a project."""
+        self._last_error[project_id] = time.time()
+
+    def record_progress(self, project_id: str) -> None:
+        """Record that meaningful progress occurred for a project."""
+        self._last_progress[project_id] = time.time()
+        # Reset warning count on progress
+        self._warnings_count[project_id] = 0
+
+    def get_diagnostics(self, project_id: str) -> dict:
+        """Compute diagnostics for a project.
+
+        Returns a dict with:
+        - health_score: 'healthy' | 'degraded' | 'critical'
+        - warnings_count: int — number of active warnings
+        - last_stuckness: float | None — timestamp of last stuckness event
+        - seconds_since_progress: float | None — seconds since last progress
+
+        Health score logic:
+        - 'critical' if any stuckness in last 60s or agent silent >90s
+        - 'degraded' if agent silent >45s or error in last 120s
+        - 'healthy' otherwise
+        """
+        now = time.time()
+
+        last_stuck_ts = self._last_stuckness.get(project_id)
+        last_error_ts = self._last_error.get(project_id)
+        last_progress_ts = self._last_progress.get(project_id)
+
+        seconds_since_progress: float | None = None
+        if last_progress_ts is not None:
+            seconds_since_progress = round(now - last_progress_ts, 1)
+
+        warnings_count = self._warnings_count.get(project_id, 0)
+
+        # Compute health_score
+        health_score = "healthy"
+
+        # Critical: stuckness in last 60s
+        if last_stuck_ts is not None and (now - last_stuck_ts) < 60:
+            health_score = "critical"
+        # Critical: agent silent >90s (no progress in 90s when we have progress data)
+        elif last_progress_ts is not None and (now - last_progress_ts) > 90:
+            health_score = "critical"
+        # Degraded: agent silent >45s
+        elif last_progress_ts is not None and (now - last_progress_ts) > 45:
+            health_score = "degraded"
+        # Degraded: error in last 120s
+        elif last_error_ts is not None and (now - last_error_ts) < 120:
+            health_score = "degraded"
+
+        return {
+            "health_score": health_score,
+            "warnings_count": warnings_count,
+            "last_stuckness": last_stuck_ts,
+            "seconds_since_progress": seconds_since_progress,
+        }
 
     # ------------------------------------------------------------------
     # Heartbeat — periodic status broadcast
@@ -261,21 +344,73 @@ class EventBus:
         """Background loop that publishes status_heartbeat events.
 
         Runs until cancelled (via ``stop_heartbeat``) or until
-        ``status_fn`` raises an exception.  Each tick is lightweight:
-        only ``project_id``, ``status``, ``active_agents``, and
-        ``timestamp`` are included in the event payload.
+        ``status_fn`` raises an exception.  Each tick publishes:
+        - ``project_id``, ``status``, ``active_agents``, ``timestamp`` (original)
+        - ``agents``: array of per-agent diagnostic dicts (new)
+        - ``diagnostics``: system health summary (new)
+
+        All new fields are additive — existing consumers that only read
+        the original fields continue to work unchanged.
         """
         try:
             while True:
                 await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
                 try:
                     info = await status_fn()
+
+                    # Build per-agent diagnostics array from status_fn data.
+                    # status_fn may return an "agents" dict keyed by agent name,
+                    # or "agent_states" (the orchestrator's naming convention).
+                    raw_agents = info.get("agents") or info.get("agent_states") or {}
+                    agents_array: list[dict] = []
+                    now = time.time()
+                    has_working_agent = False
+
+                    for agent_name, agent_info in raw_agents.items():
+                        if not isinstance(agent_info, dict):
+                            continue
+                        agent_state = agent_info.get("state", "idle")
+                        if agent_state == "working":
+                            has_working_agent = True
+
+                        # Compute elapsed seconds from duration or started_at
+                        elapsed: float = 0.0
+                        if "duration" in agent_info:
+                            elapsed = float(agent_info["duration"])
+                        elif "started_at" in agent_info:
+                            elapsed = round(now - float(agent_info["started_at"]), 1)
+
+                        # Last activity timestamp — use last_stream_at if available
+                        last_activity_ts = agent_info.get(
+                            "last_stream_at",
+                            agent_info.get("last_activity_ts", now if agent_state == "working" else 0)
+                        )
+
+                        agents_array.append({
+                            "name": agent_name,
+                            "state": agent_state,
+                            "elapsed_seconds": elapsed,
+                            "last_activity": last_activity_ts,
+                            "current_tool": agent_info.get("current_tool", ""),
+                            "task": agent_info.get("task", ""),
+                        })
+
+                    # Track progress: any working agent counts as progress
+                    if has_working_agent:
+                        self.record_progress(project_id)
+
+                    # Fetch diagnostics for health scoring
+                    diagnostics = self.get_diagnostics(project_id)
+
                     event = {
                         "type": "status_heartbeat",
                         "project_id": project_id,
                         "status": info.get("status", "unknown"),
                         "active_agents": info.get("active_agents", 0),
-                        "timestamp": time.time(),
+                        "timestamp": now,
+                        # New fields — backward-compatible additions
+                        "agents": agents_array,
+                        "diagnostics": diagnostics,
                     }
                     await self.publish(event)
                 except asyncio.CancelledError:
@@ -348,6 +483,9 @@ class EventBus:
         Adds a timestamp and sequence_id if not present. Drops events for
         full queues (slow consumers) rather than blocking the publisher.
         Automatically removes dead subscribers.
+
+        Also tracks diagnostics-relevant events (stuckness, errors, progress)
+        for health score computation in heartbeat diagnostics.
         """
         # Copy to prevent shared mutable state across subscribers
         event = {**event}
@@ -379,6 +517,20 @@ class EventBus:
             logger.debug(
                 f"[EventBus] PUBLISH {event_type} agent={agent} summary='{summary}'"
             )
+
+        # --- Diagnostics auto-tracking ---
+        # Track events that affect health scoring (lightweight, no I/O)
+        if project_id:
+            event_type = event.get("type", "")
+            if event_type == "agent_stuckness":
+                self.record_stuckness(project_id)
+            elif event_type in ("task_error", "agent_finished") and event.get("is_error"):
+                self.record_error(project_id)
+            elif event_type in (
+                "agent_finished", "task_complete", "tool_end",
+                "agent_result", "agent_final",
+            ) and not event.get("is_error"):
+                self.record_progress(project_id)
 
         # Assign sequence ID for ordered replay
         if project_id:
