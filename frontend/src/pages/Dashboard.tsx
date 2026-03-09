@@ -63,6 +63,10 @@ export default function Dashboard() {
         },
       }));
     } else if (event.type === 'agent_started' && event.agent) {
+      // Immediately mark project as running (don't wait for API poll)
+      setProjects(prev => prev.map(p =>
+        p.project_id === pid ? { ...p, status: 'running' } : p
+      ));
       setLiveStates(prev => {
         const existing = prev[pid] ?? { text: '', activeAgents: new Set() };
         const active = new Set(existing.activeAgents);
@@ -90,15 +94,21 @@ export default function Dashboard() {
           },
         };
       });
-    } else if (event.type === 'agent_final' || event.type === 'project_status') {
+    } else if (event.type === 'project_status' && event.status) {
+      // Immediately reflect status change (running/idle/paused) on the card
+      setProjects(prev => prev.map(p =>
+        p.project_id === pid ? { ...p, status: event.status as Project['status'] } : p
+      ));
+      // Reload full project data (costs, turn counts etc.)
       loadData();
-      if (event.type === 'agent_final') {
-        setLiveStates(prev => {
-          const next = { ...prev };
-          delete next[pid];
-          return next;
-        });
-      }
+    } else if (event.type === 'agent_final') {
+      // Task fully done — reload and clear live state
+      loadData();
+      setLiveStates(prev => {
+        const next = { ...prev };
+        delete next[pid];
+        return next;
+      });
     }
   }, [loadData]);
 

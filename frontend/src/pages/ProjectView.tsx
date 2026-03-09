@@ -202,10 +202,10 @@ export default function ProjectView(): React.ReactElement | null {
   // Controlled input — stays as useState (high-frequency keystrokes)
   const [message, setMessage] = useState('');
 
-  // Tick counter to force re-render for elapsed time displays (every 5s)
-  const [, setTick] = useState(0);
+  // Tick counter to force re-render for elapsed time displays (every second)
+  const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setTick(t => t + 1), 5000);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -790,7 +790,7 @@ export default function ProjectView(): React.ReactElement | null {
             </div>
           )}
           {mobileView === 'plan' && (
-            <PlanView activities={activities} />
+            <PlanView activities={activities} dagGraph={dagGraph} dagTaskStatus={dagTaskStatus} />
           )}
           {mobileView === 'trace' && (
             <NetworkTrace calls={sdkCalls} />
@@ -977,16 +977,42 @@ export default function ProjectView(): React.ReactElement | null {
           const workingAgents = subAgentStates.filter(a => a.state === 'working');
           const doneAgents = subAgentStates.filter(a => a.state === 'done');
           const errorAgents = subAgentStates.filter(a => a.state === 'error');
-          const hasStatus = workingAgents.length > 0 || doneAgents.length > 0 || errorAgents.length > 0;
+          // Also show orchestrator when it's actively working
+          const orchestratorWorking = orchestratorState?.state === 'working' ? orchestratorState : null;
+          const hasStatus = workingAgents.length > 0 || doneAgents.length > 0 || errorAgents.length > 0 || orchestratorWorking;
           if (!hasStatus) return null;
 
           return (
             <div className="flex-shrink-0 px-4 py-1.5 flex items-center gap-3 overflow-x-auto"
               style={{ borderBottom: '1px solid var(--border-dim)', background: 'linear-gradient(180deg, var(--bg-panel), var(--bg-void))' }}>
+              {/* Orchestrator chip — shown when orchestrator itself is working (planning / thinking) */}
+              {orchestratorWorking && (() => {
+                const ac = getAgentAccent('orchestrator');
+                const elapsedSec = orchestratorWorking.started_at ? Math.round((now - orchestratorWorking.started_at) / 1000) : 0;
+                return (
+                  <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg flex-shrink-0 animate-[fadeSlideIn_0.2s_ease-out]"
+                    style={{ background: ac.bg, border: `1px solid ${ac.color}30` }}>
+                    <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse" style={{ background: ac.color }} />
+                    <span className="text-[11px] font-semibold" style={{ color: ac.color }}>
+                      🎯 Orchestrator
+                    </span>
+                    {elapsedSec > 0 && (
+                      <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                        {elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s` : `${elapsedSec}s`}
+                      </span>
+                    )}
+                    {orchestratorWorking.current_tool && (
+                      <span className="text-[10px] leading-tight" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)', maxWidth: '200px', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                        {orchestratorWorking.current_tool}
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
               {workingAgents.map(agent => {
                 const ac = getAgentAccent(agent.name);
-                const elapsedSec = agent.started_at ? Math.round((Date.now() - agent.started_at) / 1000) : 0;
-                const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 60000 : false;
+                const elapsedSec = agent.started_at ? Math.round((now - agent.started_at) / 1000) : 0;
+                const isStale = agent.last_update_at ? (now - agent.last_update_at) > 60000 : false;
                 return (
                   <div key={agent.name} className="flex items-center gap-2 px-2.5 py-1 rounded-lg flex-shrink-0 animate-[fadeSlideIn_0.2s_ease-out]"
                     style={{ background: isStale ? 'rgba(245,166,35,0.06)' : ac.bg, border: `1px solid ${isStale ? 'rgba(245,166,35,0.25)' : ac.color + '25'}` }}>
@@ -1005,7 +1031,7 @@ export default function ProjectView(): React.ReactElement | null {
                       </span>
                     )}
                     {agent.current_tool && !isStale && (
-                      <span className="text-[10px] truncate max-w-[180px]" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)' }}>
+                      <span className="text-[10px] break-all leading-tight" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)', maxWidth: '300px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                         {agent.current_tool}
                       </span>
                     )}
@@ -1143,7 +1169,7 @@ export default function ProjectView(): React.ReactElement | null {
               </div>
             )}
             {desktopTab === 'plan' && (
-              <PlanView activities={activities} />
+              <PlanView activities={activities} dagGraph={dagGraph} dagTaskStatus={dagTaskStatus} />
             )}
             {desktopTab === 'code' && (
               <CodeBrowser projectId={id} />
@@ -1167,29 +1193,41 @@ export default function ProjectView(): React.ReactElement | null {
             {/* Header */}
             <div className="px-4 py-2 flex items-center justify-between flex-shrink-0" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-panel)', zIndex: 10 }}>
               <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Activity Log</h3>
-              {Object.keys(liveAgentStream).filter(a => agentStates[a]?.state === 'working').length > 0 && (
+              {Object.values(agentStates).filter(a => a.state === 'working').length > 0 && (
                 <div className="flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-green)' }} />
                   <span className="text-[10px] font-mono" style={{ color: 'var(--accent-green)' }}>
-                    {Object.keys(liveAgentStream).filter(a => agentStates[a]?.state === 'working').length} running
+                    {Object.values(agentStates).filter(a => a.state === 'working').length} running
                   </span>
                 </div>
               )}
             </div>
 
-            {/* Live Agent Stream — sticky section showing what each agent is doing NOW */}
+            {/* Live Agent Stream — sticky section showing what EVERY working agent is doing NOW */}
             {(() => {
-              const activeAgents = Object.entries(liveAgentStream).filter(([name]) => agentStates[name]?.state === 'working');
+              // Use agentStates as source of truth: ALL working agents, with liveAgentStream data overlaid
+              const activeAgents = Object.entries(agentStates)
+                .filter(([_, a]) => a.state === 'working')
+                .map(([name, agentState]) => ({
+                  name,
+                  entry: liveAgentStream[name] ?? {
+                    text: agentState.task || 'working...',
+                    timestamp: agentState.started_at ?? now,
+                  },
+                  agentState,
+                }));
               if (activeAgents.length === 0) return null;
               return (
-                <div className="flex-shrink-0 overflow-hidden" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-elevated)', maxHeight: '220px', overflowY: 'auto' }}>
-                  <div className="px-3 pt-2 pb-1">
-                    <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>⚡ Live</span>
+                <div className="flex-shrink-0 overflow-hidden" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-elevated)', maxHeight: '240px', overflowY: 'auto' }}>
+                  <div className="px-3 pt-2 pb-1 flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full animate-pulse flex-shrink-0" style={{ background: 'var(--accent-green)' }} />
+                    <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>
+                      ⚡ Live — {activeAgents.length} agent{activeAgents.length > 1 ? 's' : ''} working
+                    </span>
                   </div>
-                  {activeAgents.map(([agentName, entry]) => {
+                  {activeAgents.map(({ name: agentName, entry, agentState }) => {
                     const ac = getAgentAccent(agentName);
-                    const agentState = agentStates[agentName];
-                    const elapsedSec = agentState?.started_at ? Math.round((Date.now() - agentState.started_at) / 1000) : 0;
+                    const elapsedSec = agentState.started_at ? Math.round((now - agentState.started_at) / 1000) : 0;
                     return (
                       <div key={agentName} className="px-3 pb-2.5 pt-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                         {/* Agent name row */}
