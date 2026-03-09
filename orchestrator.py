@@ -26,11 +26,18 @@ from config import (
     SUB_AGENT_PROMPTS,
     RATE_LIMIT_SECONDS,
     BUDGET_WARNING_THRESHOLD,
+    SPECIALIST_PROMPTS,
+    get_specialist_prompt,
 )
 from sdk_client import ClaudeSDKManager, SDKResponse
 from isolated_query import isolated_query
 from session_manager import SessionManager
 from skills_registry import get_skills_for_agent, select_skills_for_task, build_skill_prompt
+
+# --- Typed Contract Protocol (new DAG-based system) ---
+# Imported lazily inside _run_dag_session to avoid circular imports
+# (orchestrator → pm_agent → state → orchestrator)
+from contracts import TaskGraph, TaskInput, TaskOutput, AgentRole
 
 logger = logging.getLogger(__name__)
 
@@ -747,30 +754,39 @@ class OrchestratorManager:
         return "Current workspace files:\n" + "\n".join(entries)
 
     async def start_session(self, user_message: str):
-        """Start processing a user message."""
+        """Start processing a user message.
+
+        Routing:
+        - is_multi_agent=True + USE_DAG_EXECUTOR env var → new Typed Contract / DAG system
+        - is_multi_agent=True (no env var) → legacy regex-delegate system
+        - is_multi_agent=False → solo mode
+        """
         if self.is_running:
             logger.warning(f"[{self.project_id}] start_session called but already running")
             await self._notify("Session is already running.")
             return
 
-        logger.info(f"[{self.project_id}] Starting session: multi_agent={self.multi_agent}, message={user_message[:80]}")
+        use_dag = self.multi_agent and os.getenv("USE_DAG_EXECUTOR", "true").lower() == "true"
+        logger.info(
+            f"[{self.project_id}] Starting session: "
+            f"multi_agent={self.multi_agent} dag={use_dag} message={user_message[:80]}"
+        )
         self.is_running = True
         self._stop_event.clear()
         self._pause_event.set()
         self.turn_count = 0
 
-        # Emit running status immediately so frontend updates
         await self._emit_event("project_status", status="running")
-
-        # Invalidate the orchestrator session so the new system prompt takes
-        # full effect. Sub-agent sessions are preserved so they accumulate
-        # context across delegation rounds.
         await self.session_mgr.invalidate_session(self.user_id, self.project_id, "orchestrator")
 
-        self._task = asyncio.create_task(
-            self._run_orchestrator(user_message)
-        )
-        # Log uncaught errors from the task so they don't vanish silently
+        if use_dag:
+            self._task = asyncio.create_task(
+                self._run_dag_session(user_message)
+            )
+        else:
+            self._task = asyncio.create_task(
+                self._run_orchestrator(user_message)
+            )
         self._task.add_done_callback(self._on_task_done)
 
     async def inject_user_message(self, agent_name: str, message: str):
@@ -902,10 +918,140 @@ class OrchestratorManager:
     def pending_approval(self) -> str | None:
         return self._pending_approval
 
-    # --- Core orchestration loop ---
+    # --- DAG-based session (new Typed Contract system) ---
+
+    async def _run_dag_session(self, user_message: str):
+        """
+        New execution path using the Typed Contract Protocol:
+
+        1. PM Agent  → creates TaskGraph (structured, typed)
+        2. DAG Executor → runs tasks in dependency order, parallel when safe
+        3. Commits  → only the executor commits (git discipline)
+        4. Summary  → returned to user as final output
+
+        Falls back to legacy _run_orchestrator if PM fails.
+        """
+        # Lazy imports to avoid circular dependency (orchestrator→pm_agent→state→orchestrator)
+        from pm_agent import create_task_graph, fallback_single_task_graph
+        from dag_executor import execute_graph, build_execution_summary
+
+        try:
+            await self._notify("🗺️ **PM Agent** is creating the execution plan...")
+
+            # Load project manifest and file tree for PM context
+            manifest = await self._load_manifest()
+            file_tree = self._list_workspace_files()
+
+            # Step 1: PM Agent → TaskGraph
+            try:
+                graph = await create_task_graph(
+                    user_message=user_message,
+                    project_id=self.project_id,
+                    manifest=manifest,
+                    file_tree=file_tree,
+                )
+            except Exception as pm_err:
+                logger.warning(f"[{self.project_id}] PM Agent failed: {pm_err}. Using fallback.")
+                graph = fallback_single_task_graph(user_message, self.project_id)
+
+            await self._notify(
+                f"📋 **Plan ready:** {graph.vision}\n"
+                f"Tasks: {len(graph.tasks)} | "
+                f"Epics: {len(graph.epic_breakdown)}"
+            )
+
+            # Emit the full graph to the frontend for visualization
+            await self._emit_event("task_graph", graph=graph.model_dump())
+
+            # Session IDs shared across tasks (agent resume)
+            session_id_store: dict[str, str] = {}
+
+            # Step 2: DAG Executor
+            outputs = await execute_graph(
+                graph=graph,
+                project_dir=self.project_dir,
+                specialist_prompts=SPECIALIST_PROMPTS,
+                sdk_client=self.sdk,
+                on_task_start=self._on_dag_task_start,
+                on_task_done=self._on_dag_task_done,
+                max_budget_usd=self._effective_budget,
+                session_id_store=session_id_store,
+            )
+
+            # Step 3: Final summary
+            summary = build_execution_summary(graph, outputs)
+            await self._send_final(summary)
+
+            # Record outputs in conversation log for persistence
+            for output in outputs:
+                self._record_dag_output(output)
+
+        except asyncio.CancelledError:
+            logger.info(f"[{self.project_id}] DAG session cancelled")
+        except Exception as exc:
+            logger.exception(f"[{self.project_id}] DAG session error: {exc}")
+            await self._send_final(f"❌ DAG execution error: {exc}")
+        finally:
+            self.is_running = False
+            self.turn_count += 1
+            await self._emit_event("project_status", status="idle")
+
+    async def _on_dag_task_start(self, task: "TaskInput"):
+        """Callback: fired when DAG executor starts a task."""
+        await self._emit_event(
+            "agent_update",
+            agent=task.role.value,
+            status="working",
+            task=task.goal[:120],
+        )
+        await self._notify(f"🔄 **{task.role.value}** starting: {task.goal[:80]}...")
+
+    async def _on_dag_task_done(self, task: "TaskInput", output: "TaskOutput"):
+        """Callback: fired when DAG executor completes a task."""
+        icon = "✅" if output.is_successful() else "❌"
+        await self._emit_event(
+            "agent_update",
+            agent=task.role.value,
+            status="done" if output.is_successful() else "error",
+            summary=output.summary[:200],
+            cost=output.cost_usd,
+        )
+        await self._notify(
+            f"{icon} **{task.role.value}** [{output.status.value}] "
+            f"${output.cost_usd:.4f} — {output.summary[:100]}"
+        )
+
+    def _record_dag_output(self, output: "TaskOutput"):
+        """Store a TaskOutput in the conversation log for persistence."""
+        content = (
+            f"[{output.task_id}] {output.status.value.upper()}\n"
+            f"{output.summary}\n"
+            f"Artifacts: {', '.join(output.artifacts) or 'none'}\n"
+            f"Cost: ${output.cost_usd:.4f}"
+        )
+        self.conversation_log.append(
+            Message(
+                agent_name=output.task_id,
+                role="Agent",
+                content=content,
+                cost_usd=output.cost_usd,
+            )
+        )
+
+    async def _load_manifest(self) -> str:
+        """Load .nexus/PROJECT_MANIFEST.md if it exists."""
+        manifest_path = Path(self.project_dir) / ".nexus" / "PROJECT_MANIFEST.md"
+        if manifest_path.exists():
+            try:
+                return manifest_path.read_text(encoding="utf-8")[:4000]
+            except Exception:
+                pass
+        return ""
+
+    # --- Core orchestration loop (legacy) ---
 
     async def _run_orchestrator(self, user_message: str, *, _retry_count: int = 0):
-        """Main orchestrator loop.
+        """Main orchestrator loop (legacy regex-delegate system).
 
         Uses a cumulative retry count (_retry_count) to bound retries on
         spurious anyio CancelledErrors.  Previous implementation used
