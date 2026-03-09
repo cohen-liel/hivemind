@@ -1179,15 +1179,14 @@ class ClaudeSDKManager:
                     f"[{request_id}] anyio cancel scope error after {message_count} messages (suppressed)"
                 )
                 combined = "\n\n".join(text_parts).strip()
-                return SDKResponse(
+                return _make_error_response(
                     text=combined or "Agent interrupted (anyio cleanup error).",
                     session_id=result_session_id,
+                    error_message="anyio cancel scope error",
+                    error_category=ErrorCategory.TRANSIENT,
                     cost_usd=cost_usd,
                     duration_ms=duration_ms,
                     num_turns=num_turns,
-                    is_error=True,
-                    error_message="anyio cancel scope error",
-                    error_category=ErrorCategory.TRANSIENT,
                 )
             raise
         except Exception as e:
@@ -1197,15 +1196,13 @@ class ClaudeSDKManager:
                 exc_info=True,
             )
             combined = "\n\n".join(text_parts).strip()
-            return SDKResponse(
+            return _make_error_response(
                 text=combined or f"Error during stream processing: {e}",
                 session_id=result_session_id,
+                error_message=f"Stream error: {e}",
                 cost_usd=cost_usd,
                 duration_ms=duration_ms,
                 num_turns=num_turns,
-                is_error=True,
-                error_message=f"Stream error: {e}",
-                error_category=classify_error(str(e)),
             )
         finally:
             # Explicitly close the async generator in THIS task to prevent
@@ -1237,14 +1234,21 @@ class ClaudeSDKManager:
                 f"[{request_id}] Stream ended without ResultMessage and no text "
                 f"({message_count} messages). This is an SDK-level error."
             )
+        is_err = not bool(combined)
+        if is_err:
+            hr, sa = get_error_reason(ErrorCategory.TRANSIENT)
+        else:
+            hr, sa = "", ""
         return SDKResponse(
             text=combined or "⚠️ Agent produced no text output (stream ended unexpectedly).",
             session_id=result_session_id,
             cost_usd=cost_usd,
             duration_ms=duration_ms,
             num_turns=num_turns,
-            is_error=not bool(combined),  # Only error if we got nothing
+            is_error=is_err,
             error_category=ErrorCategory.TRANSIENT,
+            human_reason=hr,
+            suggested_action=sa,
         )
 
     async def query_with_retry(
@@ -1400,9 +1404,8 @@ class ClaudeSDKManager:
             last_response.retry_count = max_retries
             last_response.cost_usd = total_cost
             return last_response
-        return SDKResponse(
+        return _make_error_response(
             text="Error: All retry attempts failed",
-            is_error=True,
             error_message="All retry attempts failed",
             error_category=ErrorCategory.UNKNOWN,
             cost_usd=total_cost,
