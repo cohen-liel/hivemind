@@ -1094,6 +1094,9 @@ class OrchestratorManager:
         finally:
             self.is_running = False
             self.turn_count += 1
+            # BUG FIX: reset DAG state on session end so /live returns clean state
+            self._dag_task_statuses = {}
+            self._current_dag_graph = None
             await self._emit_event("project_status", status="idle")
 
     async def _on_dag_task_start(self, task: "TaskInput"):

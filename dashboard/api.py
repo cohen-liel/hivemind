@@ -610,6 +610,9 @@ def create_app() -> FastAPI:
                         "shared_context_count": len(saved.get("shared_context", [])),
                         "pending_messages": 0,
                         "pending_approval": None,
+                        # BUG FIX: include DAG fields so fallback path matches success path
+                        "dag_graph": saved.get("dag_graph"),
+                        "dag_task_statuses": saved.get("dag_task_statuses", {}),
                     }
             return {
                 "status": "idle",
