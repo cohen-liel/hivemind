@@ -220,6 +220,83 @@ def create_app() -> FastAPI:
                     return JSONResponse({"error": "Unauthorized"}, status_code=401)
             return await call_next(request)
 
+    # --- Request body size limit ---
+    _MAX_BODY_SIZE = int(os.getenv("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024)))  # 1MB default
+
+    @app.middleware("http")
+    async def body_size_limit(request: Request, call_next):
+        """Reject requests with oversized bodies to prevent memory exhaustion."""
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > _MAX_BODY_SIZE:
+            return JSONResponse(
+                {"error": f"Request body too large. Maximum is {_MAX_BODY_SIZE // 1024}KB."},
+                status_code=413,
+            )
+        return await call_next(request)
+
+    # --- Rate limiting middleware ---
+    # Simple in-memory rate limiter per IP address
+    _rate_limit_store: dict[str, list[float]] = {}  # ip -> list of timestamps
+    _RATE_LIMIT_WINDOW = 60  # seconds
+    _RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "120"))  # per window
+    _RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "30"))  # max burst in 5s
+    _RATE_LIMIT_EXEMPT = {"/api/health", "/api/stats"}  # endpoints exempt from rate limiting
+
+    @app.middleware("http")
+    async def rate_limit_middleware(request: Request, call_next):
+        """Per-IP rate limiting with sliding window and burst protection."""
+        # Skip non-API routes and exempt endpoints
+        if not request.url.path.startswith("/api/") or request.url.path in _RATE_LIMIT_EXEMPT:
+            return await call_next(request)
+
+        # Get client IP (support X-Forwarded-For for reverse proxy)
+        client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if not client_ip:
+            client_ip = request.client.host if request.client else "unknown"
+
+        now = time.time()
+        timestamps = _rate_limit_store.get(client_ip, [])
+
+        # Clean old timestamps outside the window
+        timestamps = [t for t in timestamps if now - t < _RATE_LIMIT_WINDOW]
+
+        # Check window limit
+        if len(timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
+            logger.warning(f"Rate limit exceeded for {client_ip}: {len(timestamps)} requests in {_RATE_LIMIT_WINDOW}s")
+            return JSONResponse(
+                {"error": "Rate limit exceeded. Please slow down."},
+                status_code=429,
+                headers={"Retry-After": str(_RATE_LIMIT_WINDOW)},
+            )
+
+        # Check burst limit (last 5 seconds)
+        recent_burst = sum(1 for t in timestamps if now - t < 5)
+        if recent_burst >= _RATE_LIMIT_BURST:
+            logger.warning(f"Burst limit exceeded for {client_ip}: {recent_burst} requests in 5s")
+            return JSONResponse(
+                {"error": "Too many requests in a short time. Please wait a moment."},
+                status_code=429,
+                headers={"Retry-After": "5"},
+            )
+
+        timestamps.append(now)
+        _rate_limit_store[client_ip] = timestamps
+
+        # Periodic cleanup of stale IPs (every ~100 requests)
+        if len(_rate_limit_store) > 100 and hash(client_ip) % 50 == 0:
+            stale_ips = [
+                ip for ip, ts in _rate_limit_store.items()
+                if not ts or now - ts[-1] > _RATE_LIMIT_WINDOW * 2
+            ]
+            for ip in stale_ips:
+                del _rate_limit_store[ip]
+
+        response = await call_next(request)
+        response.headers["X-RateLimit-Remaining"] = str(
+            max(0, _RATE_LIMIT_MAX_REQUESTS - len(timestamps))
+        )
+        return response
+
     # --- Request ID middleware for tracing ---
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):
@@ -1242,7 +1319,11 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/resume-interrupted")
     async def resume_interrupted_task(project_id: str):
-        """Resume an interrupted task from where it left off."""
+        """Resume an interrupted task from where it left off.
+
+        Restores shared_context and agent_states from DB before restarting,
+        and waits for the orchestrator task to actually start before returning.
+        """
         if not state.session_mgr:
             return JSONResponse({"error": "Session manager not available"}, 500)
 
@@ -1278,27 +1359,63 @@ def create_app() -> FastAPI:
         if manager.is_running:
             return JSONResponse({"error": "Project is already running"}, 409)
 
-        # Clear the interrupted state
+        # ── Bug fix #2: Restore context from DB before restarting ──
+        # Without this, the agent starts fresh with no memory of previous work.
+        saved_context = task.get("shared_context", [])
+        saved_agent_states = task.get("agent_states", {})
+        if saved_context and isinstance(saved_context, list):
+            manager.shared_context = saved_context
+        if saved_agent_states and isinstance(saved_agent_states, dict):
+            manager.agent_states = saved_agent_states
+        # Restore cost/turn counters so budget tracking continues
+        manager.total_cost_usd = task.get("total_cost_usd", 0.0)
+        manager.turn_count = task.get("turn_count", 0)
+
+        # Clear the interrupted state in DB (we've restored what we need)
         await state.session_mgr.clear_orchestrator_state(project_id)
 
-        # Resume with a continuation message
+        # Resume with a continuation message that includes context summary
+        context_summary = ""
+        if saved_context:
+            context_summary = (
+                f"\n\nRestored context from {len(saved_context)} previous entries. "
+                f"Key agents used: {', '.join(saved_agent_states.keys()) if saved_agent_states else 'unknown'}."
+            )
         resume_msg = (
             f"RESUME INTERRUPTED TASK — Continue from where you left off.\n\n"
             f"Original task: {last_message}\n\n"
             f"Previous progress: {task.get('current_loop', 0)} rounds completed, "
-            f"${task.get('total_cost_usd', 0):.4f} spent.\n\n"
+            f"${task.get('total_cost_usd', 0):.4f} spent."
+            f"{context_summary}\n\n"
             f"Check the .nexus/todo.md and git log to understand current state, "
             f"then continue working."
         )
 
-        # Start the task
-        manager.is_running = True
+        # ── Bug fix #1: Use an Event to confirm the task has actually started ──
+        # Without this, the frontend gets 200 OK but the task hasn't started yet.
+        started_event = asyncio.Event()
+
+        async def _run_and_signal():
+            manager.is_running = True
+            started_event.set()
+            try:
+                await manager._run_orchestrator(resume_msg)
+            except Exception as exc:
+                logger.error(f"Resume task error for {project_id}: {exc}")
+
+        asyncio.create_task(_run_and_signal())
+
+        # Wait up to 3 seconds for the task to actually start
+        try:
+            await asyncio.wait_for(started_event.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Resume task for {project_id}: start confirmation timed out")
+
         await event_bus.publish({
             "type": "project_status",
             "project_id": project_id,
             "status": "running",
         })
-        asyncio.create_task(manager._run_orchestrator(resume_msg))
 
         return {"ok": True, "message": f"Resuming interrupted task: {last_message[:100]}"}
 

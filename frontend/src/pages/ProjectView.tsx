@@ -128,10 +128,12 @@ export default function ProjectView() {
     }).catch(() => {});
     loadFiles().catch(() => {});
 
-    // Check for interrupted/resumable tasks
-    getResumableTask(id).then((data) => {
-      if (data.resumable && data.task) {
+    // Check for interrupted/resumable tasks (bug fix #6: only show if not currently running)
+    Promise.all([getResumableTask(id), getProject(id)]).then(([data, proj]) => {
+      if (data.resumable && data.task && proj.status !== 'running') {
         setResumableTask(data.task);
+      } else {
+        setResumableTask(null);
       }
     }).catch(() => {});
 
@@ -580,7 +582,9 @@ export default function ProjectView() {
                   setResumableTask(null);
                   loadProject();
                 } catch (e: unknown) {
-                  console.error('Resume failed:', e);
+                  const msg = e instanceof Error ? e.message : 'Unknown error';
+                  console.error('Resume failed:', msg);
+                  alert(`Failed to resume task: ${msg}`);
                 }
               }}
             >
@@ -590,8 +594,14 @@ export default function ProjectView() {
               className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded-md transition-colors"
               onClick={async () => {
                 if (!id) return;
-                await discardInterruptedTask(id);
-                setResumableTask(null);
+                try {
+                  await discardInterruptedTask(id);
+                  setResumableTask(null);
+                } catch (e: unknown) {
+                  const msg = e instanceof Error ? e.message : 'Unknown error';
+                  console.error('Discard failed:', msg);
+                  alert(`Failed to discard task: ${msg}`);
+                }
               }}
             >
               Discard

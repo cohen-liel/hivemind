@@ -127,30 +127,47 @@ async def run():
                     last_user_message=task_state.get("last_user_message", ""),
                 )
 
-    # Start periodic cleanup task
+    # Start periodic cleanup task (with auto-restart on crash)
     async def _cleanup_loop():
-        """Run session cleanup and activity log trimming every hour."""
+        """Run session cleanup and activity log trimming every hour.
+
+        Auto-restarts on unexpected errors to ensure cleanup never stops.
+        """
         while True:
-            await asyncio.sleep(3600)  # 1 hour
             try:
+                await asyncio.sleep(3600)  # 1 hour
                 if state.session_mgr:
                     await state.session_mgr.cleanup_expired()
                     # Trim old activity logs to prevent unbounded growth
-                    if state.session_mgr:
-                        all_projects = await state.session_mgr.list_projects()
-                        for proj in all_projects:
-                            await state.session_mgr.cleanup_old_activity(
-                                proj["project_id"], keep_last=2000
-                            )
+                    all_projects = await state.session_mgr.list_projects()
+                    for proj in all_projects:
+                        await state.session_mgr.cleanup_old_activity(
+                            proj["project_id"], keep_last=2000
+                        )
                     logger.info("Periodic cleanup: expired sessions + old activity cleaned up")
+            except asyncio.CancelledError:
+                raise  # Let cancellation propagate for graceful shutdown
             except Exception as e:
-                logger.warning(f"Periodic cleanup error: {e}")
+                logger.warning(f"Periodic cleanup error (will retry in 60s): {e}")
+                await asyncio.sleep(60)  # Wait a bit before retrying
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
 
-    # Start task scheduler
+    # Start task scheduler (with auto-restart on crash)
     from scheduler import scheduler_loop
-    scheduler_task = asyncio.create_task(scheduler_loop(check_interval=60))
+
+    async def _resilient_scheduler():
+        """Wrapper that restarts the scheduler if it crashes unexpectedly."""
+        while True:
+            try:
+                await scheduler_loop(check_interval=60)
+            except asyncio.CancelledError:
+                raise  # Let cancellation propagate for graceful shutdown
+            except Exception as e:
+                logger.error(f"Scheduler crashed, restarting in 30s: {e}")
+                await asyncio.sleep(30)
+
+    scheduler_task = asyncio.create_task(_resilient_scheduler())
 
     # Start FastAPI dashboard
     dash = create_app()
@@ -164,7 +181,19 @@ async def run():
     try:
         await server.serve()
     finally:
-        # Graceful shutdown: save state of all running orchestrators
+        # ── Graceful shutdown (order matters!) ──
+        # 1. Cancel background tasks first (they may generate events)
+        logger.info("Graceful shutdown: stopping background tasks...")
+        cleanup_task.cancel()
+        scheduler_task.cancel()
+        for bg_task in (cleanup_task, scheduler_task):
+            try:
+                await bg_task
+            except asyncio.CancelledError:
+                pass
+
+        # 2. Save orchestrator states BEFORE stopping EventBus
+        #    (save_orchestrator_state writes to DB, not EventBus)
         logger.info("Graceful shutdown: saving orchestrator states...")
         for user_id, project_id, manager in state.get_all_managers():
             if manager.is_running and state.session_mgr:
@@ -184,16 +213,12 @@ async def run():
                 except Exception as e:
                     logger.error(f"  Failed to save state for {project_id}: {e}")
 
-        # Stop EventBus writer (flushes pending events)
+        # 3. Stop EventBus writer AFTER state is saved
+        #    (flushes any pending activity events to DB)
+        logger.info("Graceful shutdown: flushing EventBus...")
         await event_bus.stop_writer()
 
-        cleanup_task.cancel()
-        scheduler_task.cancel()
-        for task in (cleanup_task, scheduler_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        # 4. Close DB connection last (everything above needs it)
         if state.session_mgr:
             await state.session_mgr.close()
         logger.info("Shutdown complete")
