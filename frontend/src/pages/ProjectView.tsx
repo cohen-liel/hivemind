@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useReducer, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { getProject, getMessages, getFiles, sendMessage, pauseProject, resumeProject, stopProject, getLiveState, clearHistory, getResumableTask, resumeInterruptedTask, discardInterruptedTask, getActivity } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
@@ -16,10 +16,12 @@ import ApprovalModal from '../components/ApprovalModal';
 import Controls from '../components/Controls';
 import CodeBrowser from '../components/CodeBrowser';
 import ConductorMode from '../components/ConductorMode';
-import type { Project, ProjectMessage, FileChanges, WSEvent, ActivityEntry, AgentState as AgentStateType, LoopProgress } from '../types';
+import type { ProjectMessage, WSEvent, ActivityEntry, AgentState as AgentStateType } from '../types';
 import { SkeletonBlock } from '../components/Skeleton';
 import type { ActivityEvent } from '../api';
 import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
+import { projectReducer, initialProjectState } from '../reducers/projectReducer';
+import type { MobileView, DesktopTab, SdkCall } from '../reducers/projectReducer';
 
 function nextId(): string {
   return crypto.randomUUID();
@@ -113,12 +115,8 @@ function activityEventsToEntries(events: ActivityEvent[]): ActivityEntry[] {
 }
 
 /** Reconstruct SdkCall entries from persisted agent_started/agent_finished events. */
-function reconstructSdkCalls(events: ActivityEvent[]): Array<{
-  agent: string; startTime: number; endTime?: number; cost?: number; status: string;
-}> {
-  const calls: Array<{
-    agent: string; startTime: number; endTime?: number; cost?: number; status: string;
-  }> = [];
+function reconstructSdkCalls(events: ActivityEvent[]): SdkCall[] {
+  const calls: SdkCall[] = [];
   const openCalls = new Map<string, number>(); // agent -> index in calls array
 
   for (const evt of events) {
@@ -188,45 +186,21 @@ function reconstructAgentStates(events: ActivityEvent[]): Record<string, AgentSt
   return states;
 }
 
-type MobileView = 'orchestra' | 'activity' | 'code' | 'changes' | 'plan' | 'trace';
-type DesktopTab = 'nexus' | 'agents' | 'plan' | 'code' | 'diff' | 'trace';
-
-export default function ProjectView() {
+export default function ProjectView(): React.ReactElement | null {
   const { id } = useParams<{ id: string }>();
   const toast = useToast();
-  const [project, setProject] = useState<Project | null>(null);
-  const [activities, setActivities] = useState<ActivityEntry[]>([]);
-  const [agentStates, setAgentStates] = useState<Record<string, AgentStateType>>({});
-  const [loopProgress, setLoopProgress] = useState<LoopProgress | null>(null);
-  const [files, setFiles] = useState<FileChanges | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [mobileView, setMobileView] = useState<MobileView>('orchestra');
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-  const [message, setMessage] = useState('');
-  const [lastTicker, setLastTicker] = useState('');
-  const [sending, setSending] = useState(false);
-  const [desktopTab, setDesktopTab] = useState<DesktopTab>('nexus');
-  const [sdkCalls, setSdkCalls] = useState<Array<{
-    agent: string; startTime: number; endTime?: number; cost?: number; status: string;
-  }>>([]);
-  const [messageOffset, setMessageOffset] = useState(0);
-  const [hasMoreMessages, setHasMoreMessages] = useState(false);
-  const [approvalRequest, setApprovalRequest] = useState<string | null>(null);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [resumableTask, setResumableTask] = useState<{ last_message: string; current_loop: number; total_cost_usd: number } | null>(null);
-  const [dagGraph, setDagGraph] = useState<WSEvent['graph'] | null>(null);
-  const [dagTaskStatus, setDagTaskStatus] = useState<Record<string, 'pending' | 'working' | 'completed' | 'failed'>>({});
-  const [healingEvents, setHealingEvents] = useState<Array<{
-    timestamp: number; failed_task: string; failure_category: string;
-    remediation_task: string; remediation_role: string;
-  }>>([]);
-  // Live agent stream: what each agent is doing RIGHT NOW (thoughts, tool, progress)
-  const [liveAgentStream, setLiveAgentStream] = useState<Record<string, {
-    text: string; tool?: string; timestamp: number; progress?: string;
-  }>>({});
 
-  // Track the latest activity timestamp loaded from DB to prevent duplicate WS events
-  const activityLoadedUpToRef = useRef<number>(0);
+  // ── Single useReducer replaces 21 individual useState hooks ──
+  const [state, dispatch] = useReducer(projectReducer, initialProjectState);
+  const {
+    project, activities, agentStates, loopProgress, files, loadError,
+    sdkCalls, liveAgentStream, lastTicker, dagGraph, dagTaskStatus,
+    healingEvents, mobileView, desktopTab, selectedAgent, showClearConfirm,
+    sending, messageOffset, hasMoreMessages, approvalRequest, resumableTask,
+  } = state;
+
+  // Controlled input — stays as useState (high-frequency keystrokes)
+  const [message, setMessage] = useState('');
 
   // Tick counter to force re-render for elapsed time displays (every 5s)
   const [, setTick] = useState(0);
@@ -247,8 +221,7 @@ export default function ProjectView() {
         const { graph, statuses, savedAt } = JSON.parse(saved);
         const AGE_LIMIT_MS = 24 * 60 * 60 * 1000; // 24 hours
         if (Date.now() - savedAt < AGE_LIMIT_MS && graph) {
-          setDagGraph(graph);
-          setDagTaskStatus(statuses ?? {});
+          dispatch({ type: 'HYDRATE_DAG', graph, statuses: statuses ?? {} });
         }
       }
     } catch { /* corrupted storage — ignore */ }
@@ -256,86 +229,60 @@ export default function ProjectView() {
 
   // Persist DAG state to localStorage whenever graph or task statuses change
   useEffect(() => {
-    if (!id || !dagGraph) return;
+    if (!id || !state.dagGraph) return;
     try {
       localStorage.setItem(`nexus_dag_${id}`, JSON.stringify({
-        graph: dagGraph,
-        statuses: dagTaskStatus,
+        graph: state.dagGraph,
+        statuses: state.dagTaskStatus,
         savedAt: Date.now(),
       }));
     } catch { /* quota exceeded — ignore */ }
-  }, [id, dagGraph, dagTaskStatus]);
+  }, [id, state.dagGraph, state.dagTaskStatus]);
 
-  const loadProject = useCallback(async () => {
+  const loadProject = useCallback(async (): Promise<void> => {
     if (!id) return;
     const p = await getProject(id);
-    setProject(p);
+    dispatch({ type: 'SET_PROJECT', project: p });
 
     // Restore pending approval from project data
     if (p.pending_approval) {
-      setApprovalRequest(p.pending_approval);
+      dispatch({ type: 'SET_APPROVAL_REQUEST', request: p.pending_approval });
     }
 
     // Failsafe: merge agent_states from poll response to recover from missed WS events.
-    // Always sync working agents' current_tool; upgrade idle→working but don't downgrade working→idle.
     if (p.agent_states && Object.keys(p.agent_states).length > 0) {
-      setAgentStates(prev => {
-        let changed = false;
-        const updated = { ...prev };
-        for (const [name, s] of Object.entries(p.agent_states!)) {
-          const serverState = (s.state ?? 'idle') as AgentStateType['state'];
-          const ourState = updated[name]?.state ?? 'idle';
-          // Always sync if server says working, or if both agree on state but tool changed
-          const shouldSync = serverState === 'working'
-            || (serverState !== 'idle' && ourState !== serverState)
-            || (serverState === ourState && s.current_tool && s.current_tool !== updated[name]?.current_tool);
-          if (shouldSync) {
-            updated[name] = {
-              ...updated[name],
-              name,
-              state: serverState,
-              task: s.task ?? updated[name]?.task,
-              current_tool: s.current_tool ?? undefined,
-              cost: s.cost ?? updated[name]?.cost ?? 0,
-              turns: s.turns ?? updated[name]?.turns ?? 0,
-              duration: updated[name]?.duration ?? 0,
-              // Preserve timing if we had it, otherwise set for working agents
-              started_at: updated[name]?.started_at ?? (serverState === 'working' ? Date.now() : undefined),
-              last_update_at: serverState === 'working' ? Date.now() : updated[name]?.last_update_at,
-            };
-            changed = true;
-          }
-        }
-        return changed ? updated : prev;
-      });
+      dispatch({ type: 'MERGE_AGENT_STATES_FROM_POLL', agentStates: p.agent_states });
     }
   }, [id]);
 
-  const loadFiles = useCallback(async () => {
+  const loadFiles = useCallback(async (): Promise<void> => {
     if (!id) return;
     const f = await getFiles(id);
-    setFiles(f);
+    dispatch({ type: 'SET_FILES', files: f });
   }, [id]);
 
-  const loadEarlierMessages = useCallback(async () => {
+  const loadEarlierMessages = useCallback(async (): Promise<void> => {
     if (!id || !hasMoreMessages) return;
     try {
       const data = await getMessages(id, 50, messageOffset);
       if (data.messages.length > 0) {
         const earlier = messagesToActivities(data.messages);
-        setActivities(prev => [...earlier, ...prev]);
-        setMessageOffset(prev => prev + 50);
-        setHasMoreMessages(data.total > messageOffset + 50);
+        dispatch({
+          type: 'LOAD_EARLIER_MESSAGES',
+          messages: earlier,
+          newOffset: messageOffset + 50,
+          hasMore: data.total > messageOffset + 50,
+        });
       } else {
-        setHasMoreMessages(false);
+        dispatch({ type: 'LOAD_EARLIER_MESSAGES', messages: [], newOffset: messageOffset, hasMore: false });
       }
     } catch { /* ignore */ }
   }, [id, messageOffset, hasMoreMessages]);
 
   useEffect(() => {
     if (!id) return;
-    setLoadError(null);
-    loadProject().catch((e) => setLoadError(e.message || 'Failed to load project'));
+    dispatch({ type: 'SET_LOAD_ERROR', error: null });
+    loadProject().catch((e) => dispatch({ type: 'SET_LOAD_ERROR', error: e.message || 'Failed to load project' }));
 
     // Load both messages AND activity events, merge into unified timeline
     Promise.all([
@@ -348,34 +295,23 @@ export default function ProjectView() {
       const actEntries = activityEventsToEntries(actData.events);
       // Merge both, sort by timestamp for a unified timeline
       const merged = [...msgEntries, ...actEntries].sort((a, b) => a.timestamp - b.timestamp);
-      setActivities(merged);
-      setHasMoreMessages(msgData.total > 100);
-      setMessageOffset(100);
-
-      // Track the latest loaded timestamp so WS events don't duplicate DB entries
-      const maxTs = merged.reduce((max, e) => Math.max(max, e.timestamp), 0);
-      activityLoadedUpToRef.current = maxTs;
 
       // Reconstruct NetworkTrace SDK calls from agent_started/agent_finished events
       const restoredCalls = reconstructSdkCalls(actData.events);
-      if (restoredCalls.length > 0) {
-        setSdkCalls(restoredCalls);
-      }
 
       // Reconstruct agent states from activity events (done/error/working)
       const restoredStates = reconstructAgentStates(actData.events);
-      if (Object.keys(restoredStates).length > 0) {
-        setAgentStates(prev => {
-          // Only apply restored states if we don't have live state already
-          const merged = { ...prev };
-          for (const [name, state] of Object.entries(restoredStates)) {
-            if (!merged[name] || merged[name].state === 'idle') {
-              merged[name] = state;
-            }
-          }
-          return merged;
-        });
-      }
+
+      // Single dispatch: load all initial data with sequence-based dedup tracking
+      dispatch({
+        type: 'LOAD_INITIAL_DATA',
+        activities: merged,
+        sdkCalls: restoredCalls,
+        agentStates: restoredStates,
+        hasMoreMessages: msgData.total > 100,
+        messageOffset: 100,
+        lastSequenceId: actData.latest_sequence ?? 0,
+      });
     });
 
     loadFiles().catch(() => {});
@@ -383,9 +319,9 @@ export default function ProjectView() {
     // Check for interrupted/resumable tasks (bug fix #6: only show if not currently running)
     Promise.all([getResumableTask(id), getProject(id)]).then(([data, proj]) => {
       if (data.resumable && data.task && proj.status !== 'running') {
-        setResumableTask(data.task);
+        dispatch({ type: 'SET_RESUMABLE_TASK', task: data.task });
       } else {
-        setResumableTask(null);
+        dispatch({ type: 'SET_RESUMABLE_TASK', task: null });
       }
     }).catch(() => {});
 
@@ -407,17 +343,13 @@ export default function ProjectView() {
             last_update_at: isWorking ? Date.now() : undefined,
           };
         }
-        setAgentStates(prev => {
-          // Only restore from live state if we don't already have fresher WS data
-          const hasLiveData = Object.values(prev).some(a => a.state === 'working');
-          return hasLiveData ? prev : { ...prev, ...restored };
-        });
+        dispatch({ type: 'MERGE_AGENT_STATES_FROM_LIVE', restored });
       }
       if (live.loop_progress) {
-        setLoopProgress(live.loop_progress);
+        dispatch({ type: 'RESTORE_LOOP_PROGRESS', progress: live.loop_progress });
       }
       if (live.pending_approval) {
-        setApprovalRequest(live.pending_approval);
+        dispatch({ type: 'SET_APPROVAL_REQUEST', request: live.pending_approval });
       }
     }).catch(() => {});
 
@@ -428,246 +360,43 @@ export default function ProjectView() {
     return () => clearInterval(statusPoll);
   }, [id, loadProject, loadFiles]);
 
-  const handleWSEvent = useCallback((event: WSEvent) => {
+  const handleWSEvent = useCallback((event: WSEvent): void => {
     if (event.project_id !== id) return;
 
     switch (event.type) {
-      case 'agent_update': {
-        // Live progress from agents — show what each agent is doing RIGHT NOW
-        const updateAgent = event.agent || (event.text?.match(/\*(\w+)\*/)?.[1]);
-        if (updateAgent) {
-          const agentStatus = event.status === 'error' ? 'error' as const
-            : event.status === 'done' ? 'done' as const : 'working' as const;
-          setAgentStates(prev => ({
-            ...prev,
-            [updateAgent]: {
-              ...prev[updateAgent],
-              name: updateAgent,
-              state: agentStatus,
-              current_tool: event.summary || event.text?.slice(0, 150),
-              cost: event.cost ?? prev[updateAgent]?.cost ?? 0,
-              last_update_at: Date.now(),
-              started_at: prev[updateAgent]?.started_at ?? (agentStatus === 'working' ? Date.now() : undefined),
-            },
-          }));
-          // Update live agent stream with current thought/action
-          const liveText = event.summary || event.text || '';
-          if (liveText && agentStatus === 'working') {
-            setLiveAgentStream(prev => ({
-              ...prev,
-              [updateAgent]: {
-                text: liveText.slice(0, 300),
-                tool: prev[updateAgent]?.tool,
-                timestamp: Date.now(),
-                progress: event.progress,
-              },
-            }));
-          }
-          // Show agent name + action + progress in ticker
-          const progressStr = event.progress ? ` (${event.progress})` : '';
-          const remStr = event.is_remediation ? ' 🔧' : '';
-          const action = event.summary || event.text?.slice(0, 100) || 'working...';
-          setLastTicker(`${updateAgent}${remStr}: ${action}${progressStr}`);
-          // BUG FIX: clean up liveAgentStream when agent transitions to error/done via agent_update
-          if (agentStatus !== 'working') {
-            setLiveAgentStream(prev => {
-              const next = { ...prev };
-              delete next[updateAgent];
-              return next;
-            });
-          }
-        }
+      case 'agent_update':
+        dispatch({ type: 'WS_AGENT_UPDATE', event });
         break;
-      }
 
       case 'tool_use':
-        if (!event.agent) break;
-        if (event.timestamp > activityLoadedUpToRef.current) {
-          setActivities(prev => [...prev, {
-            id: nextId(), type: 'tool_use', timestamp: event.timestamp,
-            agent: event.agent, tool_name: event.tool_name, tool_description: event.description,
-          }]);
-        }
-        setAgentStates(prev => ({
-          ...prev,
-          [event.agent!]: { ...prev[event.agent!], name: event.agent!, current_tool: event.description, last_update_at: Date.now() },
-        }));
-        // Update live stream: show the tool being used with its description
-        setLiveAgentStream(prev => ({
-          ...prev,
-          [event.agent!]: {
-            ...prev[event.agent!],
-            tool: event.tool_name,
-            text: event.description || prev[event.agent!]?.text || '',
-            timestamp: Date.now(),
-          },
-        }));
-        setLastTicker(`${event.agent}: ${event.description || event.tool_name}`);
+        dispatch({ type: 'WS_TOOL_USE', event });
         break;
 
       case 'agent_started':
-        if (!event.agent) break;
-        // Track DAG task as 'working'
-        if (event.task_id) {
-          setDagTaskStatus(prev => ({ ...prev, [event.task_id!]: 'working' }));
-        }
-        if (event.timestamp > activityLoadedUpToRef.current) {
-          setActivities(prev => [...prev, {
-            id: nextId(), type: 'agent_started', timestamp: event.timestamp,
-            agent: event.agent, task: event.task,
-          }]);
-        }
-        setAgentStates(prev => ({
-          ...prev,
-          [event.agent!]: {
-            name: event.agent!, state: 'working', task: event.task, current_tool: undefined,
-            cost: prev[event.agent!]?.cost ?? 0, turns: prev[event.agent!]?.turns ?? 0,
-            duration: prev[event.agent!]?.duration ?? 0,
-            last_result: undefined,
-            started_at: Date.now(),
-            last_update_at: Date.now(),
-          },
-        }));
-        setLastTicker(`${event.agent} started${event.task ? ': ' + event.task.slice(0, 60) : ''}`);
-        setSdkCalls(prev => [...prev, {
-          agent: event.agent!, startTime: event.timestamp, status: 'running',
-        }]);
-        // BUG FIX: seed liveAgentStream so the "Live" section appears immediately on agent_started
-        setLiveAgentStream(prev => ({
-          ...prev,
-          [event.agent!]: {
-            text: event.task?.slice(0, 200) || 'starting...',
-            timestamp: Date.now(),
-          },
-        }));
+        dispatch({ type: 'WS_AGENT_STARTED', event });
         break;
 
       case 'agent_finished':
-        if (!event.agent) break;
-        // Track DAG task as completed or failed
-        if (event.task_id) {
-          setDagTaskStatus(prev => ({
-            ...prev,
-            [event.task_id!]: event.is_error ? 'failed' : 'completed',
-          }));
-        }
-        // Remove from live stream — agent is done
-        setLiveAgentStream(prev => {
-          const next = { ...prev };
-          delete next[event.agent!];
-          return next;
-        });
-        if (event.timestamp > activityLoadedUpToRef.current) {
-          setActivities(prev => [...prev, {
-            id: nextId(), type: 'agent_finished', timestamp: event.timestamp,
-            agent: event.agent, cost: event.cost, turns: event.turns,
-            duration: event.duration, is_error: event.is_error,
-          }]);
-        }
-        setAgentStates(prev => ({
-          ...prev,
-          [event.agent!]: {
-            ...prev[event.agent!], name: event.agent!,
-            state: event.is_error ? 'error' : 'done', current_tool: undefined,
-            cost: (prev[event.agent!]?.cost ?? 0) + (event.cost ?? 0),
-            turns: (prev[event.agent!]?.turns ?? 0) + (event.turns ?? 0),
-            duration: event.duration ?? 0,
-            delegated_from: undefined, delegated_at: undefined,
-            last_result: prev[event.agent!]?.last_result,
-            started_at: undefined,
-            last_update_at: Date.now(),
-          },
-        }));
-        setSdkCalls(prev => {
-            const updated = [...prev];
-            // Find the last running entry for this agent
-            let idx = -1;
-            for (let i = updated.length - 1; i >= 0; i--) {
-              if (updated[i].agent === event.agent && updated[i].status === 'running') {
-                idx = i;
-                break;
-              }
-            }
-            if (idx >= 0) {
-              updated[idx] = {
-                ...updated[idx],
-                endTime: event.timestamp,
-                cost: event.cost,
-                status: event.is_error ? 'error' : 'done',
-              };
-            }
-            return updated;
-          });
+        dispatch({ type: 'WS_AGENT_FINISHED', event });
         break;
 
       case 'delegation':
-        if (event.timestamp > activityLoadedUpToRef.current) {
-          setActivities(prev => [...prev, {
-            id: nextId(), type: 'delegation', timestamp: event.timestamp,
-            from_agent: event.from_agent, to_agent: event.to_agent, task: event.task,
-          }]);
-        }
-        // Optimistically mark delegated agent as 'working' immediately so the UI
-        // never shows STANDBY between the delegation event and agent_started.
-        if (event.to_agent) {
-          const toAgent = event.to_agent;
-          setAgentStates(prev => ({
-            ...prev,
-            [toAgent]: {
-              ...prev[toAgent],
-              name: toAgent,
-              state: 'working',
-              task: event.task ?? prev[toAgent]?.task,
-              delegated_from: event.from_agent,
-              delegated_at: Date.now(),
-              current_tool: undefined,
-              started_at: Date.now(),
-              last_update_at: Date.now(),
-            },
-          }));
-        }
+        dispatch({ type: 'WS_DELEGATION', event });
         break;
 
       case 'loop_progress':
-        setLoopProgress({
-          loop: event.loop ?? 0, max_loops: event.max_loops ?? 0,
-          turn: event.turn ?? 0, max_turns: event.max_turns ?? 0,
-          cost: event.cost ?? 0, max_budget: event.max_budget ?? 0,
-        });
+        dispatch({ type: 'WS_LOOP_PROGRESS', event });
         break;
 
       case 'agent_result':
-        if (event.text) {
-          const agentMatch = event.text.match(/\*(\w+)\*/);
-          const resultAgent = agentMatch ? agentMatch[1] : (event.agent || 'agent');
-          setActivities(prev => [...prev, {
-            id: nextId(), type: 'agent_text', timestamp: event.timestamp,
-            agent: resultAgent, content: event.text,
-          }]);
-          // Store as last result for the agent card preview
-          if (resultAgent && resultAgent !== 'agent') {
-            setAgentStates(prev => {
-              if (prev[resultAgent]) {
-                return {
-                  ...prev,
-                  [resultAgent]: { ...prev[resultAgent], last_result: event.text!.slice(0, 200) },
-                };
-              }
-              return prev;
-            });
-          }
-        }
+        dispatch({ type: 'WS_AGENT_RESULT', event });
         break;
 
       case 'agent_final':
-        loadProject();
-        loadFiles();
-        if (event.text) {
-          setActivities(prev => [...prev, {
-            id: nextId(), type: 'agent_text', timestamp: event.timestamp,
-            agent: 'system', content: event.text,
-          }]);
-        }
+        dispatch({ type: 'WS_AGENT_FINAL', event });
+        // Side effects: reload project data and files
+        loadProject().catch(() => {});
+        loadFiles().catch(() => {});
         // Browser notification when task completes
         if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
           new Notification('Task Complete', {
@@ -675,154 +404,38 @@ export default function ProjectView() {
             icon: '/favicon.ico',
           });
         }
-        // Preserve 'done'/'error' states — only reset agents stuck in 'working'
-        // so the panel shows which agents actually ran after the task completes.
-        setAgentStates(prev => {
-          const reset: Record<string, AgentStateType> = {};
-          for (const [k, v] of Object.entries(prev)) {
-            reset[k] = { ...v, state: v.state === 'working' ? 'idle' : v.state, current_tool: undefined };
-          }
-          return reset;
-        });
-        setLoopProgress(null);
-        setLastTicker('');
-        setLiveAgentStream({});
         break;
 
       case 'project_status':
-        loadProject();
-        if (event.status === 'running') {
-          // New task starting — wipe previous round's done/error states for a clean slate
-          setAgentStates(prev => {
-            const reset: Record<string, AgentStateType> = {};
-            for (const [k, v] of Object.entries(prev)) {
-              reset[k] = { ...v, state: 'idle', current_tool: undefined, task: undefined, last_result: undefined };
-            }
-            return reset;
-          });
-          setDagGraph(null);
-          setHealingEvents([]);
-          setDagTaskStatus({});
-          setLiveAgentStream({});
-          // Clear persisted DAG so the new plan starts fresh
-          if (id) { try { localStorage.removeItem(`nexus_dag_${id}`); } catch { /* ignore */ } }
-        } else if (event.status === 'idle') {
-          // Task ended — only reset stale 'working' states; preserve done/error
-          setAgentStates(prev => {
-            const reset: Record<string, AgentStateType> = {};
-            for (const [k, v] of Object.entries(prev)) {
-              reset[k] = { ...v, state: v.state === 'working' ? 'idle' : v.state, current_tool: undefined };
-            }
-            return reset;
-          });
-          setLoopProgress(null);
-          setLastTicker('');
-          setLiveAgentStream({});
+        dispatch({ type: 'WS_PROJECT_STATUS', event });
+        loadProject().catch(() => {});
+        // Clear persisted DAG so the new plan starts fresh
+        if (event.status === 'running' && id) {
+          try { localStorage.removeItem(`nexus_dag_${id}`); } catch { /* ignore */ }
         }
         break;
 
       case 'task_graph' as WSEvent['type']:
-        if (event.graph) {
-          setDagGraph(event.graph);
-          // Reset task statuses for the new plan
-          setDagTaskStatus({});
-          setActivities(prev => [...prev, {
-            id: nextId(), type: 'agent_text', timestamp: event.timestamp,
-            agent: 'PM', content: `📋 **DAG Plan:** ${event.graph?.vision || 'Execution plan created'} (${event.graph?.tasks?.length || 0} tasks)`,
-          }]);
-          setLastTicker(`Plan: ${event.graph.vision?.slice(0, 80) || 'DAG created'}`);
-        }
+        dispatch({ type: 'WS_TASK_GRAPH', event });
         break;
 
       case 'self_healing' as WSEvent['type']:
-        setHealingEvents(prev => [...prev, {
-          timestamp: event.timestamp,
-          failed_task: event.failed_task || '',
-          failure_category: event.failure_category || 'unknown',
-          remediation_task: event.remediation_task || '',
-          remediation_role: event.remediation_role || '',
-        }]);
-        setActivities(prev => [...prev, {
-          id: nextId(), type: 'agent_text', timestamp: event.timestamp,
-          agent: 'system',
-          content: `🔧 **Self-healing:** Task ${event.failed_task} failed (${event.failure_category}). Auto-fix: ${event.remediation_task} (${event.remediation_role})`,
-        }]);
-        setLastTicker(`🔧 Self-healing: ${event.failure_category} → ${event.remediation_role}`);
+        dispatch({ type: 'WS_SELF_HEALING', event });
         break;
 
       case 'approval_request' as WSEvent['type']:
-        if (event.description) {
-          setApprovalRequest(event.description);
-        }
+        dispatch({ type: 'WS_APPROVAL_REQUEST', event });
         break;
 
       case 'history_cleared' as WSEvent['type']:
-        // Real-time clear — reset all frontend state
-        setActivities([]);
-        setAgentStates({});
-        setLoopProgress(null);
-        setLastTicker('');
-        setSdkCalls([]);
-        setFiles(null);
-        setMessageOffset(0);
-        setDagGraph(null);
-        setDagTaskStatus({});
-        setHealingEvents([]);
-        setLiveAgentStream({});
-        setHasMoreMessages(false);
-        setApprovalRequest(null);
+        dispatch({ type: 'WS_HISTORY_CLEARED' });
         if (id) { try { localStorage.removeItem(`nexus_dag_${id}`); } catch { /* ignore */ } }
-        loadProject();
+        loadProject().catch(() => {});
         break;
 
-      case 'live_state_sync': {
-        // Recovery event from WebSocket reconnection
-        if (event.agent_states) {
-          const restored: Record<string, AgentStateType> = {};
-          for (const [name, s] of Object.entries(event.agent_states as Record<string, any>)) {
-            const isWorking = (s.state ?? 'idle') === 'working';
-            restored[name] = {
-              name,
-              state: s.state ?? 'idle',
-              task: s.task,
-              current_tool: s.current_tool,
-              cost: s.cost ?? 0,
-              turns: s.turns ?? 0,
-              duration: s.duration ?? 0,
-              started_at: isWorking ? Date.now() : undefined,
-              last_update_at: isWorking ? Date.now() : undefined,
-            };
-          }
-          setAgentStates(prev => ({ ...prev, ...restored }));
-          // BUG FIX: also seed liveAgentStream for agents that are still working on reconnect
-          const liveEntries: Record<string, { text: string; timestamp: number }> = {};
-          for (const [name, s] of Object.entries(event.agent_states as Record<string, any>)) {
-            if ((s.state ?? 'idle') === 'working') {
-              liveEntries[name] = { text: s.task || 'working...', timestamp: Date.now() };
-            }
-          }
-          if (Object.keys(liveEntries).length > 0) {
-            setLiveAgentStream(prev => ({ ...prev, ...liveEntries }));
-          }
-        }
-        if (event.loop_progress) {
-          setLoopProgress(event.loop_progress);
-        }
-        if (event.status === 'running') {
-          setLastTicker('agents working...');
-        }
-        // Restore DAG graph and task statuses from backend live state
-        if (event.dag_graph) {
-          setDagGraph(event.dag_graph);
-        }
-        if (event.dag_task_statuses && Object.keys(event.dag_task_statuses).length > 0) {
-          setDagTaskStatus(prev => ({
-            ...prev,
-            ...event.dag_task_statuses as Record<string, 'pending' | 'working' | 'completed' | 'failed'>,
-          }));
-        }
+      case 'live_state_sync':
+        dispatch({ type: 'WS_LIVE_STATE_SYNC', event });
         break;
-      }
 
       default:
         break;
@@ -844,8 +457,8 @@ export default function ProjectView() {
           <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>{loadError}</p>
           <button
             onClick={() => {
-              setLoadError(null);
-              loadProject().catch((e) => setLoadError(e.message || 'Failed to load project'));
+              dispatch({ type: 'SET_LOAD_ERROR', error: null });
+              loadProject().catch((e) => dispatch({ type: 'SET_LOAD_ERROR', error: e.message || 'Failed to load project' }));
             }}
             className="px-4 py-2 text-xs font-medium rounded-xl transition-all active:scale-95"
             style={{
@@ -912,70 +525,62 @@ export default function ProjectView() {
     );
   }
 
-  const handleSend = async (message: string) => {
+  const handleSend = async (msg: string): Promise<void> => {
     // All messages go through the Orchestrator — no direct agent targeting
-    setActivities(prev => [...prev, {
+    dispatch({ type: 'ADD_ACTIVITY', activity: {
       id: nextId(), type: 'user_message', timestamp: Date.now() / 1000,
-      agent: 'user', content: message,
-    }]);
+      agent: 'user', content: msg,
+    }});
     try {
-      await sendMessage(id, message);
+      await sendMessage(id, msg);
       toast.success('Message sent');
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error('Failed to send message:', errMsg);
       toast.error('Send failed', errMsg);
-      setActivities(prev => [...prev, {
+      dispatch({ type: 'ADD_ACTIVITY', activity: {
         id: nextId(), type: 'error', timestamp: Date.now() / 1000,
         agent: 'system', content: `Failed to send: ${errMsg}`,
-      }]);
+      }});
     }
-    loadProject();
+    loadProject().catch(() => {});
   };
 
-  const handlePause = async () => {
+  const handlePause = async (): Promise<void> => {
     try {
       await pauseProject(id);
       toast.info('Project paused');
-      loadProject();
+      loadProject().catch(() => {});
     } catch (err: unknown) {
       toast.error('Pause failed', err instanceof Error ? err.message : String(err));
     }
   };
-  const handleResume = async () => {
+  const handleResume = async (): Promise<void> => {
     try {
       await resumeProject(id);
       toast.success('Project resumed');
-      loadProject();
+      loadProject().catch(() => {});
     } catch (err: unknown) {
       toast.error('Resume failed', err instanceof Error ? err.message : String(err));
     }
   };
-  const handleStop = async () => {
+  const handleStop = async (): Promise<void> => {
     try {
       await stopProject(id);
       toast.warning('Project stopped');
-      loadProject();
+      loadProject().catch(() => {});
     } catch (err: unknown) {
       toast.error('Stop failed', err instanceof Error ? err.message : String(err));
     }
   };
-  const handleClearHistory = async () => {
-    setShowClearConfirm(false);
+  const handleClearHistory = async (): Promise<void> => {
+    dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: false });
     try {
       await clearHistory(id);
       // Reset ALL frontend state — agent has no memory after clear
-      setActivities([]);
-      setAgentStates({});
-      setLoopProgress(null);
-      setLastTicker('');
-      setSdkCalls([]);
-      setFiles(null);
-      setMessageOffset(0);
-      setHasMoreMessages(false);
-      setApprovalRequest(null);
+      dispatch({ type: 'CLEAR_ALL_STATE' });
       toast.success('History cleared');
-      loadProject();
+      loadProject().catch(() => {});
     } catch (e) {
       console.error('Failed to clear history:', e);
       toast.error('Clear failed', e instanceof Error ? e.message : String(e));
@@ -1091,7 +696,7 @@ export default function ProjectView() {
                 if (!id) return;
                 try {
                   await resumeInterruptedTask(id);
-                  setResumableTask(null);
+                  dispatch({ type: 'SET_RESUMABLE_TASK', task: null });
                   toast.success('Task resumed');
                   loadProject();
                 } catch (e: unknown) {
@@ -1114,7 +719,7 @@ export default function ProjectView() {
                 if (!id) return;
                 try {
                   await discardInterruptedTask(id);
-                  setResumableTask(null);
+                  dispatch({ type: 'SET_RESUMABLE_TASK', task: null });
                   toast.info('Task discarded');
                 } catch (e: unknown) {
                   const msg = e instanceof Error ? e.message : 'Unknown error';
@@ -1211,7 +816,7 @@ export default function ProjectView() {
               <button
                 key={item.id}
                 onClick={() => {
-                  setMobileView(item.id);
+                  dispatch({ type: 'SET_MOBILE_VIEW', view: item.id });
                   // Haptic feedback on tab switch
                   if ('vibrate' in navigator) {
                     navigator.vibrate(8);
@@ -1259,7 +864,7 @@ export default function ProjectView() {
             )}
             {/* Clear history button — visible when idle */}
             {project.status === 'idle' && activities.length > 0 && (
-              <button onClick={() => setShowClearConfirm(true)} className="p-1.5 ml-1" style={{ color: 'var(--text-muted)' }}
+              <button onClick={() => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: true })} className="p-1.5 ml-1" style={{ color: 'var(--text-muted)' }}
                 title="Clear history">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                   <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4"/>
@@ -1280,8 +885,8 @@ export default function ProjectView() {
                   if (message.trim() && !sending) {
                     const msg = message.trim();
                     setMessage('');
-                    setSending(true);
-                    handleSend(msg).finally(() => setSending(false));
+                    dispatch({ type: 'SET_SENDING', sending: true });
+                    handleSend(msg).finally(() => dispatch({ type: 'SET_SENDING', sending: false }));
                   }
                 }
               }}
@@ -1299,8 +904,8 @@ export default function ProjectView() {
                 if (message.trim() && !sending) {
                   const msg = message.trim();
                   setMessage('');
-                  setSending(true);
-                  handleSend(msg).finally(() => setSending(false));
+                  dispatch({ type: 'SET_SENDING', sending: true });
+                  handleSend(msg).finally(() => dispatch({ type: 'SET_SENDING', sending: false }));
                 }
               }}
               disabled={!message.trim() || sending}
@@ -1344,7 +949,7 @@ export default function ProjectView() {
             {desktopTabItems.map(tab => (
               <button
                 key={tab.id}
-                onClick={() => setDesktopTab(tab.id)}
+                onClick={() => dispatch({ type: 'SET_DESKTOP_TAB', tab: tab.id })}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors"
                 style={{
                   background: desktopTab === tab.id ? 'var(--bg-elevated)' : 'transparent',
@@ -1357,7 +962,7 @@ export default function ProjectView() {
             ))}
             {/* Clear history — desktop */}
             {project.status === 'idle' && activities.length > 0 && (
-              <button onClick={() => setShowClearConfirm(true)} className="ml-auto p-1.5 rounded-lg transition-all hover:bg-[var(--bg-elevated)]"
+              <button onClick={() => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: true })} className="ml-auto p-1.5 rounded-lg transition-all hover:bg-[var(--bg-elevated)]"
                 style={{ color: 'var(--text-muted)' }} title="Clear history">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                   <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4"/>
@@ -1528,7 +1133,7 @@ export default function ProjectView() {
               <div className="p-6 space-y-6">
                 <AgentStatusPanel
                   agents={agentStateList}
-                  onSelectAgent={setSelectedAgent}
+                  onSelectAgent={(agent) => dispatch({ type: 'SET_SELECTED_AGENT', agent })}
                   selectedAgent={selectedAgent}
                   layout="grid"
                 />
@@ -1650,7 +1255,7 @@ export default function ProjectView() {
         <ApprovalModal
           description={approvalRequest}
           projectId={id}
-          onClose={() => setApprovalRequest(null)}
+          onClose={() => dispatch({ type: 'SET_APPROVAL_REQUEST', request: null })}
         />
       )}
 
@@ -1659,7 +1264,7 @@ export default function ProjectView() {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center animate-[fadeSlideIn_0.15s_ease-out]"
           style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
-          onClick={() => setShowClearConfirm(false)}
+          onClick={() => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: false })}
         >
           <div
             className="rounded-2xl w-full max-w-sm mx-4 overflow-hidden"
@@ -1697,7 +1302,7 @@ export default function ProjectView() {
               </div>
               <div className="flex justify-end gap-2">
                 <button
-                  onClick={() => setShowClearConfirm(false)}
+                  onClick={() => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: false })}
                   className="px-4 py-2 text-sm font-medium rounded-xl transition-all"
                   style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-dim)' }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
