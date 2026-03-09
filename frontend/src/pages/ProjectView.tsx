@@ -6,7 +6,7 @@
  * extracted sub-components.
  */
 
-import { useEffect, useReducer, useState, useCallback } from 'react';
+import { useEffect, useReducer, useRef, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   getProject, getMessages, getFiles, sendMessage, pauseProject,
@@ -61,6 +61,44 @@ export default function ProjectView(): React.ReactElement | null {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // ── 1-minute heartbeat ──
+  // Emits an "⏱️ still working" activity for agents that have been running >60s without
+  // producing a new activity entry. Fires at most once per minute per agent.
+  const lastHeartbeatRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const workingAgents = Object.entries(agentStates).filter(([, a]) => a.state === 'working');
+    for (const [agentName, agentState] of workingAgents) {
+      const startedAt = agentState.started_at ?? now;
+      const runningMs = now - startedAt;
+      if (runningMs < 60_000) continue;          // don't fire until 1st minute passes
+
+      const lastHb = lastHeartbeatRef.current[agentName];
+      if (lastHb === undefined || now - lastHb >= 60_000) {
+        lastHeartbeatRef.current[agentName] = now;
+        const totalMin = Math.floor(runningMs / 60_000);
+        const remSec = Math.floor((runningMs % 60_000) / 1_000);
+        const timeStr = remSec > 0 ? `${totalMin}m ${remSec}s` : `${totalMin}m`;
+        const currentAction = (agentState.current_tool || agentState.task || 'thinking...').slice(0, 80);
+        dispatch({
+          type: 'ADD_ACTIVITY',
+          activity: {
+            id: nextId(),
+            type: 'agent_text',
+            timestamp: now / 1000,
+            agent: agentName,
+            content: `⏱️ Still working (${timeStr}) — ${currentAction}`,
+          },
+        });
+      }
+    }
+    // Remove stopped agents from heartbeat tracking
+    for (const agentName of Object.keys(lastHeartbeatRef.current)) {
+      if (agentStates[agentName]?.state !== 'working') {
+        delete lastHeartbeatRef.current[agentName];
+      }
+    }
+  }, [now, agentStates, dispatch]);
 
   // Per-agent performance metrics
   const agentMetrics = useAgentMetrics(activities);
@@ -210,6 +248,23 @@ export default function ProjectView(): React.ReactElement | null {
         }
         break;
       case 'task_graph' as WSEvent['type']: dispatch({ type: 'WS_TASK_GRAPH', event }); break;
+      case 'task_error' as WSEvent['type']:
+        // Show backend task failures in the activity log and as a toast so users see the cause
+        dispatch({
+          type: 'ADD_ACTIVITY',
+          activity: {
+            id: nextId(),
+            type: 'error',
+            timestamp: event.timestamp ?? Date.now() / 1000,
+            agent: event.agent || 'system',
+            content: `❌ ${event.agent ? `${event.agent} failed` : 'Task failed'}: ${event.text || event.summary || 'Unknown error'}`,
+          },
+        });
+        toast.error(
+          `${event.agent || 'Task'} failed`,
+          (event.text || event.summary || 'An error occurred').slice(0, 120),
+        );
+        break;
       case 'self_healing' as WSEvent['type']: dispatch({ type: 'WS_SELF_HEALING', event }); break;
       case 'approval_request' as WSEvent['type']: dispatch({ type: 'WS_APPROVAL_REQUEST', event }); break;
       case 'history_cleared' as WSEvent['type']:

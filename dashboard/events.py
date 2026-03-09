@@ -16,15 +16,22 @@ import collections
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import Any, Callable, Coroutine, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from session_manager import SessionManager
+
+# Type alias for the async status callback used by heartbeat.
+# Must return a dict with at least {"status": str, "active_agents": int}.
+StatusFn = Callable[[], Coroutine[Any, Any, dict]]
 
 logger = logging.getLogger(__name__)
 
 # How many consecutive publish failures before a subscriber is considered dead
 _MAX_CONSECUTIVE_FAILURES = 10
+
+# Heartbeat interval in seconds — how often the status heartbeat fires
+_HEARTBEAT_INTERVAL_SECONDS = 5
 
 # Ring buffer size per project (in-memory, for fast replay)
 # Increased from 500 to handle higher event volume from granular streaming
@@ -190,12 +197,99 @@ class EventBus:
         # Reference to session manager (set via set_session_manager)
         self._session_mgr: SessionManager | None = None
 
+        # Per-project heartbeat background tasks
+        self._heartbeat_tasks: dict[str, asyncio.Task] = {}
+
     def set_session_manager(self, session_mgr: SessionManager):
         """Connect the EventBus to the session manager for DB persistence.
 
         Must be called once during app initialization.
         """
         self._session_mgr = session_mgr
+
+    # ------------------------------------------------------------------
+    # Heartbeat — periodic status broadcast
+    # ------------------------------------------------------------------
+
+    async def start_heartbeat(self, project_id: str, status_fn: StatusFn) -> None:
+        """Start a periodic status heartbeat for a project.
+
+        The heartbeat fires every ``_HEARTBEAT_INTERVAL_SECONDS`` (5 s) and
+        publishes a lightweight ``status_heartbeat`` event via the normal
+        ``publish()`` pipeline so all WebSocket subscribers receive it.
+
+        Args:
+            project_id: The project to heartbeat for.
+            status_fn:  An async callable that returns a dict with at least
+                        ``{"status": str, "active_agents": int}``.
+                        It is invoked every tick to get the *current* truth.
+        """
+        # Stop any existing heartbeat for this project first
+        await self.stop_heartbeat(project_id)
+
+        task = asyncio.create_task(
+            self._heartbeat_loop(project_id, status_fn),
+            name=f"heartbeat-{project_id}",
+        )
+        self._heartbeat_tasks[project_id] = task
+        logger.info("EventBus: heartbeat started for project %s", project_id)
+
+    async def stop_heartbeat(self, project_id: str) -> None:
+        """Stop the heartbeat for a project (idempotent).
+
+        Cancels the background task and awaits its completion so there are
+        no dangling coroutines after the project session ends.
+        """
+        task = self._heartbeat_tasks.pop(project_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.info("EventBus: heartbeat stopped for project %s", project_id)
+
+    async def stop_all_heartbeats(self) -> None:
+        """Stop heartbeats for every project. Called during app shutdown."""
+        project_ids = list(self._heartbeat_tasks.keys())
+        for pid in project_ids:
+            await self.stop_heartbeat(pid)
+
+    async def _heartbeat_loop(
+        self, project_id: str, status_fn: StatusFn
+    ) -> None:
+        """Background loop that publishes status_heartbeat events.
+
+        Runs until cancelled (via ``stop_heartbeat``) or until
+        ``status_fn`` raises an exception.  Each tick is lightweight:
+        only ``project_id``, ``status``, ``active_agents``, and
+        ``timestamp`` are included in the event payload.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+                try:
+                    info = await status_fn()
+                    event = {
+                        "type": "status_heartbeat",
+                        "project_id": project_id,
+                        "status": info.get("status", "unknown"),
+                        "active_agents": info.get("active_agents", 0),
+                        "timestamp": time.time(),
+                    }
+                    await self.publish(event)
+                except asyncio.CancelledError:
+                    raise  # let the outer handler deal with it
+                except Exception as exc:
+                    logger.error(
+                        "EventBus: heartbeat status_fn error for %s: %s",
+                        project_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    # Continue heartbeat even if one tick fails — resilience
+        except asyncio.CancelledError:
+            logger.debug("EventBus: heartbeat loop cancelled for %s", project_id)
 
     async def start_writer(self):
         """Start the background DB writer task.

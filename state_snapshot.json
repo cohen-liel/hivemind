@@ -1,10 +1,10 @@
 {
-  "timestamp": 1773072457.698323,
-  "timestamp_human": "2026-03-09 18:07:37",
+  "timestamp": 1773073756.700499,
+  "timestamp_human": "2026-03-09 18:29:16",
   "projects": {
     "web-claude-bot": {
-      "status": "idle",
-      "turn_count": 1,
+      "status": "running",
+      "turn_count": 0,
       "total_cost_usd": 0.0,
       "current_agent": null,
       "pending_messages": 0,
@@ -15,18 +15,8 @@
           "current_tool": ""
         },
         "backend_developer": {
-          "state": "error",
-          "task": "Add granular real-time streaming events to sdk_client.py and dashboard/events.py including: per-chunk text streaming eve",
-          "current_tool": ""
-        },
-        "frontend_developer": {
-          "state": "done",
-          "task": "Refactor the monolithic 68K-line ProjectView.tsx into well-structured, focused sub-components by extracting: AgentOrches",
-          "current_tool": ""
-        },
-        "researcher": {
           "state": "working",
-          "task": "Research best practices for real-time multi-agent dashboards, streaming terminal UIs, live DAG visualizations, and agent",
+          "task": "Enrich the error classification in sdk_client.py with human-readable error reasons and suggested recovery actions so the",
           "current_tool": ""
         }
       }

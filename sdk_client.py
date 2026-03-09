@@ -126,6 +126,105 @@ def classify_error(error_message: str) -> ErrorCategory:
 
 
 # ============================================================
+# Error Reason Templates (Hebrew + English)
+# ============================================================
+
+# Maps each ErrorCategory to a (human_reason, suggested_action) tuple.
+# human_reason: bilingual user-facing description (Hebrew / English).
+# suggested_action: what the user or system should do next.
+
+ERROR_REASON_TEMPLATES: dict[ErrorCategory, tuple[str, str]] = {
+    ErrorCategory.TRANSIENT: (
+        "שגיאת רשת זמנית / Temporary network error — retrying automatically",
+        "The system will retry automatically. If the issue persists, check your network connection.",
+    ),
+    ErrorCategory.RATE_LIMIT: (
+        "הגבלת קצב / Rate limited — waiting before retry",
+        "Too many requests sent. The system is waiting before retrying. No action needed.",
+    ),
+    ErrorCategory.SESSION: (
+        "שגיאת סשן / Session expired — reconnecting",
+        "Your session has expired or become invalid. The system will start a new session automatically.",
+    ),
+    ErrorCategory.AUTH: (
+        "בעיית הרשאה / Authentication error — check claude login",
+        "Run 'claude login' in your terminal to re-authenticate, then try again.",
+    ),
+    ErrorCategory.BUDGET: (
+        "חריגה מתקציב / Budget exceeded",
+        "The budget for this operation has been exhausted. Increase the budget in settings or wait for the next billing cycle.",
+    ),
+    ErrorCategory.PERMANENT: (
+        "שגיאה קבועה / Permanent error — cannot retry",
+        "This error cannot be resolved by retrying. Check the error details and fix the underlying issue.",
+    ),
+    ErrorCategory.UNKNOWN: (
+        "שגיאה לא מזוהה / Unknown error",
+        "An unexpected error occurred. The system may retry once. If it persists, check the logs for details.",
+    ),
+}
+
+
+def get_error_reason(category: ErrorCategory) -> tuple[str, str]:
+    """Return (human_reason, suggested_action) for an ErrorCategory.
+
+    Uses the ERROR_REASON_TEMPLATES mapping. Falls back to UNKNOWN
+    if the category is somehow not in the map.
+    """
+    return ERROR_REASON_TEMPLATES.get(
+        category,
+        ERROR_REASON_TEMPLATES[ErrorCategory.UNKNOWN],
+    )
+
+
+def classify_and_enrich_error(error_message: str) -> tuple[ErrorCategory, str, str]:
+    """Classify an error and return enriched (category, human_reason, suggested_action).
+
+    Combines classify_error() with get_error_reason() for convenience.
+    Use this when constructing SDKResponse objects with error context.
+
+    Returns:
+        (ErrorCategory, human_reason, suggested_action) tuple.
+    """
+    category = classify_error(error_message)
+    human_reason, suggested_action = get_error_reason(category)
+    return category, human_reason, suggested_action
+
+
+def _make_error_response(
+    text: str,
+    error_message: str,
+    session_id: str = "",
+    error_category: ErrorCategory | None = None,
+    cost_usd: float = 0.0,
+    num_turns: int = 0,
+    duration_ms: int = 0,
+    retry_count: int = 0,
+) -> SDKResponse:
+    """Create an SDKResponse for an error, auto-populating reason fields.
+
+    If error_category is not provided, it is inferred via classify_error().
+    human_reason and suggested_action are always populated from the template.
+    """
+    if error_category is None:
+        error_category = classify_error(error_message)
+    human_reason, suggested_action = get_error_reason(error_category)
+    return SDKResponse(
+        text=text,
+        session_id=session_id,
+        cost_usd=cost_usd,
+        duration_ms=duration_ms,
+        num_turns=num_turns,
+        is_error=True,
+        error_message=error_message,
+        error_category=error_category,
+        retry_count=retry_count,
+        human_reason=human_reason,
+        suggested_action=suggested_action,
+    )
+
+
+# ============================================================
 # SDK Response
 # ============================================================
 
@@ -140,6 +239,8 @@ class SDKResponse:
     error_message: str = ""
     error_category: ErrorCategory = ErrorCategory.UNKNOWN
     retry_count: int = 0  # How many retries were needed
+    human_reason: str = ""       # User-facing bilingual (Hebrew+English) error reason
+    suggested_action: str = ""   # Suggested recovery action for the frontend to display
 
 
 # ============================================================
@@ -773,10 +874,9 @@ class ClaudeSDKManager:
             await asyncio.wait_for(self._pool.acquire(), timeout=60.0)
         except asyncio.TimeoutError:
             logger.error(f"[{request_id}] Connection pool exhausted — waited 60s")
-            return SDKResponse(
+            return _make_error_response(
                 text="Error: Connection pool exhausted. Too many concurrent queries.",
                 session_id=session_id or "",
-                is_error=True,
                 error_message="Connection pool exhausted (60s timeout)",
                 error_category=ErrorCategory.TRANSIENT,
             )
@@ -796,6 +896,9 @@ class ClaudeSDKManager:
             elapsed = time.monotonic() - query_start
             if result.is_error:
                 result.error_category = classify_error(result.error_message)
+                reason, action = get_error_reason(result.error_category)
+                result.human_reason = reason
+                result.suggested_action = action
                 logger.warning(
                     f"[{request_id}] SDK query ERROR ({elapsed:.1f}s): "
                     f"category={result.error_category.value}, "
@@ -817,10 +920,9 @@ class ClaudeSDKManager:
                 f"[{request_id}] SDK query TIMEOUT after {elapsed:.1f}s "
                 f"(limit={AGENT_TIMEOUT_SECONDS}s)"
             )
-            return SDKResponse(
+            return _make_error_response(
                 text=f"Error: Agent timed out after {AGENT_TIMEOUT_SECONDS} seconds",
                 session_id=session_id or "",
-                is_error=True,
                 error_message=f"Timeout after {AGENT_TIMEOUT_SECONDS}s",
                 error_category=ErrorCategory.TRANSIENT,
             )
@@ -833,10 +935,9 @@ class ClaudeSDKManager:
             # NOTE: The old code tried `raise` then `except RuntimeError` which
             # is logically impossible — re-raised CancelledError can never be
             # caught as RuntimeError.
-            return SDKResponse(
+            return _make_error_response(
                 text="Agent was cancelled (anyio cancel scope leak).",
                 session_id=session_id or "",
-                is_error=True,
                 error_message="CancelledError (likely anyio cancel scope leak)",
                 error_category=ErrorCategory.TRANSIENT,
             )
@@ -848,10 +949,9 @@ class ClaudeSDKManager:
                 f"category={category.value}, error={e}",
                 exc_info=True,
             )
-            return SDKResponse(
+            return _make_error_response(
                 text=f"Error: {e}",
                 session_id=session_id or "",
-                is_error=True,
                 error_message=str(e),
                 error_category=category,
             )
@@ -1044,6 +1144,13 @@ class ClaudeSDKManager:
                             f"{', '.join(tool_uses[:20])}"
                         )
 
+                    if message.is_error:
+                        cat = classify_error(message.result or "")
+                        hr, sa = get_error_reason(cat)
+                    else:
+                        cat = ErrorCategory.UNKNOWN
+                        hr, sa = "", ""
+
                     return SDKResponse(
                         text=combined,
                         session_id=result_session_id,
@@ -1052,7 +1159,9 @@ class ClaudeSDKManager:
                         num_turns=num_turns,
                         is_error=message.is_error,
                         error_message="" if not message.is_error else (message.result or "Unknown error"),
-                        error_category=classify_error(message.result or "") if message.is_error else ErrorCategory.UNKNOWN,
+                        error_category=cat,
+                        human_reason=hr,
+                        suggested_action=sa,
                     )
 
                 else:
