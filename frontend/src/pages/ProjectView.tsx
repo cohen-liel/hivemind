@@ -235,6 +235,9 @@ export default function ProjectView() {
     return () => clearInterval(timer);
   }, []);
 
+  // Per-agent performance metrics — must be here (before early returns) to satisfy Rules of Hooks
+  const agentMetrics = useAgentMetrics(activities);
+
   // Hydrate DAG state from localStorage on mount (survives page refresh)
   useEffect(() => {
     if (!id) return;
@@ -985,9 +988,6 @@ export default function ProjectView() {
 
   const orchestratorState = agentStateList.find(a => a.name === 'orchestrator') ?? null;
   const subAgentStates = agentStateList.filter(a => a.name !== 'orchestrator');
-
-  // Per-agent performance metrics (cost, duration, success rate) for the Agents tab
-  const agentMetrics = useAgentMetrics(activities);
 
   const mobileNavItems: { id: MobileView; icon: JSX.Element; label: string }[] = [
     {
