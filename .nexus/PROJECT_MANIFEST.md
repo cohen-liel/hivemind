@@ -135,6 +135,14 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 - 90-second demo flow choreography (timed sequence for live presentations)
 - Competitive matrix vs CrewAI, AutoGen, LangGraph, Devin, Bedrock, Vertex AI
 - Branding recommendation: rename to **Nexus** (already self-adopted in codebase via `.nexus/`)
+
+### Competitive UX Research — see `.nexus/COMPETITIVE_UX_RESEARCH.md` (2026-03-09)
+- **10 tools analyzed**: Cursor, Windsurf, CrewAI, AutoGen, Claude Code, OpenClaw, LangGraph, Dify, n8n, Flowise
+- **3 universal gaps** Nexus can own: real-time per-agent cost tracking, multi-agent parallel viz, granular undo
+- **20 prioritized action items**: 5 quick wins (<1hr), 7 high-impact features (1-3hr), 8 premium polish (3-6hr)
+- Design system audit: color palette verified, WCAG contrast checked, animation timing calibrated
+- Component patterns ready to implement: BudgetGauge, CostSparkline, StreamingText, AgentThinkingRipple
+- Key positioning: "The only dashboard where you SEE what agents do, KNOW what it costs, UNDO any mistake"
 - 48-hour action plan: 12 items prioritized by impact (demo GIF, README, architecture docs)
 
 ## Security Audit — 2026-03-08
