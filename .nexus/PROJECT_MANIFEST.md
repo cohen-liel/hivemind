@@ -276,3 +276,30 @@ Full report: `.nexus/FRONTEND_REVIEW.md`
 3. **Error boundary** (30m) — prevents demo crashes on unexpected data
 4. **Toast notifications** (1h) — app feels responsive to user actions
 5. **Cost analytics chart** (2h) — shows product depth beyond live view
+
+## Frontend UX Review — 2026-03-09
+
+### Issues Log
+
+| ID | Sev | File:Line | Issue | Fix |
+|----|-----|-----------|-------|-----|
+| UX-1 | HIGH | ProjectView.tsx:572,601,674,780,786+ | `loadProject()` called without `.catch()` or `await` in 8+ locations — unhandled promise rejections on network hiccup | Add `.catch(() => {})` to all fire-and-forget `loadProject()` / `loadFiles()` calls |
+| UX-2 | HIGH | SettingsPage.tsx:171-176 | No client-side validation on settings input — user can type `-5` for budget or `99999` for turns; `min`/`max` attrs only affect spinner, not keyboard input | Clamp value in onChange: `Math.max(field.min ?? 0, Math.min(field.max ?? Infinity, val))` |
+| UX-3 | HIGH | Dashboard.tsx:33-45 | `loadData` useCallback depends on `projects.length` — causes guaranteed double-fetch on initial load (0→N→N) | Remove `projects.length` from deps; use `useRef` for the "only show error when empty" check |
+| UX-4 | MEDIUM | Dashboard.tsx:326 | No "no results" empty state when search/filter matches zero projects | Add `filteredProjects.length === 0 && projects.length > 0` branch showing "No projects match" message |
+| UX-5 | MEDIUM | Dashboard.tsx:246 | Status filter missing 'stopped' state — stopped projects only visible in "All" filter | Add 'stopped' to the filter button array |
+| UX-6 | MEDIUM | SettingsPage.tsx:228-246 | No "Reset" / "Discard changes" option — user must refresh page to undo accidental edits | Add "Reset" button next to "Save Changes" that reloads settings from API |
+| UX-7 | MEDIUM | ProjectView.tsx:811 | `confirm()` for clear history is native browser dialog — breaks premium UI | Replace with custom confirmation modal matching the design system |
+| UX-8 | MEDIUM | Sidebar.tsx:36-38 | 5-second polling runs regardless of WebSocket connection — redundant API calls while WS is active | Gate interval polling: only poll when `!connected`, or increase to 30s when connected |
+| UX-9 | MEDIUM | ConductorBar.tsx:97 | Project name has `truncate` but no `title` attribute — users can't see full name on hover | Add `title={projectName}` to the `h1` element |
+| UX-10 | MEDIUM | Sidebar.tsx:283-288 | No loading state for sidebar project list — shows "No projects yet" during initial fetch, then flickers to real data | Add a simple loading check before rendering the empty state |
+| UX-11 | LOW | Sidebar.tsx:59-62 | `⌘N` intercepts browser "New Window" shortcut — may surprise users expecting standard browser behavior | Consider `⌘⇧N` or document the shortcut prominently |
+| UX-12 | LOW | SettingsPage.tsx:136 | "Changes take effect immediately for new sessions" is inaccurate — `updateSettings` affects running sessions too | Update copy to "Changes take effect immediately" |
+| UX-13 | LOW | ProjectView.tsx:839 | `JSX.Element` type deprecated in TypeScript 5.x | Change to `React.ReactElement` |
+| UX-14 | LOW | Dashboard.tsx:200 | Notification permission button renders on mobile where browser push isn't widely supported | Wrap with `!isMobile` check or use feature detection beyond just `'Notification' in window` |
+
+### Architectural Observations (non-issues, for awareness):
+- **ProjectView.tsx is 1420 lines** — largest single component. Consider extracting WS event handler, action handlers, and mobile/desktop layout into subcomponents. Not urgent but increases cognitive load for future devs.
+- **Module-level `activityIdCounter`** (ProjectView.tsx:21) — shared mutable state across component lifecycle. Works because only one ProjectView is mounted at a time, but breaks React's component isolation model.
+- **Sidebar.tsx `onProjectsChange` prop** — if parent passes an inline callback, `loadProjects` is recreated every render, restarting the 5s poll interval. Parent must memoize the callback.
+- **WebSocketContext.tsx** — well-implemented with backoff, replay, sequence tracking, and reconnect sync. No issues found.
