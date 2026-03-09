@@ -1,0 +1,16 @@
+[
+  {
+    "task_id": "task_001",
+    "type": "api_contract",
+    "title": "Heartbeat Event Schema",
+    "file_path": "dashboard/events.py",
+    "summary": "New status_heartbeat WebSocket event emitted every 5s per project"
+  },
+  {
+    "task_id": "task_001",
+    "type": "file_manifest",
+    "title": "Files Modified",
+    "file_path": ".nexus/artifacts/task_001_manifest.json",
+    "summary": "1 file modified: dashboard/events.py with heartbeat lifecycle methods"
+  }
+]

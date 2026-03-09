@@ -1,0 +1,24 @@
+{
+  "project_id": "web-claude-bot",
+  "architecture_summary": "We will fix the real-time status lifecycle, error transparency, plan visibility, and trace live-updates by enhancing backend event emission and frontend WebSocket-driven rendering to create a world-class agent orchestration dashboard.. Agents involved: backend_developer, frontend_developer, test_engineer, security_auditor, reviewer. Tasks: 13, Successful: 1/2.",
+  "tech_stack": {},
+  "key_decisions": [],
+  "known_issues": [
+    "Could not parse TaskOutput JSON from agent response"
+  ],
+  "api_surface": [
+    {
+      "method": "WS_EVENT",
+      "path": "status_heartbeat",
+      "description": "Periodic status heartbeat broadcast every 5 seconds per active project",
+      "request_body": "N/A (server-initiated)",
+      "response_body": "{type: 'status_heartbeat', project_id: str, status: str, active_agents: int, timestamp: float}"
+    }
+  ],
+  "db_tables": [],
+  "file_map": {
+    "dashboard/events.py": "Added start_heartbeat(), stop_heartbeat(), stop_all_heartbeats(), _heartbeat_loop() methods to EventBus class; added StatusFn type alias, _HEARTBEAT_INTERVAL_SECONDS constant, and _heartbeat_tasks dict"
+  },
+  "last_updated_by": "task_002",
+  "cumulative_cost_usd": 2.2389509999999997
+}
