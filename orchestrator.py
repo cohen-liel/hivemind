@@ -1162,6 +1162,29 @@ class OrchestratorManager:
                 pass
         return ""
 
+    def _list_workspace_files(self, max_files: int = 200) -> str:
+        """Return a concise file tree of the project directory for the PM Agent."""
+        root = Path(self.project_dir)
+        if not root.exists():
+            return ""
+        lines: list[str] = []
+        # Directories to skip
+        skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
+                     "dist", "build", ".pytest_cache", ".mypy_cache"}
+        try:
+            for path in sorted(root.rglob("*")):
+                if any(part in skip_dirs for part in path.parts):
+                    continue
+                if path.is_file():
+                    rel = path.relative_to(root)
+                    lines.append(str(rel))
+                    if len(lines) >= max_files:
+                        lines.append(f"... (truncated at {max_files} files)")
+                        break
+        except Exception:
+            pass
+        return "\n".join(lines)
+
     # --- Core orchestration loop (legacy) ---
 
     async def _run_orchestrator(self, user_message: str, *, _retry_count: int = 0):
