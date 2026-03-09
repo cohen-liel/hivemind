@@ -6,6 +6,8 @@ import { useIOSViewport } from '../useIOSViewport';
 import { useToast } from '../components/Toast';
 import ActivityFeed from '../components/ActivityFeed';
 import AgentStatusPanel from '../components/AgentStatusPanel';
+import AgentMetrics from '../components/AgentMetrics';
+import { useAgentMetrics } from '../hooks/useAgentMetrics';
 import ConductorBar from '../components/ConductorBar';
 import FileDiff from '../components/FileDiff';
 import PlanView from '../components/PlanView';
@@ -984,6 +986,9 @@ export default function ProjectView() {
   const orchestratorState = agentStateList.find(a => a.name === 'orchestrator') ?? null;
   const subAgentStates = agentStateList.filter(a => a.name !== 'orchestrator');
 
+  // Per-agent performance metrics (cost, duration, success rate) for the Agents tab
+  const agentMetrics = useAgentMetrics(activities);
+
   const mobileNavItems: { id: MobileView; icon: JSX.Element; label: string }[] = [
     {
       id: 'orchestra',
@@ -1520,13 +1525,16 @@ export default function ProjectView() {
               </>
             )}
             {desktopTab === 'agents' && (
-              <div className="p-6">
+              <div className="p-6 space-y-6">
                 <AgentStatusPanel
                   agents={agentStateList}
                   onSelectAgent={setSelectedAgent}
                   selectedAgent={selectedAgent}
                   layout="grid"
                 />
+                {agentMetrics.length > 0 && (
+                  <AgentMetrics metrics={agentMetrics} />
+                )}
               </div>
             )}
             {desktopTab === 'plan' && (
