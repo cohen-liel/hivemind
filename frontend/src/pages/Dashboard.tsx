@@ -5,6 +5,7 @@ import { useWSSubscribe } from '../WebSocketContext';
 import { AGENT_ICONS } from '../constants';
 import { DashboardSkeleton } from '../components/Skeleton';
 import ErrorState from '../components/ErrorState';
+import CostChart from '../components/CostChart';
 import { useAnimatedNumber, formatCost } from '../hooks/useAnimatedNumber';
 import { usePageTitle } from '../hooks/usePageTitle';
 import type { Project, WSEvent } from '../types';
@@ -24,6 +25,7 @@ export default function Dashboard() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [costExpanded, setCostExpanded] = useState(false);
 
   // Dynamic page title
   usePageTitle('Dashboard');
@@ -420,6 +422,60 @@ export default function Dashboard() {
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {/* ── Cost Analytics (collapsible) ── */}
+        {projects.length > 0 && (
+          <div
+            className="mt-6 rounded-2xl overflow-hidden transition-all duration-300"
+            style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-dim)',
+            }}
+          >
+            <button
+              onClick={() => setCostExpanded(prev => !prev)}
+              className="w-full flex items-center justify-between px-5 py-4 transition-colors"
+              style={{ color: 'var(--text-primary)' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-sm"
+                  style={{ background: 'var(--glow-green)' }}
+                >
+                  💰
+                </div>
+                <div className="text-left">
+                  <h3 className="text-sm font-bold" style={{ fontFamily: 'var(--font-display)' }}>
+                    Cost Analytics
+                  </h3>
+                  <p className="text-[10px]" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    Last 7 days
+                  </p>
+                </div>
+              </div>
+              <svg
+                className={`w-4 h-4 transition-transform duration-300 ${costExpanded ? 'rotate-180' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {costExpanded && (
+              <div
+                className="px-5 pb-5 animate-[fadeSlideIn_0.25s_ease-out]"
+                style={{ borderTop: '1px solid var(--border-dim)' }}
+              >
+                <CostChart />
+              </div>
+            )}
           </div>
         )}
       </main>
