@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { useAnimatedNumber, formatCost } from '../hooks/useAnimatedNumber';
+import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import type { AgentState, LoopProgress } from '../types';
 
 interface Props {

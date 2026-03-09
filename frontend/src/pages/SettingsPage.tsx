@@ -59,7 +59,7 @@ export default function SettingsPage() {
         const d: Record<string, number> = {};
         for (const section of EDITABLE_FIELDS) {
           for (const field of section.fields) {
-            const val = (s as Record<string, unknown>)[field.key];
+            const val = (s as unknown as Record<string, unknown>)[field.key];
             d[field.key] = typeof val === 'number' ? val : 0;
           }
         }
@@ -97,7 +97,7 @@ export default function SettingsPage() {
   };
 
   const hasChanges = settings ? EDITABLE_FIELDS.some(s => {
-    const raw = settings as Record<string, unknown>;
+    const raw = settings as unknown as Record<string, unknown>;
     return s.fields.some(f => draft[f.key] !== raw[f.key]);
   }) : false;
 
