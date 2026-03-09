@@ -5,6 +5,8 @@ import { useWSSubscribe } from '../WebSocketContext';
 import { AGENT_ICONS } from '../constants';
 import { DashboardSkeleton } from '../components/Skeleton';
 import ErrorState from '../components/ErrorState';
+import { useAnimatedNumber, formatCost } from '../hooks/useAnimatedNumber';
+import { usePageTitle } from '../hooks/usePageTitle';
 import type { Project, WSEvent } from '../types';
 
 interface DashboardLiveState {
@@ -22,6 +24,9 @@ export default function Dashboard() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Dynamic page title
+  usePageTitle('Dashboard');
 
   const loadData = useCallback(async () => {
     try {
@@ -124,6 +129,9 @@ export default function Dashboard() {
   const runningCount = projects.filter(p => p.status === 'running').length;
   const totalCost = projects.reduce((sum, p) => sum + (p.total_cost_usd || 0), 0);
 
+  // Animated stat values
+  const animatedCost = useAnimatedNumber(totalCost, 700, totalCost < 1 ? 3 : 2);
+
   // Loading state
   if (loading && projects.length === 0) {
     return <DashboardSkeleton />;
@@ -182,7 +190,7 @@ export default function Dashboard() {
                 )}
                 {totalCost > 0 && (
                   <span className="telemetry" style={{ color: 'var(--text-muted)' }}>
-                    Total: ${totalCost.toFixed(2)}
+                    Total: ${animatedCost}
                   </span>
                 )}
               </div>
@@ -203,8 +211,8 @@ export default function Dashboard() {
                 <span className={`w-2 h-2 rounded-full ${connected ? 'animate-pulse' : ''}`}
                   style={{ background: connected ? 'var(--accent-green)' : 'var(--accent-red)' }} />
                 <span className="text-[10px]"
-                  style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                  {connected ? 'LIVE' : 'OFFLINE'}
+                  style={{ color: connected ? 'var(--accent-green)' : 'var(--accent-red)', fontFamily: 'var(--font-mono)' }}>
+                  {connected ? 'LIVE' : 'RECONNECTING...'}
                 </span>
               </div>
             </div>
@@ -255,23 +263,62 @@ export default function Dashboard() {
       {/* Project cards */}
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
         {projects.length === 0 ? (
-          <div className="text-center py-24">
-            <div className="w-20 h-20 mx-auto mb-5 rounded-2xl flex items-center justify-center text-4xl"
-              style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-dim)' }}>
-              🚀
-            </div>
-            <p className="text-lg font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>No projects yet</p>
-            <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>Create your first project to start orchestrating agents</p>
-            <button
-              onClick={() => navigate('/new')}
-              className="px-5 py-2.5 text-sm font-medium rounded-xl transition-all text-white"
+          /* ── Enhanced empty state / onboarding UI ── */
+          <div className="flex items-center justify-center py-16">
+            <div
+              className="relative max-w-sm w-full rounded-2xl p-8 text-center"
               style={{
-                background: 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)',
-                boxShadow: '0 4px 20px var(--glow-blue)',
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border-dim)',
+                boxShadow: '0 0 80px rgba(99, 140, 255, 0.06), 0 25px 50px rgba(0,0,0,0.3)',
               }}
             >
-              + Create Project
-            </button>
+              {/* Subtle glow behind the card */}
+              <div className="absolute inset-0 -z-10 rounded-2xl"
+                style={{
+                  background: 'radial-gradient(ellipse at 50% 0%, rgba(99,140,255,0.08) 0%, transparent 70%)',
+                  filter: 'blur(20px)',
+                }} />
+
+              <div
+                className="w-16 h-16 mx-auto mb-5 rounded-2xl flex items-center justify-center text-3xl"
+                style={{
+                  background: 'var(--glow-blue)',
+                  boxShadow: '0 0 30px var(--glow-blue)',
+                }}
+              >
+                🚀
+              </div>
+
+              <h2 className="text-lg font-bold mb-2" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
+                Create your first project
+              </h2>
+              <p className="text-sm mb-6 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                Point Nexus at a codebase directory and start orchestrating AI agents to build, review, and test your code.
+              </p>
+
+              <button
+                onClick={() => navigate('/new')}
+                className="px-6 py-3 text-sm font-semibold rounded-xl transition-all duration-200 text-white active:scale-[0.97]"
+                style={{
+                  background: 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)',
+                  boxShadow: '0 4px 20px var(--glow-blue), inset 0 1px 0 rgba(255,255,255,0.12)',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 6px 30px rgba(99,140,255,0.4), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+                onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 20px var(--glow-blue), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+              >
+                <span className="flex items-center gap-2">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                  New Project
+                </span>
+              </button>
+
+              <p className="text-[10px] mt-4" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                ⌘N to quick-create &bull; ? for shortcuts
+              </p>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -360,7 +407,7 @@ export default function Dashboard() {
                   <div className="flex items-center gap-3 pt-2" style={{ borderTop: '1px solid var(--border-dim)' }}>
                     {project.total_cost_usd > 0 && (
                       <span className="telemetry" style={{ color: 'var(--accent-green)' }}>
-                        ${project.total_cost_usd.toFixed(3)}
+                        {formatCost(project.total_cost_usd)}
                       </span>
                     )}
                     {project.turn_count > 0 && (

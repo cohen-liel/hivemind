@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { getProjects } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
+import { formatCost } from '../hooks/useAnimatedNumber';
 import type { Project, WSEvent } from '../types';
 
 const STATUS_CONFIG: Record<string, { color: string; label: string; pulse: boolean }> = {
@@ -43,7 +44,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
     }
   }, [loadProjects]);
 
-  useWSSubscribe(handleWSEvent);
+  const { connected } = useWSSubscribe(handleWSEvent);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -81,6 +82,9 @@ export default function Sidebar({ onProjectsChange }: Props) {
   const currentProjectId = location.pathname.startsWith('/project/')
     ? location.pathname.split('/project/')[1]
     : null;
+
+  // Check if any project is running (for logo breathing effect)
+  const hasRunningProject = projects.some(p => p.status === 'running');
 
   const navItems = [
     {
@@ -122,7 +126,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
         style={{ borderBottom: '1px solid var(--border-dim)' }}>
         {!collapsed && (
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-7 h-7 rounded-lg flex items-center justify-center text-sm"
+            <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-sm ${hasRunningProject ? 'logo-breathing' : ''}`}
               style={{
                 background: 'var(--glow-blue)',
                 boxShadow: '0 0 12px var(--glow-blue)',
@@ -133,6 +137,13 @@ export default function Sidebar({ onProjectsChange }: Props) {
               style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
               Nexus
             </span>
+            {/* Connection indicator in sidebar */}
+            <div className="flex items-center gap-1 ml-auto mr-1" title={connected ? 'Connected' : 'Disconnected'}>
+              <span
+                className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${connected ? 'animate-pulse' : ''}`}
+                style={{ background: connected ? 'var(--accent-green)' : 'var(--accent-red)' }}
+              />
+            </div>
           </div>
         )}
         <button
@@ -250,10 +261,18 @@ export default function Sidebar({ onProjectsChange }: Props) {
               />
               {!collapsed && (
                 <div className="flex-1 min-w-0">
-                  <span className="truncate block font-medium">{project.project_name}</span>
-                  {project.total_cost_usd > 0 && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate block font-medium flex-1">{project.project_name}</span>
+                    {/* Live cost badge for running projects */}
+                    {project.status === 'running' && project.total_cost_usd > 0 && (
+                      <span className="cost-badge flex-shrink-0">
+                        {formatCost(project.total_cost_usd)}
+                      </span>
+                    )}
+                  </div>
+                  {project.total_cost_usd > 0 && project.status !== 'running' && (
                     <span className="text-[10px] block mt-0.5" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      ${project.total_cost_usd.toFixed(3)}
+                      {formatCost(project.total_cost_usd)}
                     </span>
                   )}
                 </div>

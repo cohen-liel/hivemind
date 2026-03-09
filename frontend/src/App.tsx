@@ -1,24 +1,34 @@
 import { BrowserRouter, Routes, Route, useLocation, useNavigate, Link } from 'react-router-dom';
 import { WebSocketProvider } from './WebSocketContext';
 import { ToastProvider } from './components/Toast';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import KeyboardShortcutsModal from './components/KeyboardShortcutsModal';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import ProjectView from './pages/ProjectView';
 import SettingsPage from './pages/SettingsPage';
 import SchedulesPage from './pages/SchedulesPage';
 import NewProjectDialog from './components/NewProjectDialog';
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 
 /** Global keyboard shortcuts */
 function KeyboardShortcuts() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   const handler = useCallback((e: KeyboardEvent) => {
     // Don't intercept when typing in inputs or contenteditable
     const tag = (e.target as HTMLElement)?.tagName;
     const isEditable = (e.target as HTMLElement)?.isContentEditable;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || isEditable) return;
+
+    // '?' → show shortcuts modal
+    if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      setShowShortcuts(prev => !prev);
+      return;
+    }
 
     // Ctrl/Cmd + N → new project
     if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
@@ -43,7 +53,12 @@ function KeyboardShortcuts() {
     return () => document.removeEventListener('keydown', handler);
   }, [handler]);
 
-  return null;
+  return (
+    <KeyboardShortcutsModal
+      isOpen={showShortcuts}
+      onClose={() => setShowShortcuts(false)}
+    />
+  );
 }
 
 /** Mobile bottom navigation bar — only visible on small screens */
@@ -154,23 +169,25 @@ function AnimatedRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <WebSocketProvider>
-        <ToastProvider>
-          <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-void)' }}>
-            {/* Sidebar: hidden on mobile, visible on desktop */}
-            <div className="hidden lg:flex">
-              <Sidebar />
+    <ErrorBoundary>
+      <BrowserRouter>
+        <WebSocketProvider>
+          <ToastProvider>
+            <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-void)' }}>
+              {/* Sidebar: hidden on mobile, visible on desktop */}
+              <div className="hidden lg:flex">
+                <Sidebar />
+              </div>
+              <main className="flex-1 overflow-y-auto min-w-0 pb-14 lg:pb-0">
+                <KeyboardShortcuts />
+                <AnimatedRoutes />
+              </main>
+              {/* Mobile bottom nav */}
+              <MobileBottomNav />
             </div>
-            <main className="flex-1 overflow-y-auto min-w-0 pb-14 lg:pb-0">
-              <KeyboardShortcuts />
-              <AnimatedRoutes />
-            </main>
-            {/* Mobile bottom nav */}
-            <MobileBottomNav />
-          </div>
-        </ToastProvider>
-      </WebSocketProvider>
-    </BrowserRouter>
+          </ToastProvider>
+        </WebSocketProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
