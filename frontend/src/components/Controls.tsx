@@ -11,7 +11,7 @@ interface Props {
   onSend: (message: string, agent?: string) => void;
 }
 
-export default function Controls({ status, agents, onPause, onResume, onStop, onSend }: Props) {
+export default function Controls({ status, onPause, onResume, onStop, onSend }: Props) {
   const [message, setMessage] = useState('');
   // All messages go through the Orchestrator — no direct agent targeting
   const targetAgent = 'orchestrator';
