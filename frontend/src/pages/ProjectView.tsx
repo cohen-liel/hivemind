@@ -72,17 +72,19 @@ export default function ProjectView() {
     }
 
     // Failsafe: merge agent_states from poll response to recover from missed WS events.
-    // Rule: only apply server state when it is non-idle (don't overwrite fresher
-    // WS 'done'/'working' data with a stale server-side 'idle' between rounds).
+    // Always sync working agents' current_tool; upgrade idle→working but don't downgrade working→idle.
     if (p.agent_states && Object.keys(p.agent_states).length > 0) {
       setAgentStates(prev => {
         let changed = false;
         const updated = { ...prev };
         for (const [name, s] of Object.entries(p.agent_states!)) {
           const serverState = (s.state ?? 'idle') as AgentStateType['state'];
-          if (serverState === 'idle') continue;   // never downgrade on a stale server idle
           const ourState = updated[name]?.state ?? 'idle';
-          if (ourState !== serverState) {
+          // Always sync if server says working, or if both agree on state but tool changed
+          const shouldSync = serverState === 'working'
+            || (serverState !== 'idle' && ourState !== serverState)
+            || (serverState === ourState && s.current_tool && s.current_tool !== updated[name]?.current_tool);
+          if (shouldSync) {
             updated[name] = {
               ...updated[name],
               name,
@@ -444,6 +446,32 @@ export default function ProjectView() {
         setApprovalRequest(null);
         loadProject();
         break;
+
+      case 'live_state_sync': {
+        // Recovery event from WebSocket reconnection
+        if (event.agent_states) {
+          const restored: Record<string, AgentStateType> = {};
+          for (const [name, s] of Object.entries(event.agent_states as Record<string, any>)) {
+            restored[name] = {
+              name,
+              state: s.state ?? 'idle',
+              task: s.task,
+              current_tool: s.current_tool,
+              cost: s.cost ?? 0,
+              turns: s.turns ?? 0,
+              duration: s.duration ?? 0,
+            };
+          }
+          setAgentStates(prev => ({ ...prev, ...restored }));
+        }
+        if (event.loop_progress) {
+          setLoopProgress(event.loop_progress);
+        }
+        if (event.status === 'running') {
+          setLastTicker('agents working...');
+        }
+        break;
+      }
 
       default:
         break;

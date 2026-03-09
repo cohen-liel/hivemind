@@ -791,6 +791,16 @@ class OrchestratorManager:
         self.turn_count = 0
 
         await self._emit_event("project_status", status="running")
+        # Immediate feedback so the UI shows activity right away
+        self.agent_states["orchestrator"] = {
+            "state": "working",
+            "task": "preparing workspace...",
+        }
+        await self._emit_event(
+            "agent_started",
+            agent="orchestrator",
+            task="preparing workspace...",
+        )
         await self.session_mgr.invalidate_session(self.user_id, self.project_id, "orchestrator")
 
         if use_dag:
@@ -2122,7 +2132,43 @@ class OrchestratorManager:
                         "\n".join(conflict_lines)
                     )
 
-                response = await self._query_agent(agent_role, sub_prompt, skill_names=delegation.skills)
+                # Sub-agent heartbeat — emit periodic updates while SDK call is pending
+                # so the UI shows the agent is alive and working
+                async def _sub_heartbeat(role=agent_role, start=agent_start):
+                    phases = [
+                        "reading codebase...",
+                        "analyzing code...",
+                        "writing changes...",
+                        "testing & verifying...",
+                        "finalizing...",
+                    ]
+                    tick = 0
+                    while True:
+                        await asyncio.sleep(5)
+                        tick += 1
+                        elapsed = int(time.monotonic() - start)
+                        phase = phases[min(tick - 1, len(phases) - 1)]
+                        self.agent_states[role] = {
+                            **self.agent_states.get(role, {}),
+                            "state": "working",
+                            "current_tool": f"{phase} ({elapsed}s)",
+                        }
+                        await self._emit_event(
+                            "agent_update",
+                            agent=role,
+                            text=f"{AGENT_EMOJI.get(role, '🔧')} {phase} ({elapsed}s)",
+                            summary=f"{phase} ({elapsed}s)",
+                        )
+                _hb_task = asyncio.create_task(_sub_heartbeat())
+
+                try:
+                    response = await self._query_agent(agent_role, sub_prompt, skill_names=delegation.skills)
+                finally:
+                    _hb_task.cancel()
+                    try:
+                        await _hb_task
+                    except asyncio.CancelledError:
+                        pass
 
                 # Auto-retry once on failure with enriched context
                 if response.is_error and not self._stop_event.is_set():

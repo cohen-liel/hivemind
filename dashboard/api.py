@@ -172,6 +172,7 @@ def _create_web_manager(
             "type": "agent_update",
             "project_id": project_id,
             "project_name": project_name,
+            "agent": manager.current_agent or "orchestrator",
             "text": text,
             "timestamp": time.time(),
         })
