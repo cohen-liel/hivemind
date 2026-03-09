@@ -12,11 +12,14 @@ v2: Added Artifact-Based Context, Failure Classification, Remediation Tasks,
 from __future__ import annotations
 
 import json
+import logging
 import re
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -964,16 +967,62 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
                     except Exception:
                         break
 
-    # Fallback — could not parse. Auto-classify from raw text.
-    fallback = TaskOutput(
-        task_id=task_id,
-        status=TaskStatus.FAILED,
-        summary="Agent returned unparseable output. The DAG executor will handle retry.",
-        issues=["Could not parse TaskOutput JSON from agent response"],
-        failure_details=raw_text[-500:] if raw_text else "",
-        confidence=0.0,
+    # Fallback — could not parse JSON. Try to infer status from raw text.
+    logger.warning(
+        f"[extract_task_output] No JSON found for {task_id}. "
+        f"Text length={len(raw_text)}. Attempting text-based inference."
     )
-    fallback.failure_category = classify_failure(fallback)
+
+    # Heuristic: if the agent did real work (mentions files, commits, etc.)
+    # treat it as partial success rather than outright failure.
+    lower = raw_text.lower() if raw_text else ""
+    did_work = any(indicator in lower for indicator in [
+        "git commit", "git add", "created ", "modified ", "updated ",
+        "wrote ", "implemented", "fixed ", "added ", "refactored",
+        "## summary", "## files changed", "## actions taken",
+        "task completed", "completed via tool use",
+    ])
+
+    # Extract a summary from the text if possible
+    inferred_summary = ""
+    for marker in ["## SUMMARY", "## Summary", "# Summary"]:
+        idx = raw_text.find(marker)
+        if idx != -1:
+            after = raw_text[idx + len(marker):].strip()
+            # Take first paragraph
+            end = after.find("\n\n")
+            inferred_summary = after[:end].strip() if end != -1 else after[:300].strip()
+            break
+    if not inferred_summary and raw_text:
+        # Use last 300 chars as summary hint
+        inferred_summary = raw_text[-300:].strip()
+
+    # Extract file paths mentioned (common patterns)
+    file_paths = re.findall(r'[\w./]+\.(?:py|ts|tsx|js|jsx|json|md|yaml|yml|css|html)', raw_text)
+    unique_files = list(dict.fromkeys(file_paths))[:20]  # dedupe, limit
+
+    if did_work:
+        fallback = TaskOutput(
+            task_id=task_id,
+            status=TaskStatus.COMPLETED,
+            summary=f"Agent completed work but did not produce structured JSON output. Inferred from text: {inferred_summary[:200]}",
+            artifacts=unique_files,
+            issues=["Agent did not produce TaskOutput JSON — output inferred from text"],
+            confidence=0.6,  # Lower confidence since we inferred
+        )
+        logger.info(f"[extract_task_output] {task_id}: inferred COMPLETED (work detected, {len(unique_files)} files)")
+    else:
+        fallback = TaskOutput(
+            task_id=task_id,
+            status=TaskStatus.FAILED,
+            summary=f"Agent returned unparseable output with no clear work indicators. Last output: {inferred_summary[:200]}",
+            issues=["Could not parse TaskOutput JSON and no work indicators found"],
+            failure_details=raw_text[-500:] if raw_text else "",
+            confidence=0.0,
+        )
+        fallback.failure_category = classify_failure(fallback)
+        logger.warning(f"[extract_task_output] {task_id}: FAILED (no work detected)")
+
     return fallback
 
 

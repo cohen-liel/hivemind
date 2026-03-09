@@ -355,6 +355,30 @@ class EventBus:
             event["timestamp"] = time.time()
 
         project_id = event.get("project_id", "")
+        event_type = event.get("type", "")
+
+        # Log important events so we can trace what the frontend receives
+        if event_type in ("agent_started", "agent_finished", "project_status", "delegation", "task_graph", "self_healing"):
+            agent = event.get("agent", "")
+            extra = ""
+            if event_type == "agent_finished":
+                extra = f" is_error={event.get('is_error')} cost=${event.get('cost', 0):.4f} failure_reason={event.get('failure_reason', '')[:80]}"
+            elif event_type == "project_status":
+                extra = f" status={event.get('status')}"
+            elif event_type == "agent_started":
+                extra = f" task={str(event.get('task', ''))[:80]}"
+            elif event_type == "delegation":
+                extra = f" delegations={len(event.get('delegations', []))}"
+            logger.info(
+                f"[EventBus] PUBLISH {event_type} agent={agent} "
+                f"project={project_id[:8]} seq={event.get('sequence_id', '?')}{extra}"
+            )
+        elif event_type == "agent_update":
+            agent = event.get("agent", "")
+            summary = str(event.get("summary", ""))[:60]
+            logger.debug(
+                f"[EventBus] PUBLISH {event_type} agent={agent} summary='{summary}'"
+            )
 
         # Assign sequence ID for ordered replay
         if project_id:

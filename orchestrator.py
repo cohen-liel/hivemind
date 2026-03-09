@@ -1176,6 +1176,12 @@ class OrchestratorManager:
             )
             await self._send_result("🧠 **Orchestrator** loading project context...")
             manifest, memory_snapshot, file_tree = await self._load_project_context()
+            logger.info(
+                f"[{self.project_id}] Context loaded: "
+                f"manifest={'yes' if manifest else 'no'} ({len(manifest)} chars), "
+                f"memory={'yes' if memory_snapshot else 'no'} ({len(memory_snapshot)} chars), "
+                f"file_tree={'yes' if file_tree else 'no'} ({len(file_tree)} chars)"
+            )
 
             context_parts = []
             if memory_snapshot:
@@ -1204,6 +1210,9 @@ class OrchestratorManager:
             )
 
             # Step 1: PM Agent → TaskGraph (now with memory context)
+            import time as _pm_time
+            _pm_start = _pm_time.time()
+            logger.info(f"[{self.project_id}] PM Agent starting task graph creation...")
             try:
                 graph = await create_task_graph(
                     user_message=user_message,
@@ -1212,8 +1221,20 @@ class OrchestratorManager:
                     file_tree=file_tree,
                     memory_snapshot=memory_snapshot,
                 )
+                _pm_elapsed = _pm_time.time() - _pm_start
+                logger.info(
+                    f"[{self.project_id}] PM Agent completed in {_pm_elapsed:.1f}s: "
+                    f"{len(graph.tasks)} tasks, {len(graph.epic_breakdown)} epics, "
+                    f"vision='{graph.vision[:80]}'"
+                )
+                for t in graph.tasks:
+                    deps = f" (deps: {', '.join(t.depends_on)})" if t.depends_on else " (no deps)"
+                    logger.info(f"  Task {t.id}: {t.role.value} — {t.goal[:80]}{deps}")
             except Exception as pm_err:
-                logger.warning(f"[{self.project_id}] PM Agent failed: {pm_err}. Using fallback.")
+                _pm_elapsed = _pm_time.time() - _pm_start
+                logger.warning(
+                    f"[{self.project_id}] PM Agent failed after {_pm_elapsed:.1f}s: {pm_err}. Using fallback."
+                )
                 graph = fallback_single_task_graph(user_message, self.project_id)
 
             # Report the plan — show each task so the user sees what's coming
@@ -1251,6 +1272,11 @@ class OrchestratorManager:
             session_id_store: dict[str, str] = {}
 
             # Step 2: DAG Executor (now with self-healing + artifact passing)
+            logger.info(
+                f"[{self.project_id}] Starting DAG execution: "
+                f"{len(graph.tasks)} tasks, budget=${self._effective_budget:.2f}"
+            )
+            _dag_start = _pm_time.time()
             result: ExecutionResult = await execute_graph(
                 graph=graph,
                 project_dir=self.project_dir,
@@ -1264,6 +1290,20 @@ class OrchestratorManager:
                 max_budget_usd=self._effective_budget,
                 session_id_store=session_id_store,
             )
+
+            _dag_elapsed = _pm_time.time() - _dag_start
+            logger.info(
+                f"[{self.project_id}] DAG execution completed in {_dag_elapsed:.1f}s: "
+                f"{len(result.outputs)} outputs, ${result.total_cost:.4f} total cost, "
+                f"{result.remediation_count} remediations"
+            )
+            for o in result.outputs:
+                logger.info(
+                    f"  Output {o.task_id}: status={o.status.value}, "
+                    f"confidence={o.confidence:.2f}, turns={o.turns_used}, "
+                    f"${o.cost_usd:.4f}, "
+                    f"failure={'(' + (o.failure_category.value if o.failure_category else 'none') + ') ' + o.failure_details[:80] if not o.is_successful() else 'none'}"
+                )
 
             # Step 3: Memory Agent — update project knowledge
             try:
@@ -1307,9 +1347,11 @@ class OrchestratorManager:
             self.total_cost_usd += result.total_cost
 
         except asyncio.CancelledError:
-            logger.info(f"[{self.project_id}] DAG session cancelled")
+            logger.info(f"[{self.project_id}] DAG session cancelled by user/system")
         except Exception as exc:
-            logger.exception(f"[{self.project_id}] DAG session error: {exc}")
+            logger.exception(
+                f"[{self.project_id}] DAG session FATAL error: {type(exc).__name__}: {exc}"
+            )
             await self._send_final(
                 f"❌ **Execution failed:** {type(exc).__name__}: {str(exc)[:300]}\n\n"
                 f"---\n💬 Send another message to retry or try a different approach."
@@ -1360,6 +1402,11 @@ class OrchestratorManager:
         """Callback: fired when DAG executor starts a task."""
         import time as _time
         task._started_at = _time.time()  # stamp for real duration calculation
+        logger.info(
+            f"[{self.project_id}] TASK START: {task.id} ({task.role.value}) "
+            f"goal='{task.goal[:100]}' deps={task.depends_on or 'none'} "
+            f"is_remediation={task.is_remediation}"
+        )
         prefix = "🔧 " if task.is_remediation else ""
         required = ""
         if task.required_artifacts:
@@ -1387,6 +1434,21 @@ class OrchestratorManager:
         import time as _time
         is_ok = output.is_successful()
         real_duration = round(_time.time() - getattr(task, '_started_at', _time.time()), 1)
+        logger.info(
+            f"[{self.project_id}] TASK DONE: {task.id} ({task.role.value}) "
+            f"status={output.status.value} confidence={output.confidence:.2f} "
+            f"turns={output.turns_used} cost=${output.cost_usd:.4f} "
+            f"duration={real_duration}s "
+            f"artifacts={len(output.artifacts)} files, {len(output.structured_artifacts)} structured"
+        )
+        if not is_ok:
+            logger.warning(
+                f"[{self.project_id}] TASK FAILED: {task.id} "
+                f"category={output.failure_category.value if output.failure_category else 'none'} "
+                f"details={output.failure_details[:200] if output.failure_details else 'none'} "
+                f"issues={output.issues[:3] if output.issues else 'none'} "
+                f"blockers={output.blockers[:3] if output.blockers else 'none'}"
+            )
 
         # Build failure reason (clear, human-readable)
         failure_reason = ""

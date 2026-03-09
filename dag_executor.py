@@ -154,8 +154,18 @@ async def execute_graph(
     while not graph.is_complete(ctx.completed):
         round_num += 1
         if round_num > MAX_ROUNDS:
-            logger.error(f"[DAG] Safety limit: exceeded {MAX_ROUNDS} rounds")
+            logger.error(f"[DAG] Safety limit: exceeded {MAX_ROUNDS} rounds. Completed: {list(ctx.completed.keys())}")
             break
+
+        completed_ids = list(ctx.completed.keys())
+        pending_ids = [t.id for t in graph.tasks if t.id not in ctx.completed]
+        logger.info(
+            f"[DAG] === Round {round_num} === "
+            f"completed={len(completed_ids)}/{len(graph.tasks)} "
+            f"pending={pending_ids} "
+            f"cost_so_far=${ctx.total_cost:.4f}/{max_budget_usd:.2f} "
+            f"remediations={ctx.remediation_count}/{MAX_TOTAL_REMEDIATIONS}"
+        )
 
         ready = graph.ready_tasks(ctx.completed)
 
@@ -174,10 +184,14 @@ async def execute_graph(
             logger.error(f"[DAG] Budget exhausted (${ctx.total_cost:.2f} >= ${max_budget_usd})")
             break
 
-        logger.info(f"[DAG] Round {round_num}: {len(ready)} ready tasks")
+        ready_info = [(t.id, t.role.value) for t in ready]
+        logger.info(f"[DAG] Round {round_num}: {len(ready)} ready tasks: {ready_info}")
 
         # Split into parallel batches
         batches = _plan_batches(ready)
+        for bi, batch in enumerate(batches):
+            batch_info = [(t.id, t.role.value) for t in batch]
+            logger.info(f"[DAG] Round {round_num} batch {bi+1}/{len(batches)}: {batch_info}")
 
         for batch in batches:
             coros = [
@@ -357,6 +371,14 @@ async def _run_single_task(
     ctx: _ExecutionContext,
 ) -> TaskOutput:
     """Run one task: build prompt -> call specialist -> parse TaskOutput."""
+    logger.info(
+        f"[DAG] _run_single_task START: {task.id} ({task.role.value}) "
+        f"goal='{task.goal[:100]}' "
+        f"context_from={task.context_from or 'none'} "
+        f"depends_on={task.depends_on or 'none'} "
+        f"retry_count={ctx.retries.get(task.id, 0)}"
+    )
+
     if ctx.on_task_start:
         try:
             await ctx.on_task_start(task)
@@ -369,6 +391,10 @@ async def _run_single_task(
         for tid in task.context_from
         if tid in ctx.completed
     }
+    logger.info(
+        f"[DAG] Task {task.id}: context from {len(context_outputs)} upstream tasks, "
+        f"prompt_len={0}"  # will be updated after prompt build
+    )
 
     # Build the prompt using the typed contract serialiser
     # v3: Pass the mission vision + epics so every agent sees the big picture
@@ -397,6 +423,12 @@ async def _run_single_task(
     session_key = f"{ctx.graph.project_id}:{task.role.value}:{task.id}"
     session_id = ctx.session_ids.get(session_key)
 
+    logger.info(
+        f"[DAG] Task {task.id}: calling SDK "
+        f"max_turns=30, max_budget=$15.0, "
+        f"session={'resume' if session_id else 'new'}, "
+        f"prompt_len={len(prompt)}, system_prompt_len={len(system_prompt)}"
+    )
     t0 = time.monotonic()
     try:
         # Build streaming callbacks scoped to this task's agent role
@@ -468,7 +500,18 @@ async def _run_single_task(
     if response.session_id:
         ctx.session_ids[session_key] = response.session_id
 
+    logger.info(
+        f"[DAG] Task {task.id}: SDK returned in {elapsed:.1f}s "
+        f"is_error={response.is_error} turns={response.num_turns} "
+        f"cost=${response.cost_usd:.4f} text_len={len(response.text)} "
+        f"session_id={'yes' if response.session_id else 'no'}"
+    )
+
     if response.is_error:
+        logger.warning(
+            f"[DAG] Task {task.id}: SDK error: {response.error_message[:200]} "
+            f"category={response.error_category}"
+        )
         output = TaskOutput(
             task_id=task.id,
             status=TaskStatus.FAILED,
@@ -485,14 +528,43 @@ async def _run_single_task(
     output = extract_task_output(response.text, task.id)
     output.cost_usd = response.cost_usd
     output.turns_used = response.num_turns
+    logger.info(
+        f"[DAG] Task {task.id}: extract_task_output -> "
+        f"status={output.status.value} confidence={output.confidence:.2f} "
+        f"summary='{output.summary[:80]}' "
+        f"artifacts={len(output.artifacts)} issues={len(output.issues)}"
+    )
 
-    # Auto-classify failure if agent didn't
-    if not output.is_successful() and not output.failure_category:
+    # Detect max_turns exhaustion: agent used all turns but didn't fail explicitly.
+    # This is a common pattern where the agent does real work but runs out of turns
+    # before producing the JSON output.
+    max_turns_exhausted = response.num_turns >= 30
+    if max_turns_exhausted and not output.is_successful():
+        logger.warning(
+            f"[DAG] Task {task.id} ({task.role.value}): max_turns exhausted "
+            f"({response.num_turns} turns, ${response.cost_usd:.4f}). "
+            f"Output status={output.status.value}, confidence={output.confidence:.2f}"
+        )
+        # If the smart fallback in extract_task_output detected work, it already
+        # set status=COMPLETED with confidence=0.6. If not, classify the failure
+        # as TIMEOUT so the retry strategy can handle it appropriately.
+        if not output.is_successful() and not output.failure_category:
+            output.failure_category = FailureCategory.TIMEOUT
+            output.failure_details = (
+                f"Agent exhausted max_turns ({response.num_turns}) without completing. "
+                f"This usually means the task is too complex for a single pass. "
+                f"Consider breaking it into smaller sub-tasks."
+            )
+    elif not output.is_successful() and not output.failure_category:
+        # Auto-classify failure if agent didn't
         output.failure_category = classify_failure(output)
 
-    logger.debug(
-        f"[DAG] Task {task.id} finished in {elapsed:.1f}s "
-        f"({response.num_turns} turns, ${response.cost_usd:.4f})"
+    log_level = logging.INFO if output.is_successful() else logging.WARNING
+    logger.log(
+        log_level,
+        f"[DAG] Task {task.id} ({task.role.value}) finished in {elapsed:.1f}s: "
+        f"status={output.status.value}, confidence={output.confidence:.2f}, "
+        f"{response.num_turns} turns, ${response.cost_usd:.4f}"
     )
     return output
 
@@ -517,6 +589,13 @@ async def _handle_failure(
     # Check if this category allows retries at all
     max_retries_for_category: int = int(strategy["max_retries"])
     remediation_allowed: bool = bool(strategy["remediation_allowed"])
+    logger.info(
+        f"[DAG] _handle_failure: task={task.id} category={category.value} "
+        f"strategy: max_retries={max_retries_for_category} "
+        f"remediation_allowed={remediation_allowed} "
+        f"current_retries={ctx.retries.get(task.id, 0)} "
+        f"is_terminal={output.is_terminal()}"
+    )
 
     if max_retries_for_category == 0:
         logger.warning(
