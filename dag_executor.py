@@ -409,9 +409,10 @@ async def _run_single_task(
                 except Exception:
                     pass
         if ctx.on_agent_tool_use:
-            async def _on_tool_use(tool_name, description=""):
+            async def _on_tool_use(tool_name, tool_info="", tool_input=None):
                 try:
-                    await ctx.on_agent_tool_use(task.role.value, tool_name, description, task.id)
+                    # tool_info is the description string from SDK
+                    await ctx.on_agent_tool_use(task.role.value, tool_name, tool_info, task.id)
                 except Exception:
                     pass
 
