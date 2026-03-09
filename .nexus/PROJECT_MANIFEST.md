@@ -117,7 +117,7 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 - **Gap**: No WebSocket tests, no end-to-end integration tests
 
 ## Test Results — 2026-03-09
-- **236/292 passing (80.8%)** — 51 failures + 5 errors
+- **292/292 passing (100%)** — all 3 root causes fixed (2026-03-09)
 
 ### Root Cause #1 — Schema ordering bug in session_manager.py (46 failures + 5 errors)
 **Files affected**: `test_session_manager_comprehensive.py` (46 failures), `test_store.py` (5 errors)
@@ -143,7 +143,8 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 - ✅ test_sdk_client.py — 50/50
 - ✅ test_state.py — 18/18
 - ✅ test_state_full.py — 38/38
-- ✅ test_api_endpoints.py — 50/51 (1 failure from Root Cause #2)
+- ✅ test_api_endpoints.py — 51/51
+- ✅ test_skills_registry.py — 18/18
 
 ## Next Steps
 
