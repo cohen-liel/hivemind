@@ -29,6 +29,7 @@ Phase 2
 - [x] DB indexes — added `idx_messages_timestamp`, `idx_sessions_project`, `idx_activity_project`
 - [x] Settings validation — cross-field check (sdk budget ≤ total budget), timeout upper bound
 - [x] Blocking I/O — `asyncio.to_thread()` for `Path.iterdir()`, `read_text()`, `_read_todo()`
+- Round 1: developer(OK), reviewer(OK)
 
 ## Open Issues
 (none currently)

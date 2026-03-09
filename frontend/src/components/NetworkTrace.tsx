@@ -53,12 +53,12 @@ export default function NetworkTrace({ calls }: Props) {
           style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
           API Trace
         </span>
-        <span className="text-xs px-2 py-0.5 rounded-md"
+        <span className="text-xs px-2 py-0.5 rounded-md tabular-nums"
           style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
           {calls.length} calls
         </span>
         {totalCost > 0 && (
-          <span className="text-xs px-2 py-0.5 rounded-md"
+          <span className="text-xs px-2 py-0.5 rounded-md tabular-nums"
             style={{ background: 'var(--glow-green)', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>
             ${totalCost.toFixed(4)}
           </span>
@@ -104,13 +104,13 @@ export default function NetworkTrace({ calls }: Props) {
                   <td className="px-3 py-2.5 font-medium capitalize" style={{ color: agentColor }}>
                     {AGENT_LABELS[call.agent] || call.agent}
                   </td>
-                  <td className="px-3 py-2.5" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  <td className="px-3 py-2.5 tabular-nums" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                     {formatTime(call.startTime)}
                   </td>
-                  <td className="px-3 py-2.5 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                  <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                     {formatDuration(call.startTime, call.endTime)}
                   </td>
-                  <td className="px-3 py-2.5 text-right" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                  <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                     {call.cost !== undefined ? `$${call.cost.toFixed(4)}` : '-'}
                   </td>
                   <td className="px-3 py-2.5 text-right">

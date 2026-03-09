@@ -265,7 +265,7 @@ export default function Dashboard() {
       {/* Project cards */}
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
         {projects.length === 0 ? (
-          /* ── Enhanced empty state / onboarding UI ── */
+          /* ── Welcome empty state ── */
           <div className="flex items-center justify-center py-16">
             <div
               className="relative max-w-sm w-full rounded-2xl p-8 text-center"
@@ -289,14 +289,14 @@ export default function Dashboard() {
                   boxShadow: '0 0 30px var(--glow-blue)',
                 }}
               >
-                🚀
+                ⚡
               </div>
 
               <h2 className="text-lg font-bold mb-2" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
-                Create your first project
+                Welcome to Nexus
               </h2>
               <p className="text-sm mb-6 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                Point Nexus at a codebase directory and start orchestrating AI agents to build, review, and test your code.
+                Multi-agent AI orchestration. Create your first project to get started.
               </p>
 
               <button

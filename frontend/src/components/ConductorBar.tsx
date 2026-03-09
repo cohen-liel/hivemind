@@ -62,6 +62,7 @@ export default function ConductorBar({
           to="/"
           className="transition-colors flex-shrink-0 rounded-lg p-1 hover:bg-[var(--bg-elevated)]"
           style={{ color: 'var(--text-muted)' }}
+          aria-label="Back to dashboard"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <path d="M15 18l-6-6 6-6"/>

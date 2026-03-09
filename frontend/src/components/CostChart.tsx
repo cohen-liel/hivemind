@@ -132,13 +132,13 @@ export default function CostChart({ projectId }: Props) {
     <div className="space-y-5">
       {/* ── Summary row ── */}
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
-        <span className="text-2xl font-bold" style={{ color: 'var(--accent-green)', fontFamily: 'var(--font-display)' }}>
+        <span className="text-2xl font-bold tabular-nums" style={{ color: 'var(--accent-green)', fontFamily: 'var(--font-display)' }}>
           ${animatedTotal}
         </span>
-        <span className="text-xs" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+        <span className="text-xs tabular-nums" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
           {total_runs} run{total_runs !== 1 ? 's' : ''}
         </span>
-        <span className="text-xs" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+        <span className="text-xs tabular-nums" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
           avg {formatCost(avgCostPerRun)}/run
         </span>
       </div>
@@ -163,7 +163,7 @@ export default function CostChart({ projectId }: Props) {
                 >
                   {/* Cost label on hover */}
                   <span
-                    className="text-[9px] opacity-0 group-hover:opacity-100 transition-opacity"
+                    className="text-[9px] opacity-0 group-hover:opacity-100 transition-opacity tabular-nums"
                     style={{ color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}
                   >
                     {formatCost(day.cost)}
@@ -239,13 +239,13 @@ export default function CostChart({ projectId }: Props) {
                     </div>
                     {/* Cost + runs */}
                     <span
-                      className="text-[11px] w-16 text-right flex-shrink-0"
+                      className="text-[11px] w-16 text-right flex-shrink-0 tabular-nums"
                       style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}
                     >
                       {formatCost(agent.cost)}
                     </span>
                     <span
-                      className="text-[10px] w-10 text-right flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="text-[10px] w-10 text-right flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity tabular-nums"
                       style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}
                     >
                       {agent.runs}×
