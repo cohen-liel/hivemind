@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { ActivityEntry } from '../types';
-import { AGENT_ICONS, AGENT_LABELS } from '../constants';
+import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 
 interface Props {
   activities: ActivityEntry[];
@@ -11,18 +11,6 @@ interface PlanStep {
   text: string;
   status: 'pending' | 'in_progress' | 'done' | 'error';
   agent?: string;
-}
-
-// Agent-specific accent colors
-const AGENT_ACCENTS: Record<string, { color: string; glow: string; bg: string }> = {
-  developer: { color: '#638cff', glow: 'rgba(99,140,255,0.2)', bg: 'rgba(99,140,255,0.06)' },
-  reviewer:  { color: '#a78bfa', glow: 'rgba(167,139,250,0.2)', bg: 'rgba(167,139,250,0.06)' },
-  tester:    { color: '#f5a623', glow: 'rgba(245,166,35,0.2)', bg: 'rgba(245,166,35,0.06)' },
-  devops:    { color: '#22d3ee', glow: 'rgba(34,211,238,0.2)', bg: 'rgba(34,211,238,0.06)' },
-};
-
-function getAccent(name: string) {
-  return AGENT_ACCENTS[name] || { color: 'var(--text-muted)', glow: 'transparent', bg: 'transparent' };
 }
 
 /**
@@ -101,7 +89,7 @@ function extractPlan(activities: ActivityEntry[]): PlanStep[] {
 }
 
 function StatusIcon({ status, agentName }: { status: PlanStep['status']; agentName?: string }) {
-  const accent = agentName ? getAccent(agentName) : { color: 'var(--text-muted)', glow: 'transparent', bg: 'transparent' };
+  const accent = agentName ? getAgentAccent(agentName) : { color: 'var(--text-muted)', glow: 'transparent', bg: 'transparent' };
 
   switch (status) {
     case 'done':
@@ -212,7 +200,7 @@ export default function PlanView({ activities }: Props) {
 
         <div className="space-y-0">
           {steps.map((step, i) => {
-            const accent = step.agent ? getAccent(step.agent) : { color: 'var(--text-muted)', glow: 'transparent', bg: 'transparent' };
+            const accent = step.agent ? getAgentAccent(step.agent) : { color: 'var(--text-muted)', glow: 'transparent', bg: 'transparent' };
             const isActive = step.status === 'in_progress';
             const isDone = step.status === 'done';
             const isError = step.status === 'error';
@@ -289,7 +277,7 @@ export default function PlanView({ activities }: Props) {
         <div className="mt-4 pt-3 flex items-center gap-2"
           style={{ borderTop: '1px solid var(--border-dim)' }}>
           <div className="w-2 h-2 rounded-full animate-pulse"
-            style={{ background: getAccent(activeStep.agent).color }} />
+            style={{ background: getAgentAccent(activeStep.agent).color }} />
           <span className="text-xs" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
             {AGENT_LABELS[activeStep.agent] || activeStep.agent} is working on step {activeStep.index}
           </span>

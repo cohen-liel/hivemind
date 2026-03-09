@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState, clearHistory, getResumableTask, resumeInterruptedTask, discardInterruptedTask } from '../api';
+import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState, clearHistory, getResumableTask, resumeInterruptedTask, discardInterruptedTask, getActivity } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
 import ActivityFeed from '../components/ActivityFeed';
@@ -14,6 +14,8 @@ import Controls from '../components/Controls';
 import CodeBrowser from '../components/CodeBrowser';
 import ConductorMode from '../components/ConductorMode';
 import type { Project, ProjectMessage, FileChanges, WSEvent, ActivityEntry, AgentState as AgentStateType, LoopProgress } from '../types';
+import type { ActivityEvent } from '../api';
+import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 
 let activityIdCounter = 0;
 function nextId(): string {
@@ -29,6 +31,152 @@ function messagesToActivities(messages: ProjectMessage[]): ActivityEntry[] {
     content: msg.content,
     cost: msg.cost_usd,
   }));
+}
+
+/** Convert persisted activity events from DB into ActivityEntry objects for the feed. */
+function activityEventsToEntries(events: ActivityEvent[]): ActivityEntry[] {
+  const entries: ActivityEntry[] = [];
+  for (const evt of events) {
+    switch (evt.type) {
+      case 'tool_use':
+        entries.push({
+          id: `act-${evt.sequence_id ?? evt.timestamp}`,
+          type: 'tool_use',
+          timestamp: evt.timestamp,
+          agent: evt.agent,
+          tool_name: evt.tool_name,
+          tool_description: evt.description,
+        });
+        break;
+      case 'agent_started':
+        entries.push({
+          id: `act-${evt.sequence_id ?? evt.timestamp}`,
+          type: 'agent_started',
+          timestamp: evt.timestamp,
+          agent: evt.agent,
+          task: evt.task,
+        });
+        break;
+      case 'agent_finished':
+        entries.push({
+          id: `act-${evt.sequence_id ?? evt.timestamp}`,
+          type: 'agent_finished',
+          timestamp: evt.timestamp,
+          agent: evt.agent,
+          cost: evt.cost,
+          turns: evt.turns,
+          duration: evt.duration,
+          is_error: evt.is_error,
+        });
+        break;
+      case 'delegation':
+        entries.push({
+          id: `act-${evt.sequence_id ?? evt.timestamp}`,
+          type: 'delegation',
+          timestamp: evt.timestamp,
+          agent: evt.agent,
+          from_agent: evt.from_agent,
+          to_agent: evt.to_agent,
+          task: evt.task,
+        });
+        break;
+      case 'loop_progress':
+        entries.push({
+          id: `act-${evt.sequence_id ?? evt.timestamp}`,
+          type: 'loop_progress',
+          timestamp: evt.timestamp,
+          loop: evt.loop,
+          max_loops: evt.max_loops,
+          turn: evt.turn,
+          max_turns: evt.max_turns,
+          max_budget: evt.max_budget,
+          cost: evt.cost,
+        });
+        break;
+      case 'task_error':
+        entries.push({
+          id: `act-${evt.sequence_id ?? evt.timestamp}`,
+          type: 'error',
+          timestamp: evt.timestamp,
+          agent: evt.agent,
+          content: evt.text || evt.summary,
+        });
+        break;
+      // Skip agent_update, agent_result, agent_final, project_status —
+      // these are either ephemeral or duplicated in messages table
+    }
+  }
+  return entries;
+}
+
+/** Reconstruct SdkCall entries from persisted agent_started/agent_finished events. */
+function reconstructSdkCalls(events: ActivityEvent[]): Array<{
+  agent: string; startTime: number; endTime?: number; cost?: number; status: string;
+}> {
+  const calls: Array<{
+    agent: string; startTime: number; endTime?: number; cost?: number; status: string;
+  }> = [];
+  const openCalls = new Map<string, number>(); // agent -> index in calls array
+
+  for (const evt of events) {
+    if (evt.type === 'agent_started' && evt.agent) {
+      const idx = calls.length;
+      calls.push({
+        agent: evt.agent,
+        startTime: evt.timestamp,
+        status: 'completed', // assume completed since it's historical
+      });
+      openCalls.set(evt.agent, idx);
+    } else if (evt.type === 'agent_finished' && evt.agent) {
+      const idx = openCalls.get(evt.agent);
+      if (idx !== undefined) {
+        calls[idx].endTime = evt.timestamp;
+        calls[idx].cost = evt.cost;
+        calls[idx].status = evt.is_error ? 'error' : 'completed';
+        openCalls.delete(evt.agent);
+      }
+    }
+  }
+
+  return calls;
+}
+
+/** Reconstruct last-known agent states from persisted activity events (for refresh recovery). */
+function reconstructAgentStates(events: ActivityEvent[]): Record<string, AgentStateType> {
+  const states: Record<string, AgentStateType> = {};
+
+  for (const evt of events) {
+    if (evt.type === 'agent_started' && evt.agent) {
+      states[evt.agent] = {
+        name: evt.agent,
+        state: 'working',
+        task: evt.task,
+        cost: states[evt.agent]?.cost ?? 0,
+        turns: states[evt.agent]?.turns ?? 0,
+        duration: 0,
+      };
+    } else if (evt.type === 'agent_finished' && evt.agent) {
+      states[evt.agent] = {
+        name: evt.agent,
+        state: evt.is_error ? 'error' : 'done',
+        task: states[evt.agent]?.task,
+        cost: (states[evt.agent]?.cost ?? 0) + (evt.cost ?? 0),
+        turns: (states[evt.agent]?.turns ?? 0) + (evt.turns ?? 0),
+        duration: evt.duration ?? 0,
+      };
+    } else if (evt.type === 'delegation' && evt.to_agent) {
+      // Mark delegated agent as working with its task
+      states[evt.to_agent] = {
+        ...states[evt.to_agent] ?? { name: evt.to_agent, cost: 0, turns: 0, duration: 0 },
+        name: evt.to_agent,
+        state: 'working',
+        task: evt.task,
+        delegated_from: evt.from_agent,
+      };
+    }
+  }
+
+  return states;
 }
 
 type MobileView = 'orchestra' | 'activity' | 'code' | 'changes' | 'plan' | 'trace';
@@ -60,6 +208,9 @@ export default function ProjectView() {
     timestamp: number; failed_task: string; failure_category: string;
     remediation_task: string; remediation_role: string;
   }>>([]);
+
+  // Track the latest activity timestamp loaded from DB to prevent duplicate WS events
+  const activityLoadedUpToRef = useRef<number>(0);
 
   const loadProject = useCallback(async () => {
     if (!id) return;
@@ -128,11 +279,48 @@ export default function ProjectView() {
     if (!id) return;
     setLoadError(null);
     loadProject().catch((e) => setLoadError(e.message || 'Failed to load project'));
-    getMessages(id, 100).then((data) => {
-      setActivities(messagesToActivities(data.messages));
-      setHasMoreMessages(data.total > 100);
+
+    // Load both messages AND activity events, merge into unified timeline
+    Promise.all([
+      getMessages(id, 100).catch(() => ({ messages: [] as ProjectMessage[], total: 0 })),
+      getActivity(id, 0, 500).catch(() => ({ events: [] as ActivityEvent[], latest_sequence: 0, source: 'none' })),
+    ]).then(([msgData, actData]) => {
+      // Convert messages to activity entries (user_message + agent_text)
+      const msgEntries = messagesToActivities(msgData.messages);
+      // Convert persisted activity events to entries (tool_use, agent_started, etc.)
+      const actEntries = activityEventsToEntries(actData.events);
+      // Merge both, sort by timestamp for a unified timeline
+      const merged = [...msgEntries, ...actEntries].sort((a, b) => a.timestamp - b.timestamp);
+      setActivities(merged);
+      setHasMoreMessages(msgData.total > 100);
       setMessageOffset(100);
-    }).catch(() => {});
+
+      // Track the latest loaded timestamp so WS events don't duplicate DB entries
+      const maxTs = merged.reduce((max, e) => Math.max(max, e.timestamp), 0);
+      activityLoadedUpToRef.current = maxTs;
+
+      // Reconstruct NetworkTrace SDK calls from agent_started/agent_finished events
+      const restoredCalls = reconstructSdkCalls(actData.events);
+      if (restoredCalls.length > 0) {
+        setSdkCalls(restoredCalls);
+      }
+
+      // Reconstruct agent states from activity events (done/error/working)
+      const restoredStates = reconstructAgentStates(actData.events);
+      if (Object.keys(restoredStates).length > 0) {
+        setAgentStates(prev => {
+          // Only apply restored states if we don't have live state already
+          const merged = { ...prev };
+          for (const [name, state] of Object.entries(restoredStates)) {
+            if (!merged[name] || merged[name].state === 'idle') {
+              merged[name] = state;
+            }
+          }
+          return merged;
+        });
+      }
+    });
+
     loadFiles().catch(() => {});
 
     // Check for interrupted/resumable tasks (bug fix #6: only show if not currently running)
@@ -210,10 +398,12 @@ export default function ProjectView() {
       }
 
       case 'tool_use':
-        setActivities(prev => [...prev, {
-          id: nextId(), type: 'tool_use', timestamp: event.timestamp,
-          agent: event.agent, tool_name: event.tool_name, tool_description: event.description,
-        }]);
+        if (event.timestamp > activityLoadedUpToRef.current) {
+          setActivities(prev => [...prev, {
+            id: nextId(), type: 'tool_use', timestamp: event.timestamp,
+            agent: event.agent, tool_name: event.tool_name, tool_description: event.description,
+          }]);
+        }
         if (event.agent) {
           setAgentStates(prev => ({
             ...prev,
@@ -224,10 +414,13 @@ export default function ProjectView() {
         break;
 
       case 'agent_started':
-        setActivities(prev => [...prev, {
-          id: nextId(), type: 'agent_started', timestamp: event.timestamp,
-          agent: event.agent, task: event.task,
-        }]);
+        // Only add to activity feed if this event is newer than what we loaded from DB
+        if (event.timestamp > activityLoadedUpToRef.current) {
+          setActivities(prev => [...prev, {
+            id: nextId(), type: 'agent_started', timestamp: event.timestamp,
+            agent: event.agent, task: event.task,
+          }]);
+        }
         if (event.agent) {
           setAgentStates(prev => ({
             ...prev,
@@ -246,11 +439,14 @@ export default function ProjectView() {
         break;
 
       case 'agent_finished':
-        setActivities(prev => [...prev, {
-          id: nextId(), type: 'agent_finished', timestamp: event.timestamp,
-          agent: event.agent, cost: event.cost, turns: event.turns,
-          duration: event.duration, is_error: event.is_error,
-        }]);
+        // Only add to activity feed if this event is newer than what we loaded from DB
+        if (event.timestamp > activityLoadedUpToRef.current) {
+          setActivities(prev => [...prev, {
+            id: nextId(), type: 'agent_finished', timestamp: event.timestamp,
+            agent: event.agent, cost: event.cost, turns: event.turns,
+            duration: event.duration, is_error: event.is_error,
+          }]);
+        }
         if (event.agent) {
           setAgentStates(prev => ({
             ...prev,
@@ -288,10 +484,12 @@ export default function ProjectView() {
         break;
 
       case 'delegation':
-        setActivities(prev => [...prev, {
-          id: nextId(), type: 'delegation', timestamp: event.timestamp,
-          from_agent: event.from_agent, to_agent: event.to_agent, task: event.task,
-        }]);
+        if (event.timestamp > activityLoadedUpToRef.current) {
+          setActivities(prev => [...prev, {
+            id: nextId(), type: 'delegation', timestamp: event.timestamp,
+            from_agent: event.from_agent, to_agent: event.to_agent, task: event.task,
+          }]);
+        }
         // Optimistically mark delegated agent as 'working' immediately so the UI
         // never shows STANDBY between the delegation event and agent_started.
         if (event.to_agent) {
@@ -937,8 +1135,73 @@ export default function ProjectView() {
                 <span>{tab.label}</span>
               </button>
             ))}
+            {/* Clear history — desktop */}
+            {project.status === 'idle' && activities.length > 0 && (
+              <button onClick={handleClearHistory} className="ml-auto p-1.5 rounded-lg transition-all hover:bg-[var(--bg-elevated)]"
+                style={{ color: 'var(--text-muted)' }} title="Clear history">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4"/>
+                </svg>
+              </button>
+            )}
           </div>
         </div>
+
+        {/* Live status strip — shows active agents and what they're doing */}
+        {(() => {
+          const workingAgents = subAgentStates.filter(a => a.state === 'working');
+          const doneAgents = subAgentStates.filter(a => a.state === 'done');
+          const errorAgents = subAgentStates.filter(a => a.state === 'error');
+          const hasStatus = workingAgents.length > 0 || doneAgents.length > 0 || errorAgents.length > 0;
+          if (!hasStatus) return null;
+
+          return (
+            <div className="flex-shrink-0 px-4 py-1.5 flex items-center gap-3 overflow-x-auto"
+              style={{ borderBottom: '1px solid var(--border-dim)', background: 'linear-gradient(180deg, var(--bg-panel), var(--bg-void))' }}>
+              {workingAgents.map(agent => {
+                const ac = getAgentAccent(agent.name);
+                return (
+                  <div key={agent.name} className="flex items-center gap-2 px-2.5 py-1 rounded-lg flex-shrink-0 animate-[fadeSlideIn_0.2s_ease-out]"
+                    style={{ background: ac.bg, border: `1px solid ${ac.color}25` }}>
+                    <div className="w-1.5 h-1.5 rounded-full animate-pulse flex-shrink-0" style={{ background: ac.color }} />
+                    <span className="text-[11px] font-semibold" style={{ color: ac.color }}>
+                      {AGENT_ICONS[agent.name] || '\u{1F527}'} {AGENT_LABELS[agent.name] || agent.name}
+                    </span>
+                    {agent.current_tool && (
+                      <span className="text-[10px] truncate max-w-[180px]" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)' }}>
+                        {agent.current_tool}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              {doneAgents.length > 0 && (
+                <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg flex-shrink-0"
+                  style={{ background: 'rgba(61,214,140,0.04)', border: '1px solid rgba(61,214,140,0.12)' }}>
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'var(--accent-green)' }} />
+                  <span className="text-[10px] font-medium" style={{ color: 'var(--accent-green)' }}>
+                    {doneAgents.length} done
+                  </span>
+                </div>
+              )}
+              {errorAgents.length > 0 && (
+                <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg flex-shrink-0"
+                  style={{ background: 'rgba(245,71,91,0.04)', border: '1px solid rgba(245,71,91,0.12)' }}>
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'var(--accent-red)' }} />
+                  <span className="text-[10px] font-medium" style={{ color: 'var(--accent-red)' }}>
+                    {errorAgents.length} error
+                  </span>
+                </div>
+              )}
+              {lastTicker && (
+                <span className="text-[10px] truncate ml-auto flex-shrink-0"
+                  style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', maxWidth: '250px' }}>
+                  {lastTicker}
+                </span>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Split view: tab content (left) + activity log (right) */}
         <div className="flex-1 flex min-h-0 overflow-hidden" style={{ width: '100%' }}>

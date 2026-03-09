@@ -1,3 +1,5 @@
+import { AGENT_LABELS, getAgentAccent } from '../constants';
+
 interface SdkCall {
   agent: string;
   startTime: number;
@@ -24,20 +26,6 @@ function formatDuration(start: number, end?: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
-
-const AGENT_COLORS: Record<string, string> = {
-  developer: 'var(--accent-blue)',
-  reviewer: 'var(--accent-purple)',
-  tester: 'var(--accent-amber)',
-  devops: 'var(--accent-cyan)',
-  orchestrator: 'var(--text-secondary)',
-};
-
-const STATUS_CONFIG: Record<string, { bg: string; color: string; label: string }> = {
-  running: { bg: 'var(--glow-blue)', color: 'var(--accent-blue)', label: 'Running' },
-  done: { bg: 'var(--glow-green)', color: 'var(--accent-green)', label: 'Done' },
-  error: { bg: 'var(--glow-red)', color: 'var(--accent-red)', label: 'Error' },
-};
 
 export default function NetworkTrace({ calls }: Props) {
   if (calls.length === 0) {
@@ -97,8 +85,14 @@ export default function NetworkTrace({ calls }: Props) {
           </thead>
           <tbody>
             {calls.map((call, i) => {
-              const badge = STATUS_CONFIG[call.status] || STATUS_CONFIG.running;
-              const agentColor = AGENT_COLORS[call.agent] || 'var(--text-secondary)';
+              const statusConfig: Record<string, { bg: string; color: string; label: string }> = {
+                running: { bg: 'var(--glow-blue)', color: 'var(--accent-blue)', label: 'Running' },
+                completed: { bg: 'var(--glow-green)', color: 'var(--accent-green)', label: 'Done' },
+                done: { bg: 'var(--glow-green)', color: 'var(--accent-green)', label: 'Done' },
+                error: { bg: 'var(--glow-red)', color: 'var(--accent-red)', label: 'Error' },
+              };
+              const badge = statusConfig[call.status] || statusConfig.running;
+              const agentColor = getAgentAccent(call.agent).color;
               return (
                 <tr
                   key={i}
@@ -108,7 +102,7 @@ export default function NetworkTrace({ calls }: Props) {
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <td className="px-3 py-2.5 font-medium capitalize" style={{ color: agentColor }}>
-                    {call.agent}
+                    {AGENT_LABELS[call.agent] || call.agent}
                   </td>
                   <td className="px-3 py-2.5" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                     {formatTime(call.startTime)}

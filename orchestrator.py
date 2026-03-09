@@ -1988,10 +1988,20 @@ class OrchestratorManager:
                     await self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
         finally:
-            # Clear persisted orchestrator state (task ended, regardless of outcome)
+            # Save final agent states to DB before clearing — so refresh can show
+            # the last-known state (done/error) for each agent that participated.
             try:
                 if self.session_mgr:
-                    await self.session_mgr.clear_orchestrator_state(self.project_id)
+                    await self.session_mgr.save_orchestrator_state(
+                        project_id=self.project_id,
+                        user_id=self.user_id,
+                        status="completed",
+                        current_loop=getattr(self, '_current_loop', 0),
+                        turn_count=self.turn_count,
+                        total_cost_usd=self.total_cost_usd,
+                        agent_states=self.agent_states,
+                        last_user_message=user_message[:500] if user_message else "",
+                    )
             except Exception:
                 pass
             if not self.is_paused:

@@ -1,6 +1,6 @@
 import type { AgentState } from '../types';
 import { useState } from 'react';
-import { AGENT_ICONS, AGENT_LABELS } from '../constants';
+import { AGENT_ICONS, AGENT_LABELS, AGENT_ACCENTS, getAgentAccent } from '../constants';
 
 interface Props {
   agents: AgentState[];
@@ -9,21 +9,8 @@ interface Props {
   layout?: 'grid' | 'compact' | 'bubbles';
 }
 
-// Agent-specific accent colors
-const AGENT_ACCENTS: Record<string, { color: string; glow: string; bg: string }> = {
-  developer: { color: '#638cff', glow: 'rgba(99,140,255,0.2)', bg: 'rgba(99,140,255,0.06)' },
-  reviewer:  { color: '#a78bfa', glow: 'rgba(167,139,250,0.2)', bg: 'rgba(167,139,250,0.06)' },
-  tester:    { color: '#f5a623', glow: 'rgba(245,166,35,0.2)', bg: 'rgba(245,166,35,0.06)' },
-  devops:    { color: '#22d3ee', glow: 'rgba(34,211,238,0.2)', bg: 'rgba(34,211,238,0.06)' },
-  orchestrator: { color: '#8b90a5', glow: 'rgba(139,144,165,0.15)', bg: 'rgba(139,144,165,0.05)' },
-};
-
-function getAccent(name: string) {
-  return AGENT_ACCENTS[name] || AGENT_ACCENTS.orchestrator;
-}
-
 function stateStyles(state: string, agentName: string) {
-  const accent = getAccent(agentName);
+  const accent = getAgentAccent(agentName);
   switch (state) {
     case 'working': return {
       border: `1px solid ${accent.color}40`,
@@ -88,7 +75,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                     <span className="text-[9px] font-bold tracking-[0.08em]" style={{ color: s.labelColor, fontFamily: 'var(--font-mono)' }}>{s.label}</span>
                   </div>
                   {agent.state === 'working' && agent.current_tool && (
-                    <p className="text-[10px] truncate mt-0.5 text-fade-right" style={{ color: `${getAccent(agent.name).color}99`, fontFamily: 'var(--font-mono)' }}>
+                    <p className="text-[10px] truncate mt-0.5 text-fade-right" style={{ color: `${getAgentAccent(agent.name).color}99`, fontFamily: 'var(--font-mono)' }}>
                       {agent.current_tool}
                     </p>
                   )}
@@ -111,8 +98,8 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
         {/* Solo mode banner */}
         {soloAgent && (
           <div className="flex items-center justify-between px-4 py-2 mb-2 rounded-xl animate-[fadeSlideIn_0.2s_ease-out]"
-            style={{ background: `${getAccent(soloAgent).color}10`, border: `1px solid ${getAccent(soloAgent).color}20` }}>
-            <span className="text-xs font-semibold" style={{ color: getAccent(soloAgent).color }}>
+            style={{ background: `${getAgentAccent(soloAgent).color}10`, border: `1px solid ${getAgentAccent(soloAgent).color}20` }}>
+            <span className="text-xs font-semibold" style={{ color: getAgentAccent(soloAgent).color }}>
               🔍 Solo: {AGENT_LABELS[soloAgent] || soloAgent}
             </span>
             <button onClick={() => setSoloAgent(null)} className="text-xs px-2 py-0.5 rounded-full transition-all active:scale-95"
@@ -129,7 +116,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
             const icon = AGENT_ICONS[agent.name] || '🔧';
             const label = AGENT_LABELS[agent.name] || agent.name;
             const isSelected = expandedAgent === agent.name;
-            const accent = getAccent(agent.name);
+            const accent = getAgentAccent(agent.name);
             const isSolo = soloAgent === agent.name;
 
             return (
@@ -192,7 +179,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                 {/* Activity cards for each working agent */}
                 <div className="space-y-2.5">
                   {workingAgents.map(agent => {
-                    const accent = getAccent(agent.name);
+                    const accent = getAgentAccent(agent.name);
                     return (
                       <div key={agent.name}
                         className="rounded-xl p-3.5 transition-all duration-300 animate-[slideUp_0.3s_ease-out]"
@@ -256,7 +243,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                           style={{ background: 'var(--accent-blue)', animationDelay: `${i * 200}ms` }} />
                       ))}
                     </div>
-                    <span className="text-[10px] font-semibold" style={{ color: getAccent(agent.name).color }}>
+                    <span className="text-[10px] font-semibold" style={{ color: getAgentAccent(agent.name).color }}>
                       {AGENT_LABELS[agent.name] || agent.name}
                     </span>
                   </div>
@@ -350,7 +337,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                 <button
                   onClick={(e) => { e.stopPropagation(); setSoloAgent(soloAgent === expanded.name ? null : expanded.name); }}
                   className="p-1.5 rounded-lg transition-all active:scale-90"
-                  style={{ color: soloAgent === expanded.name ? getAccent(expanded.name).color : 'var(--text-muted)', background: soloAgent === expanded.name ? getAccent(expanded.name).bg : 'transparent' }}
+                  style={{ color: soloAgent === expanded.name ? getAgentAccent(expanded.name).color : 'var(--text-muted)', background: soloAgent === expanded.name ? getAgentAccent(expanded.name).bg : 'transparent' }}
                   title="Solo mode"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -397,7 +384,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
         const isExpanded = expandedAgent === agent.name;
         const isSelected = selectedAgent === agent.name;
         const recentDelegation = isRecentDelegation(agent);
-        const accent = getAccent(agent.name);
+        const accent = getAgentAccent(agent.name);
 
         return (
           <div
@@ -476,7 +463,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
 
 /** Animated tool activity indicator */
 function ToolActivity({ tool, agentName }: { tool: string; agentName: string }) {
-  const accent = getAccent(agentName);
+  const accent = getAgentAccent(agentName);
   return (
     <div className="flex items-center gap-2.5 rounded-lg px-3 py-2 mb-2.5" style={{ background: `${accent.color}08` }}>
       <div className="flex gap-[3px] flex-shrink-0">

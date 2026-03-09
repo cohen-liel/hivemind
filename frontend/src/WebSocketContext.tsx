@@ -113,15 +113,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     const ws = new WebSocket(`${protocol}//${host}/ws`);
 
     ws.onopen = () => {
-      const isReconnect = wasConnectedRef.current;
       setConnected(true);
       wasConnectedRef.current = true;
       retryDelayRef.current = 1000; // reset backoff on success
 
-      // On reconnect, sync state so UI catches up on missed events
-      if (isReconnect) {
-        _syncStateOnReconnect(subscribersRef.current, ws);
-      }
+      // Sync state on EVERY connection (first or reconnect) so UI catches up
+      _syncStateOnReconnect(subscribersRef.current, ws);
     };
 
     ws.onmessage = (e) => {

@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import platform
+import time
 from pathlib import Path
 
 import uvicorn
@@ -153,6 +154,55 @@ async def run():
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
 
+    # Start periodic state file writer — writes a JSON snapshot of all projects
+    # so the user can always see what's happening (even without the UI)
+    state_file = Path("state_snapshot.json")
+    async def _state_writer():
+        """Write a JSON state snapshot every 10 seconds."""
+        import json as _json
+        while True:
+            try:
+                await asyncio.sleep(10)
+                snapshot = {
+                    "timestamp": time.time(),
+                    "timestamp_human": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "projects": {},
+                }
+                for user_id, project_id, manager in state.get_all_managers():
+                    proj_state = {
+                        "status": "running" if manager.is_running else ("paused" if manager.is_paused else "idle"),
+                        "turn_count": manager.turn_count,
+                        "total_cost_usd": round(manager.total_cost_usd, 4),
+                        "current_agent": manager.current_agent,
+                        "pending_messages": manager._message_queue.qsize(),
+                        "agent_states": {},
+                    }
+                    for agent_name, agent_st in manager.agent_states.items():
+                        proj_state["agent_states"][agent_name] = {
+                            "state": agent_st.get("state", "idle"),
+                            "task": agent_st.get("task", ""),
+                            "current_tool": agent_st.get("current_tool", ""),
+                        }
+                    snapshot["projects"][project_id] = proj_state
+                # Also include idle projects from DB
+                if state.session_mgr:
+                    all_projects = await state.session_mgr.list_projects()
+                    for p in all_projects:
+                        pid = p["project_id"]
+                        if pid not in snapshot["projects"]:
+                            snapshot["projects"][pid] = {
+                                "status": "idle",
+                                "name": p.get("name", pid),
+                            }
+                state_file.write_text(_json.dumps(snapshot, indent=2, default=str))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(f"State writer error: {e}")
+                await asyncio.sleep(10)
+
+    state_writer_task = asyncio.create_task(_state_writer())
+
     # Start task scheduler (with auto-restart on crash)
     from scheduler import scheduler_loop
 
@@ -188,7 +238,8 @@ async def run():
         logger.info("Graceful shutdown: stopping background tasks...")
         cleanup_task.cancel()
         scheduler_task.cancel()
-        for bg_task in (cleanup_task, scheduler_task):
+        state_writer_task.cancel()
+        for bg_task in (cleanup_task, scheduler_task, state_writer_task):
             try:
                 await bg_task
             except asyncio.CancelledError:

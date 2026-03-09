@@ -238,3 +238,39 @@ export async function resumeInterruptedTask(projectId: string): Promise<{ ok: bo
 export async function discardInterruptedTask(projectId: string): Promise<void> {
   await fetchJSON(`/projects/${projectId}/discard-interrupted`, { method: 'POST' });
 }
+
+// --- Activity Events (persisted to DB, used for state recovery on refresh) ---
+
+export interface ActivityEvent {
+  type: string;
+  project_id: string;
+  agent?: string;
+  timestamp: number;
+  sequence_id?: number;
+  // Spread from data JSON
+  text?: string;
+  summary?: string;
+  tool_name?: string;
+  description?: string;
+  task?: string;
+  cost?: number;
+  turns?: number;
+  duration?: number;
+  is_error?: boolean;
+  from_agent?: string;
+  to_agent?: string;
+  status?: string;
+  loop?: number;
+  max_loops?: number;
+  turn?: number;
+  max_turns?: number;
+  max_budget?: number;
+}
+
+export async function getActivity(
+  projectId: string,
+  since = 0,
+  limit = 500,
+): Promise<{ events: ActivityEvent[]; latest_sequence: number; source: string }> {
+  return fetchJSON(`/projects/${projectId}/activity?since=${since}&limit=${limit}`);
+}

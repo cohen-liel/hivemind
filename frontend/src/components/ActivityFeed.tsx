@@ -21,6 +21,7 @@ type Sender = 'user' | 'agent' | 'system';
 function senderOf(entry: ActivityEntry): Sender {
   if (entry.type === 'user_message') return 'user';
   if (entry.type === 'error') return 'system';
+  if (entry.type === 'delegation' || entry.type === 'loop_progress') return 'system';
   if (
     entry.type === 'agent_text' ||
     entry.type === 'tool_use' ||
@@ -437,6 +438,46 @@ function DelegationBubble({ entry }: { entry: ActivityEntry }) {
   );
 }
 
+// ---------- Loop progress bubble (system/center) ----------
+function LoopProgressBubble({ entry }: { entry: ActivityEntry }) {
+  const loop = entry.loop ?? 0;
+  const maxLoops = entry.max_loops ?? 0;
+  const turn = entry.turn ?? 0;
+  const maxTurns = entry.max_turns ?? 0;
+  const cost = entry.cost ?? 0;
+  const maxBudget = entry.max_budget ?? 0;
+
+  const turnPct = maxTurns > 0 ? Math.min((turn / maxTurns) * 100, 100) : 0;
+
+  return (
+    <div className="flex justify-center animate-[fadeSlideIn_0.2s_ease-out_both]">
+      <div className="rounded-full px-4 py-1.5 text-[11px] inline-flex items-center gap-3"
+        style={{
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-dim)',
+          color: 'var(--text-muted)',
+          fontFamily: 'var(--font-mono)',
+        }}>
+        {maxLoops > 0 && (
+          <span>Loop {loop}/{maxLoops}</span>
+        )}
+        {maxTurns > 0 && (
+          <span style={{ color: 'var(--accent-blue)' }}>Turn {turn}/{maxTurns}</span>
+        )}
+        {cost > 0 && (
+          <span style={{ color: 'var(--accent-green)' }}>${cost.toFixed(3)}</span>
+        )}
+        {turnPct > 0 && (
+          <div className="w-12 h-1 rounded-full overflow-hidden" style={{ background: 'var(--border-dim)' }}>
+            <div className="h-full rounded-full transition-all"
+              style={{ width: `${turnPct}%`, background: 'var(--accent-blue)' }} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ============================================================
 // MAIN COMPONENT
 // ============================================================
@@ -458,6 +499,7 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
         a.type === 'delegation' ||
         a.type === 'agent_text' ||
         a.type === 'agent_finished' ||
+        a.type === 'loop_progress' ||
         a.type === 'error'
       )
     : activities;
@@ -577,6 +619,9 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
               break;
             case 'delegation':
               items.push(<DelegationBubble key={entry.id} entry={entry} />);
+              break;
+            case 'loop_progress':
+              items.push(<LoopProgressBubble key={entry.id} entry={entry} />);
               break;
             case 'error':
               items.push(<ErrorBubble key={entry.id} entry={entry} />);

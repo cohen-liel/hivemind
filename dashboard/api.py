@@ -488,21 +488,31 @@ def create_app() -> FastAPI:
             db_project = await state.session_mgr.load_project(project_id)
             if not db_project:
                 return JSONResponse({"error": "Project not found"}, status_code=404)
+
+            # Load recent messages from DB so they show on refresh
+            recent_msgs = await state.session_mgr.get_recent_messages(project_id, count=20)
+            last_msg = recent_msgs[-1] if recent_msgs else None
+            # Load saved orchestrator state for cost/turn info
+            saved_orch = await state.session_mgr.load_orchestrator_state(project_id)
+            # Count total messages
+            _, total_msgs = await state.session_mgr.get_messages_paginated(project_id, limit=0, offset=0)
+
             data = {
                 "project_id": project_id,
                 "project_name": db_project["name"],
                 "project_dir": db_project.get("project_dir", ""),
-                "status": "idle",
+                "status": saved_orch.get("status", "idle") if saved_orch else "idle",
                 "is_running": False,
                 "is_paused": False,
-                "turn_count": 0,
-                "total_cost_usd": 0,
+                "turn_count": saved_orch.get("turn_count", 0) if saved_orch else 0,
+                "total_cost_usd": saved_orch.get("total_cost_usd", 0) if saved_orch else 0,
                 "agents": [],
                 "multi_agent": False,
-                "last_message": None,
+                "last_message": last_msg,
                 "user_id": db_project.get("user_id", 0),
-                "conversation_log": [],
+                "conversation_log": recent_msgs,
                 "description": db_project.get("description", ""),
+                "message_count": total_msgs,
             }
 
         return data
@@ -517,9 +527,30 @@ def create_app() -> FastAPI:
         - Shared context summary
         - Pending messages in queue
         - Pending approval
+
+        Falls back to DB-persisted orchestrator_state when no in-memory manager exists.
         """
         manager, user_id = _find_manager(project_id)
         if not manager:
+            # Fallback: try to load last known state from DB
+            if state.session_mgr:
+                saved = await state.session_mgr.load_orchestrator_state(project_id)
+                if saved and saved.get("status") in ("running", "interrupted", "completed"):
+                    return {
+                        "status": saved.get("status", "idle"),
+                        "agent_states": saved.get("agent_states", {}),
+                        "loop_progress": {
+                            "loop": saved.get("current_loop", 0),
+                            "turn": saved.get("turn_count", 0),
+                            "max_turns": 0,
+                            "cost": saved.get("total_cost_usd", 0),
+                            "max_budget": 0,
+                            "max_loops": 0,
+                        } if saved.get("current_loop") else None,
+                        "shared_context_count": len(saved.get("shared_context", [])),
+                        "pending_messages": 0,
+                        "pending_approval": None,
+                    }
             return {
                 "status": "idle",
                 "agent_states": {},
@@ -586,6 +617,60 @@ def create_app() -> FastAPI:
         })
 
         return {"ok": True}
+
+    @app.get("/api/projects/{project_id}/state-dump")
+    async def get_state_dump(project_id: str):
+        """Complete state dump — shows the full picture of what's happening.
+
+        Combines in-memory live state, DB-persisted messages, activity events,
+        and orchestrator state into a single response. Useful for debugging
+        and for the "always show state" file the user requested.
+        """
+        result: dict = {
+            "project_id": project_id,
+            "timestamp": time.time(),
+        }
+
+        # 1. Project metadata
+        if state.session_mgr:
+            db_project = await state.session_mgr.load_project(project_id)
+            result["project"] = db_project or {}
+
+        # 2. Live manager state
+        manager, _ = _find_manager(project_id)
+        if manager:
+            result["live"] = {
+                "status": "running" if manager.is_running else ("paused" if manager.is_paused else "idle"),
+                "agent_states": manager.agent_states,
+                "current_agent": manager.current_agent,
+                "turn_count": manager.turn_count,
+                "total_cost_usd": manager.total_cost_usd,
+                "pending_messages": manager._message_queue.qsize(),
+                "pending_approval": manager.pending_approval,
+            }
+        else:
+            result["live"] = {"status": "no_manager"}
+
+        # 3. Last N messages from DB
+        if state.session_mgr:
+            msgs = await state.session_mgr.get_recent_messages(project_id, count=20)
+            result["recent_messages"] = msgs
+            # Total message count
+            _, total = await state.session_mgr.get_messages_paginated(project_id, limit=0, offset=0)
+            result["total_messages"] = total
+
+        # 4. Recent activity events from DB
+        if state.session_mgr:
+            events = await state.session_mgr.get_activity_since(project_id, since_sequence=0, limit=50)
+            result["recent_activity"] = events
+            result["total_activity_events"] = await state.session_mgr.get_latest_sequence(project_id)
+
+        # 5. Saved orchestrator state (crash recovery)
+        if state.session_mgr:
+            orch_state = await state.session_mgr.load_orchestrator_state(project_id)
+            result["orchestrator_state"] = orch_state or {}
+
+        return result
 
     @app.get("/api/projects/{project_id}/agents")
     async def get_project_agents(project_id: str):
