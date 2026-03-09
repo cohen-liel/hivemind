@@ -103,7 +103,7 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 ## Test Coverage
 - tests/: conftest, test_store, test_state, test_state_full, test_config_full, test_skills_registry, test_proof
 - tests/: test_session_manager_comprehensive, test_sdk_client, test_api_endpoints (NEW)
-- **292 tests**, all passing in ~1.20s
+- **292 tests collected**, 236 passing, 51 failed, 5 errors (~2.63s) — as of 2026-03-09
 - **Coverage areas**:
   - API endpoints: 51 tests (health, projects CRUD, messages, lifecycle, settings, schedules, stats, browse/read, security)
   - SDK client: 50 tests (error classification, SDKResponse, ConnectionPool, ErrorCategory, retry logic)
@@ -115,6 +115,35 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
   - Proof/smoke: 5 tests (imports, basic operations)
 - **Security tests included**: SEC-01 (message length), SEC-03 (project path restriction), browse_dirs traversal, read_file traversal, persist_settings whitelist
 - **Gap**: No WebSocket tests, no end-to-end integration tests
+
+## Test Results — 2026-03-09
+- **236/292 passing (80.8%)** — 51 failures + 5 errors
+
+### Root Cause #1 — Schema ordering bug in session_manager.py (46 failures + 5 errors)
+**Files affected**: `test_session_manager_comprehensive.py` (46 failures), `test_store.py` (5 errors)
+**Error**: `sqlite3.OperationalError: no such table: main.activity_log`
+**Cause**: In `session_manager.py` schema (line ~126), `CREATE INDEX idx_activity_project ON activity_log(...)` appears BEFORE the `CREATE TABLE activity_log` statement (line ~149). When `executescript()` runs the schema top-to-bottom, it tries to create an index on a table that doesn't exist yet.
+**Fix**: Move the `idx_activity_project` index definition to after the `activity_log` CREATE TABLE statement (after line ~163).
+
+### Root Cause #2 — API test mock missing new methods (1 failure)
+**File**: `test_api_endpoints.py::TestGetProject::test_from_db`
+**Error**: `ValueError: [TypeError("'coroutine' object is not iterable")]`
+**Cause**: The `get_project()` endpoint now calls 3 additional session_mgr methods: `get_recent_messages()`, `load_orchestrator_state()`, `get_messages_paginated()`. The mock in `_make_mock_session_mgr()` doesn't define `get_recent_messages` or `load_orchestrator_state`, so they auto-generate as `AsyncMock` → return `MagicMock` objects → FastAPI can't serialize them.
+**Fix**: Add `smgr.get_recent_messages = AsyncMock(return_value=[])` and `smgr.load_orchestrator_state = AsyncMock(return_value=None)` to `_make_mock_session_mgr()`.
+
+### Root Cause #3 — SKILL_AGENT_MAP values changed from strings to lists (4 failures)
+**File**: `test_skills_registry.py` (4 tests)
+**Error**: `assert ['frontend_developer'] == 'developer'` and `TypeError: unhashable type: 'list'`
+**Cause**: `SKILL_AGENT_MAP` was refactored to map skills → list of roles (e.g., `'frontend-design': ['frontend_developer']`) instead of single role strings. Tests still assert old structure.
+**Fix**: Update test assertions to expect lists, update `valid_roles` set, and update `get_skills_for_agent` tests to match new role names.
+
+### Passing Test Suites (no issues)
+- ✅ test_config_full.py — 29/29
+- ✅ test_proof.py — 5/5
+- ✅ test_sdk_client.py — 50/50
+- ✅ test_state.py — 18/18
+- ✅ test_state_full.py — 38/38
+- ✅ test_api_endpoints.py — 50/51 (1 failure from Root Cause #2)
 
 ## Next Steps
 
