@@ -1054,6 +1054,8 @@ class OrchestratorManager:
         if output.structured_artifacts:
             art_names = [a.title for a in output.structured_artifacts[:3]]
             artifact_info = f" | Artifacts: {', '.join(art_names)}"
+        progress = getattr(output, '_progress', '')
+        progress_str = f" ({progress})" if progress else ""
         await self._emit_event(
             "agent_update",
             agent=task.role.value,
@@ -1062,9 +1064,10 @@ class OrchestratorManager:
             cost=output.cost_usd,
             artifacts_count=len(output.structured_artifacts),
             is_remediation=task.is_remediation,
+            progress=progress,
         )
         await self._notify(
-            f"{icon} {prefix}**{task.role.value}** [{output.status.value}] "
+            f"{icon} {prefix}**{task.role.value}** [{output.status.value}]{progress_str} "
             f"${output.cost_usd:.4f} — {output.summary[:100]}{artifact_info}"
         )
 
@@ -1133,7 +1136,24 @@ class OrchestratorManager:
         snapshot_path = Path(self.project_dir) / ".nexus" / "memory_snapshot.json"
         if snapshot_path.exists():
             try:
-                return snapshot_path.read_text(encoding="utf-8")[:8000]
+                content = snapshot_path.read_text(encoding="utf-8")
+                if len(content) <= 8000:
+                    return content
+                # Truncate-safe: parse and re-serialize with size limit
+                import json as _json
+                data = _json.loads(content)
+                # Remove large fields first to fit
+                for key in ["file_map", "key_decisions", "known_issues"]:
+                    result = _json.dumps(data)
+                    if len(result) <= 8000:
+                        break
+                    if key in data and isinstance(data[key], (dict, list)):
+                        if isinstance(data[key], dict):
+                            items = list(data[key].items())[:20]
+                            data[key] = dict(items)
+                        else:
+                            data[key] = data[key][:10]
+                return _json.dumps(data)[:8000]
             except Exception:
                 pass
         return ""

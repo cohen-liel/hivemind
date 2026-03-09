@@ -44,6 +44,7 @@ MAX_TASK_RETRIES = 2          # Direct retries per task
 MAX_REMEDIATION_DEPTH = 2     # Max chain of fix_xxx tasks before giving up
 MAX_TOTAL_REMEDIATIONS = 5    # Max total remediation tasks per graph execution
 MAX_ROUNDS = 50               # Safety limit on execution rounds
+TASK_TIMEOUT_SECONDS = 600    # 10 minute wall-clock timeout per task
 
 # Roles that write/modify files — must run sequentially when file scopes overlap
 _WRITER_ROLES = {
@@ -162,9 +163,27 @@ async def execute_graph(
                 _run_single_task(task, ctx)
                 for task in batch
             ]
-            results: list[TaskOutput] = await asyncio.gather(
-                *coros, return_exceptions=False
+            raw_results = await asyncio.gather(
+                *coros, return_exceptions=True
             )
+
+            # Convert exceptions to FAILED TaskOutputs
+            results: list[TaskOutput] = []
+            for task_item, raw in zip(batch, raw_results):
+                if isinstance(raw, BaseException):
+                    logger.error(f"[DAG] Task {task_item.id} raised exception: {raw}")
+                    error_output = TaskOutput(
+                        task_id=task_item.id,
+                        status=TaskStatus.FAILED,
+                        summary=f"Agent threw exception: {type(raw).__name__}: {str(raw)[:200]}",
+                        issues=[str(raw)[:300]],
+                        failure_details=str(raw)[:500],
+                        confidence=0.0,
+                    )
+                    error_output.failure_category = classify_failure(error_output)
+                    results.append(error_output)
+                else:
+                    results.append(raw)
 
             for task, output in zip(batch, results):
                 ctx.completed[task.id] = output
@@ -178,6 +197,10 @@ async def execute_graph(
 
                 if ctx.on_task_done:
                     try:
+                        # Add progress info to output for frontend
+                        total_tasks = len(ctx.graph.tasks)
+                        done_tasks = sum(1 for t in ctx.graph.tasks if t.id in ctx.completed)
+                        output._progress = f"{done_tasks}/{total_tasks}"
                         await ctx.on_task_done(task, output)
                     except Exception as exc:
                         logger.warning(f"[DAG] on_task_done callback failed: {exc}")
@@ -331,19 +354,36 @@ async def _run_single_task(
     except Exception as exc:
         logger.warning(f"[DAG] Task {task.id}: skill injection failed (non-fatal): {exc}")
 
-    # Resume session if available
-    session_key = f"{ctx.graph.project_id}:{task.role.value}"
+    # Resume session if available (use task_id to avoid collisions for parallel same-role tasks)
+    session_key = f"{ctx.graph.project_id}:{task.role.value}:{task.id}"
     session_id = ctx.session_ids.get(session_key)
 
     t0 = time.monotonic()
-    response = await ctx.sdk.query_with_retry(
-        prompt=prompt,
-        system_prompt=system_prompt,
-        cwd=ctx.project_dir,
-        session_id=session_id,
-        max_turns=30,
-        max_budget_usd=15.0,
-    )
+    try:
+        response = await asyncio.wait_for(
+            ctx.sdk.query_with_retry(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                cwd=ctx.project_dir,
+                session_id=session_id,
+                max_turns=30,
+                max_budget_usd=15.0,
+            ),
+            timeout=TASK_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - t0
+        logger.error(f"[DAG] Task {task.id} timed out after {elapsed:.0f}s")
+        output = TaskOutput(
+            task_id=task.id,
+            status=TaskStatus.FAILED,
+            summary=f"Task timed out after {elapsed:.0f} seconds",
+            issues=[f"Wall-clock timeout ({TASK_TIMEOUT_SECONDS}s)"],
+            failure_details=f"Task exceeded {TASK_TIMEOUT_SECONDS}s wall-clock timeout",
+            confidence=0.0,
+        )
+        output.failure_category = FailureCategory.TIMEOUT
+        return output
     elapsed = time.monotonic() - t0
 
     # Persist session ID
@@ -402,29 +442,49 @@ async def _handle_failure(
     retry_count = ctx.retries.get(task.id, 0)
 
     if retry_count < MAX_TASK_RETRIES and not output.is_terminal():
-        # Simple retry: remove from completed so it becomes eligible again
+        # Mark for retry: set status to PENDING so it re-enters the ready queue
+        # We keep the entry in completed but with PENDING status, so downstream
+        # tasks won't consume a stale failed output
         ctx.retries[task.id] = retry_count + 1
         logger.warning(
             f"[DAG] Task {task.id} failed ({category.value}), "
             f"retrying ({ctx.retries[task.id]}/{MAX_TASK_RETRIES})"
         )
+        # Remove from completed so ready_tasks picks it up again
+        # Note: downstream tasks can't have started yet because they depend on this task
+        # being COMPLETED (checked by ready_tasks), so no stale reference issue
         del ctx.completed[task.id]
         return
 
     # Retries exhausted — try remediation
     if ctx.remediation_count < MAX_TOTAL_REMEDIATIONS:
         # Check remediation depth (don't chain too many fix tasks)
-        depth = _remediation_depth(task)
+        depth = _remediation_depth(task, ctx.graph.tasks)
         if depth < MAX_REMEDIATION_DEPTH:
             await _create_remediation(task, output, ctx)
 
 
-def _remediation_depth(task: TaskInput) -> int:
-    """Count how deep in the remediation chain this task is."""
-    depth = 0
-    if task.is_remediation:
-        depth = 1
-        # Could trace further via original_task_id, but 1 level is enough
+def _remediation_depth(task: TaskInput, graph_tasks: list[TaskInput] | None = None) -> int:
+    """Count how deep in the remediation chain this task is.
+    
+    Traces back through original_task_id to find the full chain depth.
+    """
+    if not task.is_remediation:
+        return 0
+    depth = 1
+    if graph_tasks and task.original_task_id:
+        # Trace the chain
+        task_map = {t.id: t for t in graph_tasks}
+        current_id = task.original_task_id
+        seen: set[str] = {task.id}  # Prevent infinite loops
+        while current_id in task_map and current_id not in seen:
+            parent = task_map[current_id]
+            seen.add(current_id)
+            if parent.is_remediation:
+                depth += 1
+                current_id = parent.original_task_id
+            else:
+                break
     return depth
 
 

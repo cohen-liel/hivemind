@@ -169,10 +169,11 @@ class TaskOutput(BaseModel):
     cost_usd: float = Field(default=0.0, ge=0.0)
     turns_used: int = Field(default=0, ge=0)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Agent's confidence in its output (0-1)")
-    # v2: Structured artifacts
+    # v2: Structured artifacts (max 20 per task to prevent memory issues)
     structured_artifacts: list[Artifact] = Field(
         default_factory=list,
-        description="Typed artifacts produced by this task (API contracts, schemas, reports)"
+        description="Typed artifacts produced by this task (API contracts, schemas, reports)",
+        max_length=20,
     )
     # v2: Failure classification
     failure_category: FailureCategory | None = Field(
@@ -333,11 +334,21 @@ class TaskGraph(BaseModel):
         self.tasks.append(task)
 
     def validate_dag(self) -> list[str]:
-        """Check for cycles and missing dependency references. Returns error list."""
+        """Check for cycles, self-deps, duplicate IDs, and missing deps. Returns error list."""
         errors: list[str] = []
         task_ids = {t.id for t in self.tasks}
 
+        # Check for duplicate task IDs
+        seen_ids: set[str] = set()
         for task in self.tasks:
+            if task.id in seen_ids:
+                errors.append(f"Duplicate task ID: '{task.id}'")
+            seen_ids.add(task.id)
+
+        for task in self.tasks:
+            # Self-dependency check
+            if task.id in task.depends_on:
+                errors.append(f"Task '{task.id}' depends on itself")
             for dep in task.depends_on:
                 if dep not in task_ids:
                     errors.append(f"Task '{task.id}' depends on unknown task '{dep}'")
@@ -554,7 +565,11 @@ def create_remediation_task(
         failure_details=failure_details[:300],
     )
 
-    remediation_id = f"fix_{task_counter:03d}_{failed_task.id}"
+    # Ensure remediation ID stays within 64-char limit
+    prefix = f"fix_{task_counter:03d}_"
+    max_suffix_len = 64 - len(prefix)
+    suffix = failed_task.id[:max_suffix_len]
+    remediation_id = prefix + suffix
 
     return TaskInput(
         id=remediation_id,
@@ -562,7 +577,7 @@ def create_remediation_task(
         goal=goal,
         constraints=strategy.get("constraints", []) + failed_task.constraints,
         depends_on=failed_task.depends_on,  # Same deps as original
-        context_from=failed_task.context_from + [failed_task.id],  # Plus the failed output
+        context_from=list(dict.fromkeys(failed_task.context_from + [failed_task.id])),  # Deduped
         files_scope=failed_task.files_scope,
         acceptance_criteria=failed_task.acceptance_criteria + [
             f"The issue from {failed_task.id} is resolved",
@@ -697,10 +712,15 @@ def task_input_to_prompt(task: TaskInput, context_outputs: dict[str, TaskOutput]
                     if art.summary:
                         lines.append(f"    Summary: {art.summary}")
                     if art.data:
-                        # Include key data points (truncated for prompt size)
+                        # Include key data points (truncated at valid JSON boundary)
                         data_str = json.dumps(art.data, indent=2)
                         if len(data_str) > 1000:
-                            data_str = data_str[:1000] + "\n    ... (read the file for full data)"
+                            # Truncate at last complete line to avoid broken JSON
+                            truncated = data_str[:1000]
+                            last_newline = truncated.rfind("\n")
+                            if last_newline > 0:
+                                truncated = truncated[:last_newline]
+                            data_str = truncated + "\n    ... (read the file for full data)"
                         lines.append(f"    Data:\n    ```json\n    {data_str}\n    ```")
 
     # Required output format

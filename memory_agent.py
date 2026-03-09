@@ -321,6 +321,16 @@ def _heuristic_update(
     )
     snapshot.last_updated_by = outputs[-1].task_id if outputs else ""
 
+    # Generate architecture_summary if not set (heuristic mode)
+    if not snapshot.architecture_summary and graph.vision:
+        roles_used = list(dict.fromkeys(t.role.value for t in graph.tasks))
+        snapshot.architecture_summary = (
+            f"{graph.vision}. "
+            f"Agents involved: {', '.join(roles_used)}. "
+            f"Tasks: {len(graph.tasks)}, "
+            f"Successful: {sum(1 for o in outputs if o.is_successful())}/{len(outputs)}."
+        )
+
     return snapshot
 
 
@@ -387,11 +397,18 @@ def detect_inconsistencies(outputs: list[TaskOutput]) -> list[str]:
 
 def _should_use_llm(outputs: list[TaskOutput]) -> bool:
     """Decide if we need an LLM for memory update (complex tasks) or heuristic is enough."""
-    # Use LLM if there are many tasks, structured artifacts, or failures
+    # Use LLM if there are many tasks
     if len(outputs) >= 3:
         return True
-    if any(o.structured_artifacts for o in outputs):
-        return True
+    # Use LLM if there are complex artifacts (not just file_manifest)
+    complex_types = {
+        ArtifactType.API_CONTRACT, ArtifactType.SCHEMA, ArtifactType.ARCHITECTURE,
+        ArtifactType.COMPONENT_MAP, ArtifactType.SECURITY_REPORT,
+    }
+    for o in outputs:
+        if any(a.type in complex_types for a in o.structured_artifacts):
+            return True
+    # Use LLM if there are failures (need analysis)
     if sum(1 for o in outputs if not o.is_successful()) > 0:
         return True
     return False
@@ -497,13 +514,31 @@ def _write_artifact_index(nexus_dir: Path, outputs: list[TaskOutput]) -> None:
         )
 
 
+MAX_DECISION_LOG_BYTES = 500_000  # 500KB max before rotation
+
+
 def _append_decision_log(
     nexus_dir: Path,
     graph: TaskGraph,
     outputs: list[TaskOutput],
 ) -> None:
-    """Append to the decision log (append-only, never truncated)."""
+    """Append to the decision log (rotated when too large)."""
     log_path = nexus_dir / "decision_log.md"
+
+    # Rotate if log is too large
+    if log_path.exists() and log_path.stat().st_size > MAX_DECISION_LOG_BYTES:
+        archive_path = nexus_dir / "decision_log.old.md"
+        try:
+            # Keep only the last half of the file
+            content = log_path.read_text(encoding="utf-8")
+            half = len(content) // 2
+            # Find the next section boundary
+            cut_point = content.find("\n## ", half)
+            if cut_point > 0:
+                archive_path.write_text(content[:cut_point], encoding="utf-8")
+                log_path.write_text(content[cut_point:], encoding="utf-8")
+        except Exception:
+            pass  # Non-fatal: just keep appending
 
     lines = [
         f"\n## {time.strftime('%Y-%m-%d %H:%M')} — {graph.vision[:80]}",

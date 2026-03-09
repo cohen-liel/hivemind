@@ -354,6 +354,10 @@ def fallback_single_task_graph(
     This keeps the system running rather than crashing.
     """
     logger.warning("[PM] Using fallback single-task graph")
+    # Ensure goal meets minimum length (10 chars)
+    goal = user_message[:500]
+    if len(goal.strip()) < 10:
+        goal = f"Complete the following request: {user_message}"
     return TaskGraph(
         project_id=project_id,
         user_message=user_message,
@@ -363,7 +367,7 @@ def fallback_single_task_graph(
             TaskInput(
                 id="task_001",
                 role=role,
-                goal=user_message[:500],
+                goal=goal,
                 acceptance_criteria=["Task completed as requested by user"],
                 required_artifacts=[ArtifactType.FILE_MANIFEST],
             )
