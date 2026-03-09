@@ -338,7 +338,13 @@ async def _run_single_task(
     }
 
     # Build the prompt using the typed contract serialiser
-    prompt = task_input_to_prompt(task, context_outputs)
+    # v3: Pass the mission vision + epics so every agent sees the big picture
+    prompt = task_input_to_prompt(
+        task,
+        context_outputs,
+        graph_vision=ctx.graph.vision,
+        graph_epics=ctx.graph.epic_breakdown,
+    )
 
     # Get specialist system prompt
     system_prompt = ctx.specialist_prompts.get(

@@ -3129,11 +3129,12 @@ class OrchestratorManager:
         budget_rounds_left = int(budget_left / burn_rate) if burn_rate > 0 else loops_left
         effective_rounds_left = min(loops_left, budget_rounds_left)
         parts.append(
-            f"Round {loops_done}/{loops_max} | Budget ${budget_used:.2f}/${budget_cap:.0f} "
-            f"(~{effective_rounds_left} rounds left)"
+            f"<round_status>\n"
+            f"  <progress>Round {loops_done}/{loops_max} | Budget ${budget_used:.2f}/${budget_cap:.0f} (~{effective_rounds_left} rounds left)</progress>"
         )
         if effective_rounds_left < 5:
-            parts.append("⚠️ BUDGET LOW — prioritize critical work only!")
+            parts.append("  <warning>BUDGET LOW — prioritize critical work only!</warning>")
+        parts.append("</round_status>")
 
         # ── Parse each agent's output ──
         has_errors = False
@@ -3298,42 +3299,42 @@ class OrchestratorManager:
         # ═══════════════════════════════════════════════════════
 
         # Section 1: Agent summaries (compact — NOT raw output)
-        parts.append("\n═══ AGENT RESULTS (this round) ═══")
+        parts.append("\n<agent_results>")
         for agent, summary in _agent_summaries.items():
-            status_tag = "✅" if agent in successful_agents else "❌ FAILED" if agent in failed_agents else "💥 CRASHED"
-            parts.append(f"{status_tag} {agent}: {summary[:500]}")
-        parts.append("")
+            status_tag = "success" if agent in successful_agents else "failed" if agent in failed_agents else "crashed"
+            parts.append(f"  <agent name='{agent}' status='{status_tag}'>{summary[:500]}</agent>")
+        parts.append("</agent_results>")
 
         # Section 2: File changes
         if has_file_changes:
-            parts.append(f"═══ FILES CHANGED ═══\n{file_changes}\n")
+            parts.append(f"<files_changed>\n{file_changes}\n</files_changed>")
 
         # Section 3: Findings summary (if any)
         critical_findings = [f for f in _findings if f["severity"] in ("CRITICAL", "HIGH")]
         medium_findings = [f for f in _findings if f["severity"] == "MEDIUM"]
         if critical_findings or medium_findings:
-            parts.append("═══ ISSUES REQUIRING ACTION ═══")
+            parts.append("<issues_requiring_action>")
             for f in critical_findings:
-                file_hint = f" in {f['file']}" if f['file'] else ""
-                parts.append(f"  🔴 [{f['severity']}] {f['description']}{file_hint} (found by {f['agent']})")
+                file_hint = f" file='{f['file']}'" if f['file'] else ""
+                parts.append(f"  <issue severity='{f['severity']}' agent='{f['agent']}'{file_hint}>{f['description']}</issue>")
             for f in medium_findings[:5]:  # Cap medium findings
-                file_hint = f" in {f['file']}" if f['file'] else ""
-                parts.append(f"  🟡 [{f['severity']}] {f['description']}{file_hint} (found by {f['agent']})")
-            parts.append("")
+                file_hint = f" file='{f['file']}'" if f['file'] else ""
+                parts.append(f"  <issue severity='{f['severity']}' agent='{f['agent']}'{file_hint}>{f['description']}</issue>")
+            parts.append("</issues_requiring_action>")
 
         # Section 4: Test results summary
         if _test_results:
-            parts.append("═══ TEST RESULTS ═══")
+            parts.append("<test_results>")
             for tr in _test_results:
-                parts.append(f"  {tr['agent']}: {tr['passed']} passed, {tr['failed']} failed, {tr['errors']} errors")
-            parts.append("")
+                parts.append(f"  <test agent='{tr['agent']}' passed='{tr['passed']}' failed='{tr['failed']}' errors='{tr['errors']}'/>")
+            parts.append("</test_results>")
 
         # Section 5: Round history (compact)
         if completed_rounds:
-            parts.append(f"═══ HISTORY ({len(completed_rounds)} rounds) ═══")
+            parts.append(f"<round_history count='{len(completed_rounds)}'>")
             for r in completed_rounds[-5:]:  # Only show last 5 rounds
-                parts.append(f"  {r}")
-            parts.append("")
+                parts.append(f"  <round>{r}</round>")
+            parts.append("</round_history>")
 
         # ═══════════════════════════════════════════════════════
         # GENERATE READY-MADE <delegate> BLOCKS
@@ -3452,16 +3453,17 @@ class OrchestratorManager:
         # FINAL DECISION SECTION
         # ═══════════════════════════════════════════════════════
         if suggested_blocks:
-            parts.append("═══ SUGGESTED NEXT DELEGATIONS (ready to use) ═══")
+            parts.append("<suggested_delegations>")
             parts.append("Use these <delegate> blocks as-is, modify them, or add more:")
             parts.append("")
             parts.extend(suggested_blocks)
             parts.append("")
             parts.append(
-                "INSTRUCTIONS: Copy the <delegate> blocks above into your response. "
+                "<instruction>Copy the <delegate> blocks above into your response. "
                 "You may modify the task/context or add additional blocks. "
-                "Do NOT say TASK_COMPLETE — there is work to do."
+                "Do NOT say TASK_COMPLETE — there is work to do.</instruction>"
             )
+            parts.append("</suggested_delegations>")
         else:
             # No suggested blocks — either everything is done or we can't determine next steps
             all_success = not has_errors
@@ -3472,10 +3474,11 @@ class OrchestratorManager:
             if all_success and has_review and has_tests and code_changed:
                 # Genuinely looks complete
                 parts.append(
-                    "═══ DECISION ═══\n"
+                    "<decision>\n"
                     "All agents succeeded, code was reviewed and tested.\n"
                     "If the original task is fully addressed, respond with TASK_COMPLETE.\n"
-                    "If there's more work needed, create <delegate> blocks for the next phase."
+                    "If there's more work needed, create <delegate> blocks for the next phase.\n"
+                    "</decision>"
                 )
             elif all_success and code_changed:
                 # Code changed but missing review/tests
@@ -3485,9 +3488,10 @@ class OrchestratorManager:
                 if not has_tests:
                     missing.append("testing (tester)")
                 parts.append(
-                    f"═══ DECISION ═══\n"
+                    f"<decision>\n"
                     f"Code was changed but still needs: {', '.join(missing)}.\n"
-                    f"Delegate the missing steps before TASK_COMPLETE."
+                    f"Delegate the missing steps before TASK_COMPLETE.\n"
+                    f"</decision>"
                 )
                 # Generate blocks for missing steps
                 if not has_review:
@@ -3506,16 +3510,18 @@ class OrchestratorManager:
                     )
             elif not code_changed and all_success:
                 parts.append(
-                    "═══ DECISION ═══\n"
+                    "<decision>\n"
                     "No code changes detected. Either:\n"
                     "A) The task doesn't require code changes → TASK_COMPLETE if done\n"
-                    "B) Agents didn't do the work → delegate with more specific instructions"
+                    "B) Agents didn't do the work → delegate with more specific instructions\n"
+                    "</decision>"
                 )
             else:
                 parts.append(
-                    "═══ DECISION ═══\n"
+                    "<decision>\n"
                     "Review the results above and decide what to do next.\n"
-                    "Create <delegate> blocks for any remaining work."
+                    "Create <delegate> blocks for any remaining work.\n"
+                    "</decision>"
                 )
 
         # ── Inject stuck escalation hint if detected ──

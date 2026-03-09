@@ -658,78 +658,123 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
 # Prompt Serialisation — Artifact-aware context passing
 # ---------------------------------------------------------------------------
 
-def task_input_to_prompt(task: TaskInput, context_outputs: dict[str, TaskOutput]) -> str:
-    """Serialise a TaskInput into a human-readable prompt section for the agent.
+def _truncate_json_safely(data_str: str, max_len: int) -> str:
+    """Truncate a JSON string at a safe boundary (complete line) to avoid broken JSON."""
+    if len(data_str) <= max_len:
+        return data_str
+    truncated = data_str[:max_len]
+    # Find last complete JSON line (ends with , or { or [)
+    for i in range(len(truncated) - 1, 0, -1):
+        if truncated[i] in (',', '{', '[', '\n'):
+            truncated = truncated[:i + 1]
+            break
+    return truncated + '\n    ... (truncated — read the file for full data)'
 
-    v2: Now includes structured artifacts from upstream tasks, not just summaries.
+
+def task_input_to_prompt(
+    task: TaskInput,
+    context_outputs: dict[str, TaskOutput],
+    graph_vision: str = "",
+    graph_epics: list[str] | None = None,
+) -> str:
+    """Serialise a TaskInput into a structured XML prompt for the agent.
+
+    v3: XML-wrapped context, safe JSON truncation, big-picture injection.
+    Every agent sees the mission vision and where their task fits in the plan.
     """
-    lines = [
-        f"## Your Task (ID: {task.id})",
-        f"**Role:** {task.role.value}",
-        f"**Goal:** {task.goal}",
-    ]
+    parts: list[str] = []
+
+    # ── Big Picture: every agent sees the original mission ──
+    if graph_vision or graph_epics:
+        parts.append("<mission>")
+        if graph_vision:
+            parts.append(f"  <vision>{graph_vision}</vision>")
+        if graph_epics:
+            parts.append("  <epics>")
+            for i, epic in enumerate(graph_epics, 1):
+                parts.append(f"    <epic id='{i}'>{epic}</epic>")
+            parts.append("  </epics>")
+        parts.append("</mission>\n")
+
+    # ── Task Assignment ──
+    parts.append("<task_assignment>")
+    parts.append(f"  <task_id>{task.id}</task_id>")
+    parts.append(f"  <role>{task.role.value}</role>")
+    parts.append(f"  <goal>{task.goal}</goal>")
 
     if task.is_remediation:
-        lines.append(f"\n**⚠️ REMEDIATION TASK** — Fixing failure from: {task.original_task_id}")
-        lines.append(f"**Failure context:** {task.failure_context}")
+        parts.append(f"  <remediation original_task='{task.original_task_id}'>")
+        parts.append(f"    {task.failure_context}")
+        parts.append("  </remediation>")
 
     if task.acceptance_criteria:
-        lines.append("\n**Acceptance Criteria:**")
+        parts.append("  <acceptance_criteria>")
         for c in task.acceptance_criteria:
-            lines.append(f"  - {c}")
+            parts.append(f"    <criterion>{c}</criterion>")
+        parts.append("  </acceptance_criteria>")
+
     if task.constraints:
-        lines.append("\n**Constraints:**")
+        parts.append("  <constraints>")
         for c in task.constraints:
-            lines.append(f"  - {c}")
+            parts.append(f"    <constraint>{c}</constraint>")
+        parts.append("  </constraints>")
+
     if task.files_scope:
-        lines.append(f"\n**Files in scope:** {', '.join(task.files_scope)}")
+        parts.append(f"  <files_scope>{', '.join(task.files_scope)}</files_scope>")
 
     if task.required_artifacts:
-        lines.append("\n**REQUIRED Artifacts (you MUST produce these):**")
+        parts.append("  <required_artifacts>")
         for art_type in task.required_artifacts:
-            lines.append(f"  - {art_type.value}")
+            parts.append(f"    <artifact_type>{art_type.value}</artifact_type>")
+        parts.append("  </required_artifacts>")
 
     if task.input_artifacts:
-        lines.append("\n**Input Artifacts (read these files before starting):**")
+        parts.append("  <input_artifacts>")
         for path in task.input_artifacts:
-            lines.append(f"  - `cat {path}`")
+            parts.append(f"    <file>cat {path}</file>")
+        parts.append("  </input_artifacts>")
 
-    # Context from upstream tasks — now with structured artifacts
+    parts.append("</task_assignment>\n")
+
+    # ── Context from upstream tasks — XML-wrapped with safe truncation ──
     if context_outputs:
-        lines.append("\n---\n## Context from Previous Tasks")
+        parts.append("<upstream_context>")
         for tid, output in context_outputs.items():
-            lines.append(f"\n### [{tid}] — {output.status.value.upper()}")
-            lines.append(f"{output.summary}")
+            parts.append(f"  <task_result id='{tid}' status='{output.status.value}'>")
+            parts.append(f"    <summary>{output.summary}</summary>")
             if output.artifacts:
-                lines.append(f"Files changed: {', '.join(output.artifacts)}")
+                parts.append(f"    <files_changed>{', '.join(output.artifacts[:15])}</files_changed>")
             if output.issues:
-                lines.append("Issues: " + "; ".join(output.issues))
+                parts.append("    <issues>")
+                for issue in output.issues[:5]:
+                    parts.append(f"      <issue>{issue}</issue>")
+                parts.append("    </issues>")
 
-            # v2: Include structured artifact details
+            # Structured artifacts — XML-wrapped with safe truncation
             if output.structured_artifacts:
-                lines.append("\n**Structured Artifacts from this task:**")
+                parts.append("    <artifacts>")
                 for art in output.structured_artifacts:
-                    lines.append(f"  - **{art.type.value}**: {art.title}")
+                    parts.append(f"      <artifact type='{art.type.value}'>")
+                    parts.append(f"        <title>{art.title}</title>")
                     if art.file_path:
-                        lines.append(f"    File: `{art.file_path}` — read this with `cat {art.file_path}`")
+                        parts.append(f"        <file_path>{art.file_path}</file_path>")
                     if art.summary:
-                        lines.append(f"    Summary: {art.summary}")
+                        parts.append(f"        <summary>{art.summary}</summary>")
                     if art.data:
-                        # Include key data points (truncated at valid JSON boundary)
                         data_str = json.dumps(art.data, indent=2)
-                        if len(data_str) > 1000:
-                            # Truncate at last complete line to avoid broken JSON
-                            truncated = data_str[:1000]
-                            last_newline = truncated.rfind("\n")
-                            if last_newline > 0:
-                                truncated = truncated[:last_newline]
-                            data_str = truncated + "\n    ... (read the file for full data)"
-                        lines.append(f"    Data:\n    ```json\n    {data_str}\n    ```")
+                        data_str = _truncate_json_safely(data_str, 1200)
+                        parts.append(f"        <data>\n{data_str}\n        </data>")
+                    parts.append("      </artifact>")
+                parts.append("    </artifacts>")
 
-    # Required output format
-    lines.append(
-        "\n---\n## REQUIRED: End your response with ONLY this JSON object "
-        "(no text after it):\n"
+            parts.append("  </task_result>")
+        parts.append("</upstream_context>\n")
+
+    # ── Required output format (kept as-is for JSON parsing compatibility) ──
+    parts.append(
+        "---\n"
+        "REQUIRED: After completing your work, think step-by-step in <agent_thinking> tags, "
+        "then end your response with ONLY this JSON block (no text after it):\n\n"
         '```json\n'
         '{\n'
         f'  "task_id": "{task.id}",\n'
@@ -754,7 +799,7 @@ def task_input_to_prompt(task: TaskInput, context_outputs: dict[str, TaskOutput]
         '}\n'
         '```'
     )
-    return "\n".join(lines)
+    return "\n".join(parts)
 
 
 def task_graph_schema() -> dict[str, Any]:

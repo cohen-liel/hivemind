@@ -715,6 +715,89 @@ _TYPED_CONTRACT_FOOTER = (
     "- file_manifest: { files: {'path/to/file.py': 'description'} } (REQUIRED for all agents that modify files)\n"
     "</artifact_types>\n\n"
 
+    "<examples>\n"
+    "<example name='backend_developer_output'>\n"
+    "A backend developer was asked to create a user authentication endpoint.\n"
+    "After completing the work, they produced:\n\n"
+    "```json\n"
+    "{\n"
+    '  "task_id": "task_003",\n'
+    '  "status": "completed",\n'
+    '  "summary": "Created JWT-based auth endpoints: POST /api/auth/login and POST /api/auth/register. Added Pydantic models for request/response, bcrypt password hashing, and token generation with 24h expiry.",\n'
+    '  "artifacts": ["src/api/auth.py", "src/models/user.py", "src/utils/jwt_helper.py"],\n'
+    '  "issues": ["No rate limiting on login endpoint yet — recommend adding in next round"],\n'
+    '  "blockers": [],\n'
+    '  "followups": ["Add rate limiting middleware", "Write integration tests for auth flow"],\n'
+    '  "confidence": 0.92,\n'
+    '  "structured_artifacts": [\n'
+    '    {\n'
+    '      "type": "api_contract",\n'
+    '      "title": "Authentication API Endpoints",\n'
+    '      "file_path": "src/api/auth.py",\n'
+    '      "data": {\n'
+    '        "endpoints": [\n'
+    '          {"method": "POST", "path": "/api/auth/register", "description": "Register new user", "request_body": "{email, password, name}", "response_body": "{user_id, token}"},\n'
+    '          {"method": "POST", "path": "/api/auth/login", "description": "Login existing user", "request_body": "{email, password}", "response_body": "{token, expires_at}"}\n'
+    '        ]\n'
+    '      },\n'
+    '      "summary": "Two auth endpoints with JWT tokens"\n'
+    '    },\n'
+    '    {\n'
+    '      "type": "file_manifest",\n'
+    '      "title": "Files Modified",\n'
+    '      "file_path": ".nexus/artifacts/task_003_manifest.json",\n'
+    '      "data": {"files": {"src/api/auth.py": "Auth route handlers", "src/models/user.py": "User Pydantic model", "src/utils/jwt_helper.py": "JWT token creation and validation"}},\n'
+    '      "summary": "3 files created for authentication feature"\n'
+    '    }\n'
+    '  ],\n'
+    '  "failure_category": null,\n'
+    '  "failure_details": ""\n'
+    "}\n"
+    "```\n"
+    "</example>\n\n"
+
+    "<example name='reviewer_output'>\n"
+    "A reviewer was asked to review the authentication code. They found issues:\n\n"
+    "```json\n"
+    "{\n"
+    '  "task_id": "task_004",\n'
+    '  "status": "completed",\n'
+    '  "summary": "Reviewed auth module. Found 1 CRITICAL issue (password not hashed in edge case), 2 HIGH issues (no input length validation, missing error logging). Code structure is clean.",\n'
+    '  "artifacts": [".nexus/REVIEW_round1.md"],\n'
+    '  "issues": ["CRITICAL: src/api/auth.py:45 — password stored in plain text when bcrypt import fails silently", "HIGH: src/models/user.py:12 — no max_length on email field, allows DoS via oversized input", "HIGH: src/api/auth.py:78 — bare except catches all errors including SystemExit"],\n'
+    '  "blockers": [],\n'
+    '  "followups": ["Developer must fix CRITICAL password hashing issue before merge"],\n'
+    '  "confidence": 0.95,\n'
+    '  "structured_artifacts": [\n'
+    '    {\n'
+    '      "type": "review_report",\n'
+    '      "title": "Auth Module Code Review",\n'
+    '      "file_path": ".nexus/REVIEW_round1.md",\n'
+    '      "data": {\n'
+    '        "issues": [\n'
+    '          {"severity": "CRITICAL", "file": "src/api/auth.py", "line": 45, "problem": "Password stored plain text when bcrypt fails", "fix": "Add explicit bcrypt import check at module level, raise ImportError"},\n'
+    '          {"severity": "HIGH", "file": "src/models/user.py", "line": 12, "problem": "No max_length on email", "fix": "Add max_length=254 to email field"},\n'
+    '          {"severity": "HIGH", "file": "src/api/auth.py", "line": 78, "problem": "Bare except clause", "fix": "Catch specific exceptions: ValueError, jwt.InvalidTokenError"}\n'
+    '        ],\n'
+    '        "approved": false\n'
+    '      },\n'
+    '      "summary": "1 critical, 2 high issues found — not approved for merge"\n'
+    '    },\n'
+    '    {\n'
+    '      "type": "file_manifest",\n'
+    '      "title": "Files Modified",\n'
+    '      "file_path": ".nexus/artifacts/task_004_manifest.json",\n'
+    '      "data": {"files": {".nexus/REVIEW_round1.md": "Code review findings"}},\n'
+    '      "summary": "Review report saved"\n'
+    '    }\n'
+    '  ],\n'
+    '  "failure_category": null,\n'
+    '  "failure_details": ""\n'
+    "}\n"
+    "```\n"
+    "</example>\n"
+    "</examples>\n\n"
+
     "<constraints>\n"
     "- Do NOT run git commit, git push, or git add — the DAG Executor handles all commits\n"
     "- Set status to 'failed' if you could not complete the goal\n"

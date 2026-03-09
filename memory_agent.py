@@ -39,36 +39,44 @@ logger = logging.getLogger(__name__)
 # Memory Agent System Prompt
 # ---------------------------------------------------------------------------
 
-MEMORY_SYSTEM_PROMPT = """\
-You are the Memory Agent — the project's long-term memory and knowledge manager.
+MEMORY_SYSTEM_PROMPT = (
+    "<role>\n"
+    "You are the Memory Agent — the project's long-term memory and knowledge manager.\n"
+    "You read all task outputs and produce a structured JSON MemorySnapshot.\n"
+    "You do NOT write code. You only read, analyse, and summarise.\n"
+    "</role>\n\n"
 
-Your job is to read all task outputs and produce a structured JSON MemorySnapshot.
-You do NOT write code. You only read, analyse, and summarise.
+    "<input>\n"
+    "You receive:\n"
+    "  - The current project manifest (if it exists)\n"
+    "  - All task outputs from the latest execution round\n"
+    "  - Structured artifacts produced by agents\n"
+    "</input>\n\n"
 
-## What you receive:
-- The current project manifest (if it exists)
-- All task outputs from the latest execution round
-- Structured artifacts produced by agents
+    "<output_schema>\n"
+    "Produce a JSON MemorySnapshot with these fields:\n"
+    "  - architecture_summary: Current architecture in 3-5 sentences\n"
+    "  - tech_stack: Technology choices, e.g. {'frontend': 'React+TS', 'backend': 'FastAPI'}\n"
+    "  - key_decisions: Important architectural decisions (APPEND to existing, never replace)\n"
+    "  - known_issues: Unresolved issues or tech debt\n"
+    "  - api_surface: Current API endpoints [{method, path, description}]\n"
+    "  - db_tables: Current database tables\n"
+    "  - file_map: Key files and their purpose, e.g. {'src/api/auth.py': 'JWT authentication'}\n"
+    "  - last_updated_by: The task ID that triggered this update\n"
+    "</output_schema>\n\n"
 
-## What you produce:
-A JSON MemorySnapshot with these fields:
-- architecture_summary: Current architecture in 3-5 sentences
-- tech_stack: Technology choices (e.g. {"frontend": "React+TS", "backend": "FastAPI"})
-- key_decisions: Important architectural decisions (append to existing, don't replace)
-- known_issues: Unresolved issues or tech debt
-- api_surface: Current API endpoints [{method, path, description}]
-- db_tables: Current database tables
-- file_map: Key files and their purpose (e.g. {"src/api/auth.py": "JWT authentication"})
-- last_updated_by: The task ID that triggered this update
+    "<rules>\n"
+    "1. NEVER delete existing key_decisions — only append new ones\n"
+    "2. Merge new information with existing — do not overwrite unless correcting an error\n"
+    "3. Be concise but complete — this is the PM's primary context for future tasks\n"
+    "4. If agents produced conflicting artifacts, note it in known_issues\n"
+    "5. Track which agent produced which artifact — this helps debug 'telephone game' issues\n"
+    "</rules>\n\n"
 
-## Rules:
-1. NEVER delete existing key_decisions — only append new ones
-2. Merge new information with existing — don't overwrite unless correcting an error
-3. Be concise but complete — this is the PM's primary context for future tasks
-4. If agents produced conflicting artifacts, note it in known_issues
-
-OUTPUT ONLY THE JSON. No markdown, no explanation. Start with { and end with }.
-"""
+    "<output_format>\n"
+    "OUTPUT ONLY THE JSON. No markdown, no explanation. Start with { and end with }.\n"
+    "</output_format>"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -186,31 +194,45 @@ def _build_memory_prompt(
     outputs: list[TaskOutput],
     existing: MemorySnapshot | None,
 ) -> str:
-    """Build the prompt for the Memory Agent."""
-    parts = [f"## Project: {project_id}", f"## Vision: {graph.vision}"]
+    """Build the prompt for the Memory Agent using XML structure."""
+    parts = [
+        f"<project_id>{project_id}</project_id>",
+        f"<vision>{graph.vision}</vision>",
+    ]
 
     if existing:
-        parts.append(f"\n## Existing Memory (merge with this, don't replace):\n```json\n{existing.model_dump_json(indent=2)}\n```")
+        parts.append(
+            f"<existing_memory>\n"
+            f"Merge with this — do NOT replace, only append and update.\n"
+            f"{existing.model_dump_json(indent=2)}\n"
+            f"</existing_memory>"
+        )
 
-    parts.append("\n## Task Outputs from Latest Execution:")
+    parts.append("<task_outputs>")
     for output in outputs:
         task = graph.get_task(output.task_id)
         role = task.role.value if task else "unknown"
         parts.append(
-            f"\n### [{output.task_id}] ({role}) — {output.status.value}\n"
-            f"{output.summary}\n"
-            f"Files: {', '.join(output.artifacts[:10]) or 'none'}\n"
-            f"Issues: {'; '.join(output.issues[:5]) or 'none'}"
+            f"  <task_result id='{output.task_id}' role='{role}' status='{output.status.value}'>\n"
+            f"    <summary>{output.summary}</summary>\n"
+            f"    <files>{', '.join(output.artifacts[:10]) or 'none'}</files>\n"
+            f"    <issues>{'; '.join(output.issues[:5]) or 'none'}</issues>"
         )
         if output.structured_artifacts:
+            parts.append("    <artifacts>")
             for art in output.structured_artifacts:
                 parts.append(
-                    f"  Artifact: {art.type.value} — {art.title}\n"
-                    f"  {art.summary}"
+                    f"      <artifact type='{art.type.value}'>\n"
+                    f"        <title>{art.title}</title>\n"
+                    f"        <summary>{art.summary}</summary>"
                 )
                 if art.data:
                     data_str = json.dumps(art.data, indent=2)[:800]
-                    parts.append(f"  Data: {data_str}")
+                    parts.append(f"        <data>{data_str}</data>")
+                parts.append("      </artifact>")
+            parts.append("    </artifacts>")
+        parts.append("  </task_result>")
+    parts.append("</task_outputs>")
 
     parts.append("\nProduce the MemorySnapshot JSON now.")
     return "\n".join(parts)
