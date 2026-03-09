@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -188,8 +189,194 @@ class _ConnectionPool:
         self._semaphore.release()
 
 
+# ============================================================
+# Circuit Breaker
+# ============================================================
+
+class CircuitOpenError(Exception):
+    """Raised when the circuit breaker is open and rejecting requests.
+
+    Callers should catch this to avoid wasting resources on a
+    known-failing SDK backend.
+    """
+
+    def __init__(self, open_since: float, failures: int, recovery_in: float) -> None:
+        self.open_since: float = open_since
+        self.failures: int = failures
+        self.recovery_in: float = recovery_in
+        super().__init__(
+            f"Circuit breaker OPEN (since {open_since:.1f}s ago, "
+            f"{failures} consecutive failures, "
+            f"recovery probe in {recovery_in:.1f}s)"
+        )
+
+
+class CircuitState(str, Enum):
+    """States of the circuit breaker."""
+    CLOSED    = "closed"       # Normal — all requests pass through
+    OPEN      = "open"         # Tripped — all requests rejected
+    HALF_OPEN = "half_open"    # Probing — one request allowed to test recovery
+
+
+class CircuitBreaker:
+    """Async-safe, thread-safe circuit breaker for SDK calls.
+
+    Opens after ``failure_threshold`` consecutive failures within
+    ``failure_window_seconds``.  Once open, all calls are rejected with
+    ``CircuitOpenError`` until ``recovery_timeout_seconds`` elapses.
+    After that, the circuit enters *half-open* and allows one probe
+    request.  A successful probe closes the circuit; a failed probe
+    re-opens it.
+
+    Thread safety is achieved via a ``threading.Lock`` guarding state
+    mutations (safe because the critical section is tiny — no I/O).
+    The asyncio-facing methods use ``asyncio.to_thread`` for the lock
+    acquisition so the event loop is never blocked.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        failure_window_seconds: float = 60.0,
+        recovery_timeout_seconds: float = 30.0,
+    ) -> None:
+        self._failure_threshold: int = failure_threshold
+        self._failure_window: float = failure_window_seconds
+        self._recovery_timeout: float = recovery_timeout_seconds
+
+        self._state: CircuitState = CircuitState.CLOSED
+        self._failure_timestamps: list[float] = []
+        self._last_failure_time: float = 0.0
+        self._lock: threading.Lock = threading.Lock()
+        self._half_open_in_flight: bool = False
+
+    # ---- Public properties ----
+
+    @property
+    def state(self) -> CircuitState:
+        """Current circuit state (read without lock — safe for enum reads)."""
+        return self._state
+
+    @property
+    def stats(self) -> dict[str, object]:
+        """Snapshot of circuit breaker statistics."""
+        with self._lock:
+            now = time.monotonic()
+            cutoff = now - self._failure_window
+            recent = [t for t in self._failure_timestamps if t > cutoff]
+            return {
+                "state": self._state.value,
+                "recent_failures": len(recent),
+                "failure_threshold": self._failure_threshold,
+                "last_failure_ago": (
+                    round(now - self._last_failure_time, 1)
+                    if self._last_failure_time > 0
+                    else None
+                ),
+            }
+
+    # ---- Core operations (sync internals, async wrappers) ----
+
+    def _record_success_sync(self) -> None:
+        """Record a successful call — resets the circuit to CLOSED."""
+        with self._lock:
+            self._failure_timestamps.clear()
+            self._state = CircuitState.CLOSED
+            self._half_open_in_flight = False
+
+    def _record_failure_sync(self) -> None:
+        """Record a failed call — may trip the circuit to OPEN."""
+        with self._lock:
+            now = time.monotonic()
+            self._failure_timestamps.append(now)
+            self._last_failure_time = now
+
+            # Prune timestamps outside the window
+            cutoff = now - self._failure_window
+            self._failure_timestamps = [
+                t for t in self._failure_timestamps if t > cutoff
+            ]
+
+            if len(self._failure_timestamps) >= self._failure_threshold:
+                self._state = CircuitState.OPEN
+                self._half_open_in_flight = False
+                logger.warning(
+                    f"[CircuitBreaker] OPENED: {len(self._failure_timestamps)} "
+                    f"failures in {self._failure_window}s window"
+                )
+
+    def _check_can_execute_sync(self) -> bool:
+        """Check if a request may proceed.  Returns True if allowed.
+
+        Side effects:
+        - Transitions OPEN → HALF_OPEN after recovery timeout.
+        - Sets ``_half_open_in_flight`` to prevent multiple probes.
+        """
+        with self._lock:
+            if self._state == CircuitState.CLOSED:
+                return True
+
+            if self._state == CircuitState.OPEN:
+                elapsed = time.monotonic() - self._last_failure_time
+                if elapsed >= self._recovery_timeout:
+                    self._state = CircuitState.HALF_OPEN
+                    self._half_open_in_flight = True
+                    logger.info(
+                        "[CircuitBreaker] HALF-OPEN: allowing one probe request"
+                    )
+                    return True
+                return False
+
+            # HALF_OPEN — allow only one concurrent probe
+            if self._state == CircuitState.HALF_OPEN:
+                if not self._half_open_in_flight:
+                    self._half_open_in_flight = True
+                    return True
+                return False
+
+            return False  # pragma: no cover
+
+    # ---- Async wrappers (safe for the event loop) ----
+
+    async def record_success(self) -> None:
+        """Async wrapper — record a successful call."""
+        await asyncio.to_thread(self._record_success_sync)
+
+    async def record_failure(self) -> None:
+        """Async wrapper — record a failed call."""
+        await asyncio.to_thread(self._record_failure_sync)
+
+    async def check_can_execute(self) -> bool:
+        """Async wrapper — check if a request may proceed."""
+        return await asyncio.to_thread(self._check_can_execute_sync)
+
+    async def raise_if_open(self) -> None:
+        """Raise ``CircuitOpenError`` if the circuit is currently open.
+
+        Call this before sending a request to fail fast.
+        """
+        can = await self.check_can_execute()
+        if not can:
+            with self._lock:
+                now = time.monotonic()
+                elapsed = now - self._last_failure_time
+                recovery_in = max(0.0, self._recovery_timeout - elapsed)
+            raise CircuitOpenError(
+                open_since=elapsed,
+                failures=len(self._failure_timestamps),
+                recovery_in=recovery_in,
+            )
+
+
 # Module-level pool (shared across all ClaudeSDKManager instances)
 _pool = _ConnectionPool(max_concurrent=5)
+
+# Module-level circuit breaker (shared across all ClaudeSDKManager instances)
+_circuit_breaker = CircuitBreaker(
+    failure_threshold=3,
+    failure_window_seconds=60.0,
+    recovery_timeout_seconds=30.0,
+)
 
 
 # ============================================================
@@ -203,6 +390,7 @@ class ClaudeSDKManager:
 
     def __init__(self):
         self._pool = _pool  # Share the module-level pool
+        self._circuit_breaker = _circuit_breaker  # Share the module-level circuit breaker
         # Keep strong references to generators until they're explicitly closed.
         # This prevents Python's GC from collecting them in a random asyncio task,
         # which triggers the anyio cancel-scope RuntimeError.
@@ -210,8 +398,10 @@ class ClaudeSDKManager:
 
     @property
     def pool_stats(self) -> dict:
-        """Return current connection pool statistics."""
-        return self._pool.stats
+        """Return current connection pool and circuit breaker statistics."""
+        stats = self._pool.stats
+        stats["circuit_breaker"] = self._circuit_breaker.stats
+        return stats
 
     async def query(
         self,
@@ -630,6 +820,11 @@ class ClaudeSDKManager:
     ) -> SDKResponse:
         """Query with automatic retry based on error classification.
 
+        Includes circuit breaker protection: if the SDK has failed
+        ``failure_threshold`` consecutive times within the failure window,
+        all calls are rejected with ``CircuitOpenError`` until the recovery
+        timeout elapses.
+
         Retry strategy (exponential backoff):
         - TRANSIENT: retry with 1s, 2s, 4s backoff
         - RATE_LIMIT: retry with 5s, 15s, 30s backoff
@@ -637,18 +832,30 @@ class ClaudeSDKManager:
         - AUTH/BUDGET/PERMANENT: don't retry at all
         - UNKNOWN: retry once with 2s backoff
         """
+        # --- Circuit breaker gate ---
+        await self._circuit_breaker.raise_if_open()
+
         last_response: SDKResponse | None = None
         current_session = session_id
         total_cost = 0.0
+        current_prompt = prompt
 
         for attempt in range(1, max_retries + 2):  # +2 because range is exclusive and attempt 1 is the initial try
             if attempt > max_retries + 1:
                 break
 
             is_retry = attempt > 1
-            current_prompt = prompt
 
             if is_retry:
+                # Re-check circuit breaker before each retry
+                try:
+                    await self._circuit_breaker.raise_if_open()
+                except CircuitOpenError:
+                    logger.warning(
+                        f"Circuit breaker opened during retries (attempt {attempt})"
+                    )
+                    raise
+
                 logger.info(
                     f"SDK query retry {attempt - 1}/{max_retries} "
                     f"(previous error: {last_response.error_category.value if last_response else 'none'})"
@@ -674,7 +881,12 @@ class ClaudeSDKManager:
             if not response.is_error:
                 response.retry_count = attempt - 1
                 response.cost_usd = total_cost  # Include cost from failed attempts
+                # Record success with circuit breaker
+                await self._circuit_breaker.record_success()
                 return response
+
+            # Record failure with circuit breaker
+            await self._circuit_breaker.record_failure()
 
             last_response = response
             category = response.error_category
@@ -692,6 +904,7 @@ class ClaudeSDKManager:
                 break
 
             # Compute backoff based on error category
+            current_prompt = prompt  # Reset to original prompt for next retry
             if category == ErrorCategory.RATE_LIMIT:
                 # Aggressive backoff for rate limits: 5s, 15s, 30s
                 backoff = min(5 * (3 ** (attempt - 1)), 30)

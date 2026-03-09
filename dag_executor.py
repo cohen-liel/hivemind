@@ -23,6 +23,7 @@ import state
 from contracts import (
     AgentRole,
     Artifact,
+    ArtifactContractError,
     ArtifactType,
     FailureCategory,
     TaskGraph,
@@ -32,9 +33,12 @@ from contracts import (
     classify_failure,
     create_remediation_task,
     extract_task_output,
+    get_retry_strategy,
     task_input_to_prompt,
+    validate_artifact_contracts,
 )
 from git_discipline import executor_commit
+from sdk_client import CircuitOpenError
 from skills_registry import build_skill_prompt, select_skills_for_task
 
 logger = logging.getLogger(__name__)
@@ -111,6 +115,19 @@ async def execute_graph(
     sdk = sdk_client or state.sdk_client
     if sdk is None:
         raise RuntimeError("SDK client not initialized")
+
+    # --- Pre-execution: validate artifact contracts ---
+    contract_mismatches = validate_artifact_contracts(graph)
+    if contract_mismatches:
+        logger.warning(
+            f"[DAG] Artifact contract validation found {len(contract_mismatches)} issue(s):"
+        )
+        for m in contract_mismatches:
+            logger.warning(f"[DAG]   - {m}")
+        # Raise if any explicit (non-inferred) mismatches exist
+        explicit = [m for m in contract_mismatches if "inferred check" not in m]
+        if explicit:
+            raise ArtifactContractError(explicit)
 
     ctx = _ExecutionContext(
         graph=graph,
@@ -390,6 +407,18 @@ async def _run_single_task(
         )
         output.failure_category = FailureCategory.TIMEOUT
         return output
+    except CircuitOpenError as exc:
+        logger.error(f"[DAG] Task {task.id} rejected by circuit breaker: {exc}")
+        output = TaskOutput(
+            task_id=task.id,
+            status=TaskStatus.FAILED,
+            summary=f"Circuit breaker open — SDK backend is failing ({exc.failures} consecutive failures)",
+            issues=["Circuit breaker is open — SDK backend is unresponsive"],
+            failure_details=str(exc),
+            confidence=0.0,
+        )
+        output.failure_category = FailureCategory.EXTERNAL
+        return output
     elapsed = time.monotonic() - t0
 
     # Persist session ID
@@ -434,37 +463,39 @@ async def _handle_failure(
     output: TaskOutput,
     ctx: _ExecutionContext,
 ) -> None:
-    """Handle a failed task: decide between retry, remediation, or give up."""
-    category = output.failure_category or classify_failure(output)
+    """Handle a failed task: decide between retry, remediation, or give up.
 
-    # Don't retry certain categories
-    if category in _NO_RETRY_CATEGORIES:
+    Uses per-subcategory retry strategies from ``contracts.get_retry_strategy``
+    for fine-grained control over retry limits and backoff.
+    """
+    category = output.failure_category or classify_failure(output)
+    strategy = get_retry_strategy(category)
+
+    # Check if this category allows retries at all
+    max_retries_for_category: int = int(strategy["max_retries"])
+    remediation_allowed: bool = bool(strategy["remediation_allowed"])
+
+    if max_retries_for_category == 0:
         logger.warning(
             f"[DAG] Task {task.id} failed with {category.value} — not retryable"
         )
         return
 
-    # Check if we already retried too many times
+    # Check if we already retried too many times (per-subcategory limit)
     retry_count = ctx.retries.get(task.id, 0)
 
-    if retry_count < MAX_TASK_RETRIES and not output.is_terminal():
-        # Mark for retry: set status to PENDING so it re-enters the ready queue
-        # We keep the entry in completed but with PENDING status, so downstream
-        # tasks won't consume a stale failed output
+    if retry_count < max_retries_for_category and not output.is_terminal():
         ctx.retries[task.id] = retry_count + 1
         logger.warning(
             f"[DAG] Task {task.id} failed ({category.value}), "
-            f"retrying ({ctx.retries[task.id]}/{MAX_TASK_RETRIES})"
+            f"retrying ({ctx.retries[task.id]}/{max_retries_for_category})"
         )
         # Remove from completed so ready_tasks picks it up again
-        # Note: downstream tasks can't have started yet because they depend on this task
-        # being COMPLETED (checked by ready_tasks), so no stale reference issue
         del ctx.completed[task.id]
         return
 
-    # Retries exhausted — try remediation
-    if ctx.remediation_count < MAX_TOTAL_REMEDIATIONS:
-        # Check remediation depth (don't chain too many fix tasks)
+    # Retries exhausted — try remediation if allowed for this category
+    if remediation_allowed and ctx.remediation_count < MAX_TOTAL_REMEDIATIONS:
         depth = _remediation_depth(task, ctx.graph.tasks)
         if depth < MAX_REMEDIATION_DEPTH:
             await _create_remediation(task, output, ctx)

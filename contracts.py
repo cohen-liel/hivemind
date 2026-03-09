@@ -72,7 +72,13 @@ class ArtifactType(str, Enum):
 
 
 class FailureCategory(str, Enum):
-    """Classification of WHY a task failed — drives remediation strategy."""
+    """Classification of WHY a task failed — drives remediation strategy.
+
+    Top-level categories cover broad failure modes. Subcategories (prefixed
+    with their parent, e.g. BUILD_TYPE_ERROR) provide finer granularity for
+    targeted retry strategies.
+    """
+    # --- Top-level categories ---
     DEPENDENCY_MISSING  = "dependency_missing"   # Upstream task didn't produce what we need
     API_MISMATCH        = "api_mismatch"         # Frontend/backend contract mismatch
     TEST_FAILURE        = "test_failure"          # Code written but tests fail
@@ -80,9 +86,93 @@ class FailureCategory(str, Enum):
     TIMEOUT             = "timeout"               # Agent ran out of turns/budget
     PERMISSION          = "permission"            # File access / auth issue
     UNCLEAR_GOAL        = "unclear_goal"          # Task goal was ambiguous
-    MISSING_CONTEXT     = "missing_context"      # File/dependency not found
+    MISSING_CONTEXT     = "missing_context"       # File/dependency not found
     EXTERNAL            = "external"              # External service / API down
     UNKNOWN             = "unknown"               # Unclassified
+
+    # --- Subcategories of BUILD_ERROR ---
+    BUILD_TYPE_ERROR    = "build_type_error"      # Type mismatch (TypeScript, mypy, Pydantic)
+    BUILD_IMPORT_ERROR  = "build_import_error"    # Import resolution failure
+    BUILD_SYNTAX_ERROR  = "build_syntax_error"    # Syntax / parse error
+    BUILD_MISSING_DEP   = "build_missing_dep"     # Missing package / dependency
+
+    # --- Subcategories of TEST_FAILURE ---
+    TEST_ASSERTION      = "test_assertion"        # Assertion mismatch
+    TEST_RUNTIME_ERROR  = "test_runtime_error"    # Uncaught exception during tests
+
+    # --- Subcategory of EXTERNAL ---
+    EXTERNAL_RATE_LIMIT = "external_rate_limit"   # Third-party API rate limit
+
+
+# Mapping: subcategory → parent category (for fallback lookups)
+_SUBCATEGORY_PARENT: dict[FailureCategory, FailureCategory] = {
+    FailureCategory.BUILD_TYPE_ERROR:    FailureCategory.BUILD_ERROR,
+    FailureCategory.BUILD_IMPORT_ERROR:  FailureCategory.BUILD_ERROR,
+    FailureCategory.BUILD_SYNTAX_ERROR:  FailureCategory.BUILD_ERROR,
+    FailureCategory.BUILD_MISSING_DEP:   FailureCategory.BUILD_ERROR,
+    FailureCategory.TEST_ASSERTION:      FailureCategory.TEST_FAILURE,
+    FailureCategory.TEST_RUNTIME_ERROR:  FailureCategory.TEST_FAILURE,
+    FailureCategory.EXTERNAL_RATE_LIMIT: FailureCategory.EXTERNAL,
+}
+
+
+def get_parent_category(category: FailureCategory) -> FailureCategory:
+    """Return the parent category for a subcategory, or the category itself if top-level."""
+    return _SUBCATEGORY_PARENT.get(category, category)
+
+
+def is_subcategory(category: FailureCategory) -> bool:
+    """Return True if this is a subcategory (not a top-level category)."""
+    return category in _SUBCATEGORY_PARENT
+
+
+# Retry configuration per (sub)category:
+#   max_retries: task-level retries before escalating to remediation
+#   backoff_seconds: delay between retries
+#   remediation_allowed: whether to create a remediation task if retries exhausted
+_RETRY_STRATEGY: dict[FailureCategory, dict[str, int | float | bool]] = {
+    # --- Subcategories with targeted strategies ---
+    FailureCategory.BUILD_SYNTAX_ERROR:  {"max_retries": 2, "backoff_seconds": 1, "remediation_allowed": True},
+    FailureCategory.BUILD_TYPE_ERROR:    {"max_retries": 1, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.BUILD_IMPORT_ERROR:  {"max_retries": 2, "backoff_seconds": 1, "remediation_allowed": True},
+    FailureCategory.BUILD_MISSING_DEP:   {"max_retries": 1, "backoff_seconds": 3, "remediation_allowed": True},
+    FailureCategory.TEST_ASSERTION:      {"max_retries": 2, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.TEST_RUNTIME_ERROR:  {"max_retries": 1, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.EXTERNAL_RATE_LIMIT: {"max_retries": 3, "backoff_seconds": 10, "remediation_allowed": False},
+    # --- Top-level defaults ---
+    FailureCategory.BUILD_ERROR:         {"max_retries": 2, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.TEST_FAILURE:        {"max_retries": 2, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.DEPENDENCY_MISSING:  {"max_retries": 1, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.API_MISMATCH:        {"max_retries": 1, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.TIMEOUT:             {"max_retries": 1, "backoff_seconds": 5, "remediation_allowed": True},
+    FailureCategory.MISSING_CONTEXT:     {"max_retries": 1, "backoff_seconds": 2, "remediation_allowed": True},
+    FailureCategory.UNKNOWN:             {"max_retries": 1, "backoff_seconds": 3, "remediation_allowed": True},
+    # No retry:
+    FailureCategory.UNCLEAR_GOAL:        {"max_retries": 0, "backoff_seconds": 0, "remediation_allowed": False},
+    FailureCategory.PERMISSION:          {"max_retries": 0, "backoff_seconds": 0, "remediation_allowed": False},
+    FailureCategory.EXTERNAL:            {"max_retries": 0, "backoff_seconds": 0, "remediation_allowed": False},
+}
+
+# Default strategy for any category not listed
+_DEFAULT_RETRY_STRATEGY: dict[str, int | float | bool] = {
+    "max_retries": 1,
+    "backoff_seconds": 2,
+    "remediation_allowed": True,
+}
+
+
+def get_retry_strategy(category: FailureCategory) -> dict[str, int | float | bool]:
+    """Get the retry strategy for a failure (sub)category.
+
+    Looks up the specific subcategory first, then falls back to the parent
+    category, then to a conservative default.
+    """
+    if category in _RETRY_STRATEGY:
+        return _RETRY_STRATEGY[category]
+    parent = get_parent_category(category)
+    if parent in _RETRY_STRATEGY:
+        return _RETRY_STRATEGY[parent]
+    return dict(_DEFAULT_RETRY_STRATEGY)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +230,11 @@ class TaskInput(BaseModel):
     is_remediation: bool = Field(default=False, description="True if this task was auto-generated to fix a failure")
     original_task_id: str = Field(default="", description="If remediation, the task that failed")
     failure_context: str = Field(default="", description="If remediation, description of what went wrong")
+    # v3: Cross-agent artifact contract validation
+    expected_input_artifact_types: list[ArtifactType] = Field(
+        default_factory=list,
+        description="Artifact types this task expects from upstream tasks via context_from (for pre-execution validation)"
+    )
 
     @field_validator("id")
     @classmethod
@@ -387,6 +482,43 @@ class TaskGraph(BaseModel):
 # ---------------------------------------------------------------------------
 
 _FAILURE_PATTERNS: list[tuple[FailureCategory, list[str]]] = [
+    # --- Subcategories first (more specific patterns win by score) ---
+    (FailureCategory.BUILD_TYPE_ERROR, [
+        "typeerror", "type error", "type mismatch", "incompatible type",
+        "expected type", "cannot assign", "mypy", "type 'nonetype'",
+        "referenceerror", "is not assignable to type",
+        "property does not exist on type", "argument of type",
+    ]),
+    (FailureCategory.BUILD_IMPORT_ERROR, [
+        "importerror", "import error", "no module named",
+        "cannot find module", "unresolved import", "module not found",
+        "modulenotfounderror", "could not resolve",
+    ]),
+    (FailureCategory.BUILD_SYNTAX_ERROR, [
+        "syntaxerror", "syntax error", "parse error", "unexpected token",
+        "indentation", "unterminated", "invalid syntax",
+        "unexpected end of input", "unexpected identifier",
+    ]),
+    (FailureCategory.BUILD_MISSING_DEP, [
+        "not installed", "package not found", "missing module",
+        "pip install", "npm install", "no such package",
+        "dependency not found", "requirements.txt",
+    ]),
+    (FailureCategory.TEST_ASSERTION, [
+        "assertionerror", "assertion error", "assert false",
+        "expected.*but got", "not equal", "assertEqual",
+        "assert.*==", "mismatch in expected",
+    ]),
+    (FailureCategory.TEST_RUNTIME_ERROR, [
+        "runtime error during test", "exception in test",
+        "error during test setup", "fixture.*error",
+        "collection error", "test setup failed",
+    ]),
+    (FailureCategory.EXTERNAL_RATE_LIMIT, [
+        "rate limit", "rate_limit", "429", "too many requests",
+        "throttled", "quota exceeded",
+    ]),
+    # --- Top-level categories (broader patterns) ---
     (FailureCategory.DEPENDENCY_MISSING, [
         "import error", "importerror", "module not found", "modulenotfounderror",
         "no such file", "dependency", "not installed", "missing module",
@@ -471,6 +603,92 @@ def classify_failure(output: TaskOutput) -> FailureCategory:
 # ---------------------------------------------------------------------------
 
 _REMEDIATION_STRATEGIES: dict[FailureCategory, dict[str, Any]] = {
+    # --- Subcategory-specific strategies (more targeted) ---
+    FailureCategory.BUILD_TYPE_ERROR: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Fix type error from task {task_id}: {failure_details}. "
+            "Check the type annotations, Pydantic models, and function signatures. "
+            "Run mypy or tsc to verify type correctness after the fix."
+        ),
+        "constraints": [
+            "Focus only on fixing the type mismatch — do not change logic",
+            "Verify with type checker after fixing",
+        ],
+    },
+    FailureCategory.BUILD_IMPORT_ERROR: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Fix import error from task {task_id}: {failure_details}. "
+            "Check if the module exists, is spelled correctly, and is in the right location. "
+            "Fix the import path or create the missing module."
+        ),
+        "constraints": [
+            "Only fix the import — do not refactor unrelated code",
+            "Verify by running python -c 'import <module>' or tsc after fixing",
+        ],
+    },
+    FailureCategory.BUILD_SYNTAX_ERROR: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Fix syntax error from task {task_id}: {failure_details}. "
+            "The error message contains the exact line and position. "
+            "Fix the syntax and verify with python -m py_compile or tsc."
+        ),
+        "constraints": [
+            "Fix only the syntax error — minimal change",
+            "Compile-check the file after fixing",
+        ],
+    },
+    FailureCategory.BUILD_MISSING_DEP: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Install missing dependency from task {task_id}: {failure_details}. "
+            "Add the package to requirements.txt or package.json and install it. "
+            "Then verify the import works."
+        ),
+        "constraints": [
+            "Add the dependency to the project manifest (requirements.txt / package.json)",
+            "Pin the version with ==",
+        ],
+    },
+    FailureCategory.TEST_ASSERTION: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Fix assertion failure from task {task_id}: {failure_details}. "
+            "The test expected a specific value but got a different one. "
+            "Fix the implementation (not the test) to produce the expected output."
+        ),
+        "constraints": [
+            "Fix the implementation, not the test assertions",
+            "Run the specific failing test after fixing to verify",
+        ],
+    },
+    FailureCategory.TEST_RUNTIME_ERROR: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Fix test runtime error from task {task_id}: {failure_details}. "
+            "An exception was raised during test execution. "
+            "Check test fixtures, setup, and the code under test."
+        ),
+        "constraints": [
+            "Check if the error is in test setup/fixtures or the implementation",
+            "Run pytest -x --tb=long on the failing test for full traceback",
+        ],
+    },
+    FailureCategory.EXTERNAL_RATE_LIMIT: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Handle rate limit from task {task_id}: {failure_details}. "
+            "Add retry with backoff for the rate-limited API call, or "
+            "implement caching to reduce call frequency."
+        ),
+        "constraints": [
+            "Do not remove the API call — add resilience instead",
+            "Use exponential backoff with jitter",
+        ],
+    },
+    # --- Top-level strategies (fallback for unsubcategorized failures) ---
     FailureCategory.DEPENDENCY_MISSING: {
         "role": AgentRole.BACKEND_DEVELOPER,
         "goal_template": (
@@ -595,6 +813,111 @@ def create_remediation_task(
         original_task_id=failed_task.id,
         failure_context=f"[{category.value}] {failure_details[:500]}",
     )
+
+
+# ---------------------------------------------------------------------------
+# Artifact Contract Validation — pre-execution cross-agent checks
+# ---------------------------------------------------------------------------
+
+class ArtifactContractError(Exception):
+    """Raised when artifact contracts between tasks are inconsistent.
+
+    Contains a list of mismatch descriptions that can be reported to the user
+    or logged before execution starts.
+    """
+
+    def __init__(self, mismatches: list[str]) -> None:
+        self.mismatches: list[str] = mismatches
+        super().__init__(
+            f"Artifact contract validation failed with {len(mismatches)} mismatch(es): "
+            + "; ".join(mismatches[:5])
+        )
+
+
+def validate_artifact_contracts(graph: TaskGraph) -> list[str]:
+    """Pre-execution validation of artifact contracts across the task graph.
+
+    Checks that every task's ``expected_input_artifact_types`` can be
+    satisfied by the ``required_artifacts`` of its ``context_from`` producers.
+
+    Also performs best-effort *inferred* checks: if a task's goal mentions
+    specific artifact types (e.g. "api_contract", "schema") and its
+    ``context_from`` producers don't list those types in
+    ``required_artifacts``, a warning is emitted.
+
+    Performance: O(T × A) where T = task count, A = max artifacts per task.
+    Well within the 50 ms constraint for any graph under 1 000 tasks.
+
+    Args:
+        graph: The TaskGraph to validate.
+
+    Returns:
+        A list of mismatch descriptions (empty == valid).
+
+    Raises:
+        ArtifactContractError: If ``raise_on_error`` is used via the DAG
+            executor wrapper (see ``dag_executor.py``).
+    """
+    mismatches: list[str] = []
+    task_map: dict[str, TaskInput] = {t.id: t for t in graph.tasks}
+
+    for task in graph.tasks:
+        # --- Explicit contract: expected_input_artifact_types ---
+        if task.expected_input_artifact_types:
+            # Gather all artifact types the upstream tasks promise to produce
+            upstream_artifact_types: set[ArtifactType] = set()
+            for upstream_id in task.context_from:
+                upstream = task_map.get(upstream_id)
+                if upstream is not None:
+                    upstream_artifact_types.update(upstream.required_artifacts)
+
+            for expected_type in task.expected_input_artifact_types:
+                if expected_type not in upstream_artifact_types:
+                    # Find which upstream tasks exist
+                    producer_ids = [
+                        uid for uid in task.context_from if uid in task_map
+                    ]
+                    mismatches.append(
+                        f"Task '{task.id}' expects artifact '{expected_type.value}' "
+                        f"from upstream {producer_ids}, but none of them list it "
+                        f"in required_artifacts"
+                    )
+
+        # --- Inferred contract: goal mentions artifact type names ---
+        _INFERRED_ARTIFACT_KEYWORDS: dict[ArtifactType, list[str]] = {
+            ArtifactType.API_CONTRACT: ["api_contract", "api contract", "endpoint definition"],
+            ArtifactType.SCHEMA: ["schema", "database schema", "db schema"],
+            ArtifactType.COMPONENT_MAP: ["component_map", "component map", "component tree"],
+            ArtifactType.TEST_REPORT: ["test_report", "test report"],
+        }
+
+        if task.context_from:
+            goal_lower = task.goal.lower()
+            upstream_types: set[ArtifactType] = set()
+            for uid in task.context_from:
+                upstream = task_map.get(uid)
+                if upstream is not None:
+                    upstream_types.update(upstream.required_artifacts)
+
+            for art_type, keywords in _INFERRED_ARTIFACT_KEYWORDS.items():
+                if any(kw in goal_lower for kw in keywords):
+                    if art_type not in upstream_types and task.context_from:
+                        # Soft warning — inferred, not explicit
+                        mismatches.append(
+                            f"Task '{task.id}' goal mentions '{art_type.value}' "
+                            f"but no upstream task in context_from "
+                            f"{task.context_from} produces it (inferred check)"
+                        )
+
+        # --- Dangling context_from references ---
+        for ref_id in task.context_from:
+            if ref_id not in task_map:
+                mismatches.append(
+                    f"Task '{task.id}' has context_from reference "
+                    f"to unknown task '{ref_id}'"
+                )
+
+    return mismatches
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +1158,11 @@ def task_graph_schema() -> dict[str, Any]:
                             "items": {"type": "string", "enum": [a.value for a in ArtifactType]},
                         },
                         "input_artifacts": {"type": "array", "items": {"type": "string"}},
+                        "expected_input_artifact_types": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": [a.value for a in ArtifactType]},
+                            "description": "Artifact types expected from upstream context_from tasks",
+                        },
                     },
                 },
             },

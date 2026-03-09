@@ -159,9 +159,6 @@ CREATE TABLE IF NOT EXISTS activity_log (
 CREATE INDEX IF NOT EXISTS idx_activity_project_seq
     ON activity_log(project_id, sequence_id);
 
-CREATE INDEX IF NOT EXISTS idx_activity_project
-    ON activity_log(project_id, sequence_id);
-
 CREATE INDEX IF NOT EXISTS idx_activity_project_ts
     ON activity_log(project_id, timestamp);
 
@@ -258,6 +255,27 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_messages_session_ts ON messages(session_id, timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_schedules_next_run ON schedules(next_run)",
             "CREATE INDEX IF NOT EXISTS idx_messages_agent_ts ON messages(project_id, agent_name, timestamp)",
+        ],
+    ),
+    (
+        4,
+        "add_hot_path_indexes",
+        [
+            # task_history: project_id + status — task filtering by status on dashboard
+            # EXPLAIN QUERY PLAN: SEARCH task_history USING INDEX idx_task_history_project_status
+            "CREATE INDEX IF NOT EXISTS idx_task_history_project_status ON task_history(project_id, status)",
+            # task_history: project_id + started_at — get_project_tasks() ORDER BY started_at DESC
+            # EXPLAIN QUERY PLAN: SEARCH task_history USING INDEX idx_task_history_project_started
+            "CREATE INDEX IF NOT EXISTS idx_task_history_project_started ON task_history(project_id, started_at)",
+            # task_history: user_id + started_at — get_recent_task_history() cross-project lookups
+            # EXPLAIN QUERY PLAN: SEARCH task_history USING INDEX idx_task_history_user_started
+            "CREATE INDEX IF NOT EXISTS idx_task_history_user_started ON task_history(user_id, started_at)",
+            # sessions: status + updated_at — cleanup_expired() scans active sessions by age
+            # EXPLAIN QUERY PLAN: SEARCH sessions USING INDEX idx_sessions_status
+            "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status, updated_at)",
+            # agent_performance: created_at — time-range cost breakdown queries in get_cost_breakdown()
+            # EXPLAIN QUERY PLAN: SEARCH agent_performance USING INDEX idx_agent_perf_created
+            "CREATE INDEX IF NOT EXISTS idx_agent_perf_created ON agent_performance(created_at)",
         ],
     ),
 ]
@@ -575,10 +593,16 @@ class SessionManager:
         await db.commit()
 
     async def get_recent_messages(self, project_id: str, count: int = 15) -> list[dict]:
-        """Return the last N messages for a project."""
+        """Return the last N messages for a project.
+
+        EXPLAIN QUERY PLAN:
+            SEARCH messages USING INDEX idx_messages_project (project_id=?)
+            — Index covers both the WHERE filter and ORDER BY timestamp DESC.
+        """
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT agent_name, role, content, cost_usd, timestamp FROM messages WHERE project_id=? ORDER BY timestamp DESC LIMIT ?",
+            "SELECT agent_name, role, content, cost_usd, timestamp "
+            "FROM messages WHERE project_id=? ORDER BY timestamp DESC LIMIT ?",
             (project_id, count),
         )
         rows = await cursor.fetchall()
@@ -663,7 +687,14 @@ class SessionManager:
         await db.commit()
 
     async def get_messages_paginated(self, project_id: str, limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
-        """Return paginated messages and total count."""
+        """Return paginated messages and total count.
+
+        EXPLAIN QUERY PLAN:
+            Query 1: SEARCH messages USING INDEX idx_messages_project (project_id=?)
+            Query 2: SEARCH messages USING COVERING INDEX idx_messages_project (project_id=?)
+            — Both queries use the composite (project_id, timestamp) index.
+            — COUNT(*) query benefits from covering index (no table lookup needed).
+        """
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT agent_name, role, content, cost_usd, timestamp FROM messages "
@@ -671,15 +702,24 @@ class SessionManager:
             (project_id, limit, offset),
         )
         rows = await cursor.fetchall()
-        cursor2 = await db.execute("SELECT COUNT(*) FROM messages WHERE project_id=?", (project_id,))
+        cursor2 = await db.execute(
+            "SELECT COUNT(*) FROM messages WHERE project_id=?", (project_id,)
+        )
         total = (await cursor2.fetchone())[0]
         return [dict(row) for row in reversed(rows)], total
 
     async def get_project_tasks(self, project_id: str, limit: int = 50) -> list[dict]:
-        """Return task history for a project."""
+        """Return task history for a project.
+
+        EXPLAIN QUERY PLAN:
+            SEARCH task_history USING INDEX idx_task_history_project_started (project_id=?)
+            — Uses composite (project_id, started_at) index for both filter and sort.
+        """
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT * FROM task_history WHERE project_id=? ORDER BY started_at DESC LIMIT ?",
+            "SELECT id, project_id, user_id, task_description, status, "
+            "cost_usd, turns_used, started_at, completed_at, summary "
+            "FROM task_history WHERE project_id=? ORDER BY started_at DESC LIMIT ?",
             (project_id, limit),
         )
         return [dict(row) for row in await cursor.fetchall()]
@@ -826,10 +866,18 @@ class SessionManager:
         await db.commit()
 
     async def get_recent_task_history(self, user_id: int, count: int = 10) -> list[dict]:
-        """Get the last N completed tasks for a user."""
+        """Get the last N completed tasks for a user.
+
+        EXPLAIN QUERY PLAN:
+            SEARCH task_history USING INDEX idx_task_history_user_started (user_id=?)
+            — Uses composite (user_id, started_at) index for filter and sort.
+            — LEFT JOIN on projects uses PRIMARY KEY (project_id).
+        """
         db = await self._get_db()
         cursor = await db.execute(
-            """SELECT th.*, p.name as project_name
+            """SELECT th.id, th.project_id, th.user_id, th.task_description,
+                      th.status, th.cost_usd, th.turns_used, th.started_at,
+                      th.completed_at, th.summary, p.name as project_name
                FROM task_history th
                LEFT JOIN projects p ON th.project_id = p.project_id
                WHERE th.user_id=?
@@ -967,11 +1015,16 @@ class SessionManager:
         return cursor.rowcount > 0
 
     async def cleanup_expired(self, max_age_hours: int = SESSION_EXPIRY_HOURS):
-        """Clean up sessions older than max_age_hours."""
+        """Clean up sessions older than max_age_hours.
+
+        EXPLAIN QUERY PLAN:
+            SEARCH sessions USING INDEX idx_sessions_status (status=? AND updated_at<?)
+            — Uses composite (status, updated_at) index for efficient range scan.
+        """
         db = await self._get_db()
         cutoff = time.time() - (max_age_hours * 3600)
         await db.execute(
-            "UPDATE sessions SET status='expired' WHERE updated_at < ? AND status='active'",
+            "UPDATE sessions SET status='expired' WHERE status='active' AND updated_at < ?",
             (cutoff,),
         )
         await db.commit()
@@ -1373,6 +1426,10 @@ class SessionManager:
 
         Used by clients on reconnect to catch up on missed events.
         Returns events in chronological order.
+
+        EXPLAIN QUERY PLAN:
+            SEARCH activity_log USING INDEX idx_activity_project_seq (project_id=? AND sequence_id>?)
+            — Composite index (project_id, sequence_id) covers filter, range scan, and sort.
         """
         async with self._connect() as db:
             cursor = await db.execute(
