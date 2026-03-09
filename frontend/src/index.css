@@ -142,6 +142,26 @@ input, textarea, select {
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+@keyframes toastSlideIn {
+  0% { opacity: 0; transform: translateX(20px) scale(0.95); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes pageEnter {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
 @keyframes gradientShift {
   0%, 100% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
@@ -247,4 +267,85 @@ input, textarea, select {
 }
 .card-hover:hover {
   transform: translateY(-1px);
+}
+
+/* Page enter animation */
+.page-enter {
+  animation: pageEnter 0.3s ease-out;
+}
+
+/* Skeleton loading */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 25%,
+    rgba(255, 255, 255, 0.04) 50%,
+    var(--bg-elevated) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+.skeleton-pulse {
+  background: var(--bg-elevated);
+  animation: skeletonPulse 1.5s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+/* ===== PAGE TRANSITIONS ===== */
+
+@keyframes pageIn {
+  0% { opacity: 0; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== FOCUS RING (Accessibility) ===== */
+
+*:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--border-active) !important;
+  box-shadow: 0 0 0 3px rgba(99, 140, 255, 0.08) !important;
+}
+
+/* ===== REDUCED MOTION ===== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ===== SELECTION COLOR ===== */
+
+::selection {
+  background: rgba(99, 140, 255, 0.3);
+  color: var(--text-primary);
+}
+
+/* ===== MOBILE BOTTOM NAV SAFE AREA ===== */
+
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .mobile-nav-safe {
+    padding-bottom: calc(6px + env(safe-area-inset-bottom));
+  }
 }
