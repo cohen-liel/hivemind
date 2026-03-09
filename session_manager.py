@@ -1717,6 +1717,77 @@ class SessionManager:
             }
 
     @_retry_on_db_error()
+    async def get_round_cost_breakdown(
+        self, project_id: str, round_number: int | None = None
+    ) -> list[dict]:
+        """Get per-agent cost and duration breakdown by round.
+
+        If round_number is provided, returns data for that specific round.
+        Otherwise returns data for all rounds in the project, grouped by round.
+
+        Returns: [{round_number, agent_role, cost_usd, duration_seconds, turns_used, status}]
+        """
+        where = "WHERE project_id = ?"
+        params: list = [project_id]
+        if round_number is not None:
+            where += " AND round_number = ?"
+            params.append(round_number)
+
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"""SELECT round_number, agent_role, cost_usd, duration_seconds,
+                           turns_used, status, created_at
+                    FROM agent_performance
+                    {where}
+                    ORDER BY round_number ASC, created_at ASC""",
+                params,
+            )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "round_number": row["round_number"],
+                    "agent_role": row["agent_role"],
+                    "cost_usd": round(row["cost_usd"] or 0, 6),
+                    "duration_seconds": round(row["duration_seconds"] or 0, 1),
+                    "turns_used": row["turns_used"] or 0,
+                    "status": row["status"],
+                    "timestamp": row["created_at"],
+                }
+                for row in rows
+            ]
+
+    @_retry_on_db_error()
+    async def get_round_cost_summary(self, project_id: str) -> list[dict]:
+        """Get aggregated cost per round for a project.
+
+        Returns: [{round_number, total_cost, total_duration, agent_count, agents}]
+        """
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT round_number,
+                          SUM(cost_usd) as total_cost,
+                          SUM(duration_seconds) as total_duration,
+                          COUNT(DISTINCT agent_role) as agent_count,
+                          GROUP_CONCAT(DISTINCT agent_role) as agents
+                   FROM agent_performance
+                   WHERE project_id = ?
+                   GROUP BY round_number
+                   ORDER BY round_number ASC""",
+                (project_id,),
+            )
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "round_number": row["round_number"],
+                    "total_cost": round(row["total_cost"] or 0, 6),
+                    "total_duration": round(row["total_duration"] or 0, 1),
+                    "agent_count": row["agent_count"],
+                    "agents": (row["agents"] or "").split(","),
+                }
+                for row in rows
+            ]
+
+    @_retry_on_db_error()
     async def get_project_cost_summary(self) -> list[dict]:
         """Get cost summary per project (for dashboard overview)."""
         async with self._connect() as db:

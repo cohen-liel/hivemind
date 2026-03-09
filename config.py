@@ -82,8 +82,43 @@ MAX_BUDGET_USD: float = _get("MAX_BUDGET_USD", "100.0", float)
 AGENT_TIMEOUT_SECONDS: int = _get("AGENT_TIMEOUT_SECONDS", "300", int)
 SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "28800", int)  # 8h default
 
+# Per-agent timeout map — role-based timeouts (seconds).
+# Roles not listed here fall back to AGENT_TIMEOUT_SECONDS.
+# Overridable via AGENT_TIMEOUT_MAP env var (JSON) or settings_overrides.json.
+_DEFAULT_AGENT_TIMEOUT_MAP: dict[str, int] = {
+    "researcher": 600,
+    "reviewer": 180,
+    "developer": 300,
+    "frontend_developer": 300,
+    "backend_developer": 300,
+    "database_expert": 300,
+    "tester": 300,
+    "security_auditor": 180,
+    "devops": 240,
+    "ux_critic": 180,
+    "memory": 120,
+    "orchestrator": 600,
+}
+
+# Load override from env/settings_overrides.json, merge with defaults
+_agent_timeout_map_raw: str = _get("AGENT_TIMEOUT_MAP", "", str)
+_agent_timeout_map_override: dict[str, int] = {}
+if _agent_timeout_map_raw:
+    try:
+        _agent_timeout_map_override = {
+            k: int(v) for k, v in json.loads(_agent_timeout_map_raw).items()
+        }
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.warning("Failed to parse AGENT_TIMEOUT_MAP override: %s", e)
+
+AGENT_TIMEOUT_MAP: dict[str, int] = {**_DEFAULT_AGENT_TIMEOUT_MAP, **_agent_timeout_map_override}
+
+# Timeout escalation factor — on first retry, timeout is extended by this factor.
+# E.g. 1.5 means 50% longer timeout on retry.
+TIMEOUT_ESCALATION_FACTOR: float = _get("TIMEOUT_ESCALATION_FACTOR", "1.5", float)
+
 # SDK settings
-SDK_MAX_RETRIES: int = 2
+SDK_MAX_RETRIES: int = _get("SDK_MAX_RETRIES", "2", int)
 SDK_MAX_TURNS_PER_QUERY: int = _get("SDK_MAX_TURNS_PER_QUERY", "30", int)
 SDK_MAX_BUDGET_PER_QUERY: float = _get("SDK_MAX_BUDGET_PER_QUERY", "20.0", float)
 
@@ -129,6 +164,29 @@ MAX_REQUEST_BODY_SIZE: int = _get("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024),
 
 # Authentication — auth is enabled when DASHBOARD_API_KEY is set
 AUTH_ENABLED: bool = bool(os.getenv("DASHBOARD_API_KEY", ""))
+
+
+# ── Agent timeout helper ─────────────────────────────────────────────
+
+def get_agent_timeout(role: str | None = None, retry_attempt: int = 0) -> int:
+    """Return the timeout (seconds) for a given agent role with escalation.
+
+    Args:
+        role: Agent role name (e.g. "researcher", "developer").
+            If ``None`` or not found in ``AGENT_TIMEOUT_MAP``,
+            falls back to ``AGENT_TIMEOUT_SECONDS``.
+        retry_attempt: Current retry attempt number (0 = first try).
+            On the first retry (attempt=1), timeout is escalated by
+            ``TIMEOUT_ESCALATION_FACTOR`` (default 1.5×).  Subsequent
+            retries keep the escalated value.
+
+    Returns:
+        Timeout in seconds (always >= 30 to prevent too-short timeouts).
+    """
+    base = AGENT_TIMEOUT_MAP.get(role, AGENT_TIMEOUT_SECONDS) if role else AGENT_TIMEOUT_SECONDS
+    if retry_attempt >= 1:
+        base = int(base * TIMEOUT_ESCALATION_FACTOR)
+    return max(base, 30)  # Never go below 30s
 
 
 # ── Validation ───────────────────────────────────────────────────────
@@ -207,6 +265,19 @@ def validate_config() -> list[str]:
         )
     if STUCK_WINDOW_SIZE < 2:
         errors.append(f"STUCK_WINDOW_SIZE must be >= 2 for comparison, got {STUCK_WINDOW_SIZE}")
+
+    # --- Agent timeout map -------------------------------------------------
+    for role, timeout in AGENT_TIMEOUT_MAP.items():
+        if not isinstance(timeout, int) or timeout <= 0:
+            errors.append(
+                f"AGENT_TIMEOUT_MAP['{role}'] must be a positive integer, got {timeout!r}"
+            )
+
+    # --- Timeout escalation factor ----------------------------------------
+    if not isinstance(TIMEOUT_ESCALATION_FACTOR, (int, float)) or TIMEOUT_ESCALATION_FACTOR < 1.0:
+        errors.append(
+            f"TIMEOUT_ESCALATION_FACTOR must be >= 1.0, got {TIMEOUT_ESCALATION_FACTOR}"
+        )
 
     # --- Report ------------------------------------------------------------
     for w in warnings:

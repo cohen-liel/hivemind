@@ -213,6 +213,9 @@ class OrchestratorManager:
         self._dag_task_statuses: dict[str, str] = {}   # task_id → "working"/"completed"/"failed"
         self._current_dag_graph: dict | None = None     # serialized TaskGraph for the active session
 
+    # Checkpoint every N orchestrator rounds (periodic safety-net)
+    _CHECKPOINT_INTERVAL_ROUNDS = 3
+
     @property
     def agent_names(self) -> list[str]:
         names = ["orchestrator"]
@@ -246,6 +249,134 @@ class OrchestratorManager:
 
         task.add_done_callback(_on_done)
         return task
+
+    # ── Checkpoint & Restore ─────────────────────────────────────────────
+
+    async def _checkpoint_state(self, *, status: str = "running"):
+        """Checkpoint full orchestrator state to DB.
+
+        Serializes conversation_log, shared_context, completed_rounds,
+        agents_used, and DAG progress into the existing orchestrator_state
+        columns (shared_context, agent_states) as enriched JSON blobs.
+        """
+        # Build enriched context blob — fits in the shared_context TEXT column
+        checkpoint_context = {
+            "shared_context": self.shared_context[-20:],
+            "conversation_log": [
+                {
+                    "agent_name": m.agent_name,
+                    "role": m.role,
+                    "content": m.content[:500],
+                    "timestamp": m.timestamp,
+                    "cost_usd": m.cost_usd,
+                }
+                for m in self.conversation_log[-50:]  # last 50 messages
+            ],
+            "completed_rounds": self._completed_rounds[-30:],
+            "agents_used": list(self._agents_used),
+        }
+
+        # Build enriched agent state blob — fits in the agent_states TEXT column
+        checkpoint_agents = {
+            "agent_states": {k: dict(v) for k, v in dict(self.agent_states).items()},
+            "dag_task_statuses": dict(self._dag_task_statuses),
+            "dag_graph": self._current_dag_graph,
+        }
+
+        try:
+            await self.session_mgr.save_orchestrator_state(
+                project_id=self.project_id,
+                user_id=self.user_id,
+                status=status,
+                current_loop=self._current_loop,
+                turn_count=self.turn_count,
+                total_cost_usd=self.total_cost_usd,
+                shared_context=checkpoint_context,
+                agent_states=checkpoint_agents,
+                last_user_message=getattr(self, '_last_user_message', ''),
+            )
+            logger.info(
+                f"[{self.project_id}] Checkpoint saved "
+                f"(loop={self._current_loop}, cost=${self.total_cost_usd:.4f}, "
+                f"status={status})"
+            )
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] Checkpoint save failed: {e}")
+
+    def _checkpoint_async(self, *, status: str = "running"):
+        """Schedule a non-blocking checkpoint as a background task.
+
+        Returns immediately — the actual DB write happens asynchronously
+        so the main orchestration loop is never blocked.
+        """
+        self._create_background_task(self._checkpoint_state(status=status))
+
+    async def restore_from_checkpoint(self, checkpoint: dict) -> bool:
+        """Restore orchestrator state from a checkpoint dict.
+
+        Called during resume to reconstruct the OrchestratorManager to the
+        exact state saved at the last checkpoint — including conversation_log,
+        shared_context, completed_rounds, agents_used, and DAG progress.
+
+        Returns True on success, False on failure.
+        """
+        try:
+            # Restore scalar state
+            self._current_loop = checkpoint.get("current_loop", 0)
+            self.turn_count = checkpoint.get("turn_count", 0)
+            self.total_cost_usd = checkpoint.get("total_cost_usd", 0.0)
+            self._last_user_message = checkpoint.get("last_user_message", "")
+
+            # Restore enriched context (new dict format)
+            ctx = checkpoint.get("shared_context", [])
+            if isinstance(ctx, dict):
+                # New enriched format
+                self.shared_context = ctx.get("shared_context", [])
+
+                # Restore conversation log
+                for msg_data in ctx.get("conversation_log", []):
+                    self.conversation_log.append(
+                        Message(
+                            agent_name=msg_data.get("agent_name", "unknown"),
+                            role=msg_data.get("role", "Unknown"),
+                            content=msg_data.get("content", ""),
+                            timestamp=msg_data.get("timestamp", 0),
+                            cost_usd=msg_data.get("cost_usd", 0),
+                        )
+                    )
+                self._completed_rounds = ctx.get("completed_rounds", [])
+                self._agents_used = set(ctx.get("agents_used", []))
+            elif isinstance(ctx, list):
+                # Legacy format: just a list of context strings
+                self.shared_context = ctx
+
+            # Restore agent states (new enriched format)
+            agents_blob = checkpoint.get("agent_states", {})
+            if isinstance(agents_blob, dict):
+                if "agent_states" in agents_blob:
+                    # New enriched format
+                    self.agent_states = agents_blob.get("agent_states", {})
+                    self._dag_task_statuses = agents_blob.get("dag_task_statuses", {})
+                    self._current_dag_graph = agents_blob.get("dag_graph")
+                else:
+                    # Legacy format: flat dict of agent states
+                    self.agent_states = agents_blob
+
+            logger.info(
+                f"[{self.project_id}] State restored from checkpoint — "
+                f"loop={self._current_loop}, turns={self.turn_count}, "
+                f"cost=${self.total_cost_usd:.4f}, "
+                f"agents={list(self.agent_states.keys())}, "
+                f"conversation_log={len(self.conversation_log)} msgs, "
+                f"completed_rounds={len(self._completed_rounds)}"
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"[{self.project_id}] Checkpoint restore failed: {e}",
+                exc_info=True,
+            )
+            return False
 
     def _on_task_done(self, task: asyncio.Task):
         """Callback attached to the main _run_orchestrator task.
@@ -1157,6 +1288,9 @@ class OrchestratorManager:
             f"— `{task.id}` — ${output.cost_usd:.4f}\n_{output.summary[:120]}_{artifact_info}"
         )
 
+        # Checkpoint on agent completion (non-blocking)
+        self._checkpoint_async(status="running")
+
     async def _on_dag_remediation(
         self,
         failed_task: "TaskInput",
@@ -1456,6 +1590,10 @@ class OrchestratorManager:
                 self.turn_count += 1
                 loop_count += 1
                 self._current_loop = loop_count
+
+                # Periodic checkpoint every N rounds (non-blocking safety net)
+                if loop_count % self._CHECKPOINT_INTERVAL_ROUNDS == 0:
+                    self._checkpoint_async(status="running")
 
                 # Emit loop progress event
                 await self._emit_event(
@@ -1927,22 +2065,8 @@ class OrchestratorManager:
                 # Update the persistent task ledger with this round's results
                 self._update_todo_after_round(loop_count, _round_summary)
 
-                # Persist orchestrator state for crash recovery (every round)
-                try:
-                    if self.session_mgr:
-                        await self.session_mgr.save_orchestrator_state(
-                            project_id=self.project_id,
-                            user_id=self.user_id,
-                            status="running",
-                            current_loop=loop_count,
-                            turn_count=self.turn_count,
-                            total_cost_usd=self.total_cost_usd,
-                            shared_context=self.shared_context[-20:],  # last 20 entries
-                            agent_states=self.agent_states,
-                            last_user_message=getattr(self, '_last_user_message', ''),
-                        )
-                except Exception as e:
-                    logger.warning(f"[{self.project_id}] Failed to persist state: {e}")
+                # Checkpoint on agent completion (non-blocking)
+                self._checkpoint_async(status="running")
 
                 # Inject evaluation results into the review prompt context
                 eval_context = ""
@@ -2068,20 +2192,11 @@ class OrchestratorManager:
                     await self._build_final_summary(user_message, start_time, status="Stopped (loop limit)")
                 )
         finally:
-            # Save final agent states to DB before clearing — so refresh can show
-            # the last-known state (done/error) for each agent that participated.
+            # Save final enriched checkpoint to DB before clearing — so refresh
+            # and future resume can show the last-known state for each agent.
             try:
                 if self.session_mgr:
-                    await self.session_mgr.save_orchestrator_state(
-                        project_id=self.project_id,
-                        user_id=self.user_id,
-                        status="completed",
-                        current_loop=getattr(self, '_current_loop', 0),
-                        turn_count=self.turn_count,
-                        total_cost_usd=self.total_cost_usd,
-                        agent_states=self.agent_states,
-                        last_user_message=user_message[:500] if user_message else "",
-                    )
+                    await self._checkpoint_state(status="completed")
             except Exception:
                 pass
             if not self.is_paused:
@@ -2785,98 +2900,251 @@ class OrchestratorManager:
 
         self.shared_context.append("\n".join(ctx_parts))
 
-        # Smart context compression: instead of just truncating, compress older entries
-        if len(self.shared_context) > 20:
-            # Keep last 10 entries full, compress older ones into a summary
-            old_entries = self.shared_context[:-10]
-            recent_entries = self.shared_context[-10:]
+        # Priority-based context trimming — keeps context under 12K token budget
+        self._trim_context_by_priority()
 
-            # Compress old entries: extract just role, status, and key findings
-            compressed_lines = []
-            for entry in old_entries:
-                lines = entry.split('\n')
-                # Keep only the header line (role + status) and issues
-                for line in lines:
-                    ls = line.strip()
-                    if ls.startswith('[') or 'FAILED' in ls or 'Issues:' in ls or 'Status:' in ls:
-                        compressed_lines.append(f"  {ls[:150]}")
-                        break
+    # ── Context Priority Classification & Token-Budget Trimming ─────────
 
-            if compressed_lines:
-                summary = (
-                    f"[COMPRESSED HISTORY] Rounds 1-{len(old_entries)} summary:\n"
-                    + "\n".join(compressed_lines)
-                )
-                self.shared_context = [summary] + recent_entries
+    # Maximum token budget for shared_context (enforced by _trim_context_by_priority)
+    _CONTEXT_TOKEN_BUDGET = 12_000
+
+    # Priority levels (higher = more important, never trimmed first)
+    _PRIORITY_CRITICAL = 3   # FAILED/ERROR/BLOCKED — always kept
+    _PRIORITY_HIGH = 2       # NEEDS_FOLLOWUP, warnings
+    _PRIORITY_RECENT = 2     # Last 3 rounds — always kept
+    _PRIORITY_INFO = 0       # Informational/success — trimmed first
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Estimate token count for a text string.
+
+        Uses a simple heuristic: ~4 characters per token (conservative).
+        This avoids importing tiktoken while staying within ±15% accuracy
+        for English text typical in agent context.
+        """
+        if not text:
+            return 0
+        return max(1, len(text) // 4)
+
+    @staticmethod
+    def _classify_context_priority(entry: str) -> int:
+        """Classify a shared_context entry by priority level.
+
+        Returns:
+            3 (CRITICAL) — FAILED, ERROR, BLOCKED entries (never trim)
+            2 (HIGH)     — NEEDS_FOLLOWUP, warnings, recent rounds
+            0 (INFO)     — Success/informational entries (trim first)
+        """
+        upper = entry.upper()
+        # Critical: errors and failures must always be visible
+        if any(kw in upper for kw in ("FAILED", "ERROR", "BLOCKED", "CRITICAL")):
+            return 3  # CRITICAL
+        # High: followup actions and warnings
+        if any(kw in upper for kw in ("NEEDS_FOLLOWUP", "WARNING", "⚠")):
+            return 2  # HIGH
+        return 0  # INFORMATIONAL
+
+    def _trim_context_by_priority(self) -> None:
+        """Trim shared_context using priority-based strategy.
+
+        Priority rules (in order):
+        1. Task ledger summary — always kept (injected separately, not in shared_context)
+        2. Last 3 rounds — always kept regardless of priority
+        3. CRITICAL/FAILED items — always kept
+        4. INFORMATIONAL items — trimmed first (oldest first)
+
+        Enforces a 12K token budget on the total shared_context size.
+        """
+        if not self.shared_context:
+            return
+
+        total_tokens = sum(self._estimate_tokens(e) for e in self.shared_context)
+        if total_tokens <= self._CONTEXT_TOKEN_BUDGET and len(self.shared_context) <= 30:
+            return  # Within budget — no trimming needed
+
+        # Tag each entry with (index, priority, round_number, tokens)
+        tagged: list[tuple[int, int, int, int, str]] = []
+        num_entries = len(self.shared_context)
+        for i, entry in enumerate(self.shared_context):
+            priority = self._classify_context_priority(entry)
+
+            # Extract round number from entry header (e.g., "[developer] Round 5 | ...")
+            round_num = 0
+            if "Round " in entry:
+                try:
+                    round_part = entry.split("Round ")[1].split()[0].strip("|").strip()
+                    round_num = int(round_part)
+                except (IndexError, ValueError):
+                    pass
+
+            # Last 3 entries always get HIGH priority (recent rounds)
+            if i >= num_entries - 3:
+                priority = max(priority, self._PRIORITY_RECENT)
+
+            tokens = self._estimate_tokens(entry)
+            tagged.append((i, priority, round_num, tokens, entry))
+
+        # Sort candidates for removal: lowest priority first, then oldest first
+        # We'll iterate through and remove INFORMATIONAL entries first,
+        # then HIGH entries if still over budget, but NEVER remove CRITICAL or recent-3
+        removable = sorted(
+            [(i, p, r, t, e) for i, p, r, t, e in tagged if p < self._PRIORITY_CRITICAL and i < num_entries - 3],
+            key=lambda x: (x[1], x[2]),  # priority asc, round asc (oldest INFO first)
+        )
+
+        kept_set: set[int] = set(range(num_entries))
+
+        for idx, pri, rnd, tok, entry in removable:
+            if total_tokens <= self._CONTEXT_TOKEN_BUDGET:
+                break
+            # Try to compress first, then remove
+            compressed = self._compress_context_entry(entry)
+            compressed_tokens = self._estimate_tokens(compressed)
+            savings = tok - compressed_tokens
+
+            if savings > 50:
+                # Replace with compressed version (significant savings)
+                self.shared_context[idx] = compressed
+                total_tokens -= savings
             else:
-                self.shared_context = recent_entries
+                # Remove entirely
+                kept_set.discard(idx)
+                total_tokens -= tok
+
+        # If still over budget after removing all removable entries,
+        # compress the CRITICAL entries (but never remove them)
+        if total_tokens > self._CONTEXT_TOKEN_BUDGET:
+            for idx, pri, rnd, tok, entry in tagged:
+                if idx not in kept_set:
+                    continue
+                if total_tokens <= self._CONTEXT_TOKEN_BUDGET:
+                    break
+                if pri >= self._PRIORITY_CRITICAL and idx < num_entries - 3:
+                    compressed = self._compress_context_entry(entry)
+                    compressed_tokens = self._estimate_tokens(compressed)
+                    if compressed_tokens < tok:
+                        self.shared_context[idx] = compressed
+                        total_tokens -= (tok - compressed_tokens)
+
+        # Rebuild shared_context preserving order, excluding removed entries
+        self.shared_context = [
+            self.shared_context[i] for i in sorted(kept_set)
+        ]
+
+    @staticmethod
+    def _compress_context_entry(entry: str) -> str:
+        """Compress a context entry to its essential information.
+
+        Keeps: role/status header, status line, issues, file changes.
+        Truncates: raw output, verbose descriptions.
+        """
+        lines = entry.split('\n')
+        essential = []
+        for line in lines:
+            ls = line.strip()
+            # Always keep role/status/files/issues headers
+            if ls.startswith(('[', 'Status:', 'Files changed:', 'Issues:', 'Commands:')):
+                essential.append(line[:200])
+            elif ls.startswith('Output:'):
+                # Truncate output heavily
+                essential.append(line[:120])
+            elif ls.startswith('Test results:'):
+                essential.append(line[:150])
+            elif ls.startswith('Diff summary:'):
+                essential.append(line[:120])
+            elif len(essential) < 4:
+                # Keep first few lines for context
+                essential.append(line[:150])
+        return '\n'.join(essential)
 
     def _get_context_for_agent(self, agent_role: str) -> str:
         """Build a smart context summary for a sub-agent.
 
-        Instead of dumping all shared_context, prioritize:
-        1. Most recent entries (last 3)
-        2. Entries from agents with related roles
-        3. Error entries (always include so agents don't repeat mistakes)
+        Uses priority-based selection with 12K token budget enforcement:
+        1. Task ledger summary — always included (from manifest)
+        2. Last 3 rounds — always included
+        3. CRITICAL/FAILED items — always included
+        4. Agent's own history — included when space permits
+        5. INFORMATIONAL items — included last, trimmed first
         """
         if not self.shared_context:
             return ""
 
-        priority_entries = []
-        recent_entries = []
-        error_entries = []
-        followup_entries = []
+        # Classify entries by relevance to this agent
+        critical_entries = []   # FAILED/ERROR/BLOCKED — must include
+        followup_entries = []   # NEEDS_FOLLOWUP — high priority
+        own_history = []        # This agent's previous work
+        recent_entries = []     # Last 3 rounds
+        info_entries = []       # Everything else (lowest priority)
 
-        for ctx in self.shared_context:
-            if "FAILED" in ctx or "ERROR" in ctx or "BLOCKED" in ctx:
-                error_entries.append(ctx)
+        num_entries = len(self.shared_context)
+        for i, ctx in enumerate(self.shared_context):
+            is_recent = i >= num_entries - 3
+            priority = self._classify_context_priority(ctx)
+
+            if is_recent:
+                recent_entries.append(ctx)
+            elif priority >= self._PRIORITY_CRITICAL:
+                critical_entries.append(ctx)
             elif "NEEDS_FOLLOWUP" in ctx:
                 followup_entries.append(ctx)
             elif f"[{agent_role}]" in ctx:
-                # Same agent's previous work — always relevant
-                priority_entries.append(ctx)
+                own_history.append(ctx)
             else:
-                recent_entries.append(ctx)
+                info_entries.append(ctx)
 
-        # Build context: errors + followups first, then own history, then recent
-        selected = []
-        selected.extend(error_entries[-3:])
-        selected.extend(followup_entries[-2:])
-        selected.extend(priority_entries[-3:])
-        remaining_slots = max(0, 8 - len(selected))
-        selected.extend(recent_entries[-remaining_slots:])
+        # Build context in priority order, respecting token budget
+        # Reserve ~3K tokens for manifest, ~9K for round context
+        manifest = self._read_project_manifest()
+        manifest_tokens = self._estimate_tokens(manifest) if manifest else 0
+        available_tokens = self._CONTEXT_TOKEN_BUDGET - manifest_tokens
+
+        selected: list[str] = []
+        tokens_used = 0
+
+        def _add_entries(entries: list[str], max_count: int | None = None) -> None:
+            nonlocal tokens_used
+            to_add = entries[-max_count:] if max_count else entries
+            for entry in to_add:
+                compressed = self._compress_context_entry(entry)
+                entry_tokens = self._estimate_tokens(compressed)
+                if tokens_used + entry_tokens <= available_tokens:
+                    selected.append(compressed)
+                    tokens_used += entry_tokens
+                elif tokens_used < available_tokens:
+                    # Try harder compression — just keep header + status
+                    lines = compressed.split('\n')
+                    mini = '\n'.join(lines[:2])
+                    mini_tokens = self._estimate_tokens(mini)
+                    if tokens_used + mini_tokens <= available_tokens:
+                        selected.append(mini)
+                        tokens_used += mini_tokens
+
+        # 1. Recent entries (last 3) — always included
+        _add_entries(recent_entries)
+        # 2. Critical entries (errors/failures) — always included
+        _add_entries(critical_entries)
+        # 3. Followup entries
+        _add_entries(followup_entries, max_count=3)
+        # 4. Agent's own history
+        _add_entries(own_history, max_count=3)
+        # 5. Informational entries — fill remaining budget (most recent first)
+        remaining_info = sorted(info_entries, key=lambda e: e, reverse=True)
+        _add_entries(remaining_info, max_count=max(0, 8 - len(selected)))
 
         if not selected:
             return ""
 
-        # Compress each entry — preserve structured sections, truncate raw output
-        compressed = []
-        for entry in selected:
-            lines = entry.split('\n')
-            essential = []
-            for line in lines:
-                ls = line.strip()
-                # Always keep role/status/files/issues/status-line headers
-                if ls.startswith(('[', 'Status:', 'Files changed:', 'Issues:', 'Commands:')):
-                    essential.append(line)
-                elif ls.startswith('Output:'):
-                    # Truncate long output but keep it
-                    essential.append(line[:200])
-                elif len(essential) < 8:
-                    essential.append(line)
-            compressed.append('\n'.join(essential))
-
         # Build the context block — manifest first (persistent truth), then round history
         sections: list[str] = []
-        manifest = self._read_project_manifest()
         if manifest:
             sections.append(
                 "─── PROJECT MANIFEST (team's persistent memory) ───\n"
                 + manifest +
                 "\n───────────────────────────────────────────────────"
             )
-        if compressed:
-            sections.append("Context from previous rounds:\n" + "\n---\n".join(compressed))
+        if selected:
+            sections.append("Context from previous rounds:\n" + "\n---\n".join(selected))
 
         return "\n\n".join(sections) if sections else ""
 

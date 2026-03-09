@@ -21,7 +21,7 @@ from claude_agent_sdk.types import (
     ToolResultBlock,
 )
 
-from config import AGENT_TIMEOUT_SECONDS, SDK_MAX_RETRIES, CLAUDE_CLI_PATH
+from config import AGENT_TIMEOUT_SECONDS, SDK_MAX_RETRIES, CLAUDE_CLI_PATH, get_agent_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +416,8 @@ class ClaudeSDKManager:
         on_tool_use=None,
         allowed_tools: list[str] | None = None,
         tools: list[str] | None = None,
+        agent_role: str | None = None,
+        retry_attempt: int = 0,
     ) -> SDKResponse:
         """Send a query to Claude Agent SDK with connection pooling.
 
@@ -432,10 +434,17 @@ class ClaudeSDKManager:
             on_tool_use: Optional async callback for tool use events.
             tools: Base tool set — [] disables ALL tools (passes --tools ""),
                 None uses default tools. Different from allowed_tools.
+            agent_role: Optional agent role name for per-role timeout lookup
+                (e.g. "researcher", "developer"). Falls back to global
+                AGENT_TIMEOUT_SECONDS if not specified.
+            retry_attempt: Current retry attempt number (0 = first try).
+                Used for timeout escalation — first retry gets 50% longer.
 
         Returns:
             SDKResponse with text, session_id, cost, error classification, etc.
         """
+        # Resolve per-agent timeout with escalation
+        effective_timeout = get_agent_timeout(agent_role, retry_attempt)
         # Build options
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
@@ -461,6 +470,7 @@ class ClaudeSDKManager:
         logger.info(
             f"[{request_id}] SDK query START: "
             f"max_turns={max_turns}, budget=${max_budget_usd}, "
+            f"timeout={effective_timeout}s (role={agent_role or 'default'}, attempt={retry_attempt}), "
             f"session={'resume:' + session_id[:12] + '...' if session_id else 'new'}, "
             f"tools={'disabled' if tools is not None and len(tools) == 0 else 'default'}, "
             f"pool_active={self._pool.active_count}, "
@@ -485,7 +495,7 @@ class ClaudeSDKManager:
             # Run the stream consumption with timeout
             result = await asyncio.wait_for(
                 self._consume_stream(prompt, options, on_stream, on_tool_use, request_id),
-                timeout=AGENT_TIMEOUT_SECONDS,
+                timeout=effective_timeout,
             )
 
             # Response logging
