@@ -31,6 +31,7 @@ out.json
 out.txt
 err.txt
 bot.log
+logs/
 
 # Frontend build artifacts and dependencies
 node_modules/

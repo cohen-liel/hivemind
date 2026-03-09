@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import os
 import platform
 import time
@@ -18,9 +19,28 @@ import state
 from config import PREDEFINED_PROJECTS, validate_config, ConfigError, DB_VACUUM_INTERVAL_HOURS
 from dashboard.api import create_app, _create_web_manager
 
+# --- Logging setup: console + rotating file ---
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Console handler
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+# Rotating file handler: 5MB per file, keep last 5 files (25MB total max)
+_file_handler = logging.handlers.RotatingFileHandler(
+    LOG_DIR / "app.log",
+    maxBytes=5 * 1024 * 1024,
+    backupCount=5,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=LOG_FORMAT,
     level=logging.INFO,
+    handlers=[_console_handler, _file_handler],
 )
 logger = logging.getLogger(__name__)
 
