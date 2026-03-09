@@ -103,7 +103,7 @@ Multi-agent orchestration dashboard for Claude AI. FastAPI backend with WebSocke
 ## Test Coverage
 - tests/: conftest, test_store, test_state, test_state_full, test_config_full, test_skills_registry, test_proof
 - tests/: test_session_manager_comprehensive, test_sdk_client, test_api_endpoints (NEW)
-- **292 tests collected**, 236 passing, 51 failed, 5 errors (~2.63s) — as of 2026-03-09
+- **292 tests collected**, 292 passing (100%) — as of 2026-03-09
 - **Coverage areas**:
   - API endpoints: 51 tests (health, projects CRUD, messages, lifecycle, settings, schedules, stats, browse/read, security)
   - SDK client: 50 tests (error classification, SDKResponse, ConnectionPool, ErrorCategory, retry logic)
