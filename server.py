@@ -66,8 +66,44 @@ def _check_sandbox():
         )
 
 
+def _install_global_exception_handler():
+    """Install a global asyncio exception handler that suppresses known SDK bugs.
+
+    The claude_agent_sdk uses anyio internally, and when a generator is GC'd
+    in a different asyncio task than it was created in, anyio raises:
+        RuntimeError('Attempted to exit cancel scope in a different task')
+
+    This is harmless (the agent already finished) but pollutes logs with scary
+    tracebacks. We suppress it here at the event loop level.
+    """
+    loop = asyncio.get_running_loop()
+    original_handler = loop.get_exception_handler()
+
+    def _handler(loop, context):
+        exception = context.get("exception")
+        if exception and isinstance(exception, RuntimeError):
+            msg = str(exception)
+            if "cancel scope" in msg and "different task" in msg:
+                logger.debug(
+                    "Suppressed orphaned anyio cancel scope error (harmless SDK cleanup): %s",
+                    context.get("message", "")
+                )
+                return  # Suppress — don't log the scary traceback
+        # For all other exceptions, use the original handler or default
+        if original_handler:
+            original_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+    logger.info("Installed global asyncio exception handler (suppresses anyio cancel scope leaks)")
+
+
 async def run():
     """Start web server."""
+    # Install global exception handler FIRST — before any SDK calls
+    _install_global_exception_handler()
+
     # Initialize shared state (SDK + SessionManager)
     await state.initialize()
 
