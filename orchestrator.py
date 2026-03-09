@@ -1225,6 +1225,21 @@ class OrchestratorManager:
         finally:
             self.is_running = False
             self.turn_count += 1
+            # Emit agent_finished for the Orchestrator itself so the Trace
+            # row shows duration/cost instead of perpetual "running..."
+            self.agent_states["orchestrator"] = {
+                "state": "done",
+                "task": "completed",
+                "cost": self.total_cost_usd,
+            }
+            await self._emit_event(
+                "agent_finished",
+                agent="orchestrator",
+                cost=self.total_cost_usd,
+                turns=self.turn_count,
+                duration=0,  # frontend calculates from started_at
+                is_error=False,
+            )
             # BUG FIX: reset DAG state on session end so /live returns clean state
             self._dag_task_statuses = {}
             self._current_dag_graph = None
@@ -1232,6 +1247,8 @@ class OrchestratorManager:
 
     async def _on_dag_task_start(self, task: "TaskInput"):
         """Callback: fired when DAG executor starts a task."""
+        import time as _time
+        task._started_at = _time.time()  # stamp for real duration calculation
         prefix = "🔧 " if task.is_remediation else ""
         required = ""
         if task.required_artifacts:
@@ -1269,24 +1286,34 @@ class OrchestratorManager:
             "task": task.goal[:120],
             "cost": output.cost_usd,
             "turns": output.turns_used,
-            "duration": 0,  # Will be set by frontend from timestamps
+            "duration": round(getattr(task, '_started_at', 0) and (__import__('time').time() - task._started_at) or 0, 1),
         }
         self._dag_task_statuses[task.id] = "completed" if output.is_successful() else "failed"
         # activity feed, network trace, and properly transitions agent state.
+        import time as _time
+        real_duration = round(_time.time() - getattr(task, '_started_at', _time.time()), 1)
         await self._emit_event(
             "agent_finished",
             agent=task.role.value,
             cost=output.cost_usd,
             turns=output.turns_used,
-            duration=0,
+            duration=real_duration,
             is_error=not output.is_successful(),
             task_id=task.id,
             task_status=output.status.value,
         )
-        await self._send_result(
+        # Emit agent_result so the Activity Log / Chat shows what the agent produced
+        result_text = (
             f"{icon} {prefix}**{task.role.value}** [{output.status.value}]{progress_str} "
-            f"— `{task.id}` — ${output.cost_usd:.4f}\n_{output.summary[:120]}_{artifact_info}"
+            f"— `{task.id}` — ${output.cost_usd:.4f}\n_{output.summary[:200]}_{artifact_info}"
         )
+        await self._emit_event(
+            "agent_result",
+            agent=task.role.value,
+            text=result_text,
+            task_id=task.id,
+        )
+        await self._send_result(result_text)
 
         # Checkpoint on agent completion (non-blocking)
         self._checkpoint_async(status="running")
