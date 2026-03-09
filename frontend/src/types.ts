@@ -93,6 +93,7 @@ export interface WSEvent {
   turns?: number;
   duration?: number;
   is_error?: boolean;
+  failure_reason?: string;
   // delegation fields
   from_agent?: string;
   to_agent?: string;
@@ -154,6 +155,7 @@ export interface ActivityEntry {
   turns?: number;
   duration?: number;
   is_error?: boolean;
+  failure_reason?: string;
   // delegation
   from_agent?: string;
   to_agent?: string;

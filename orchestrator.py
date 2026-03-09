@@ -1094,6 +1094,28 @@ class OrchestratorManager:
 
     # --- DAG-based session (new Typed Contract system) ---
 
+    async def _load_project_context(self) -> tuple[str, str, str]:
+        """Load manifest, memory snapshot, and file tree. Each is individually guarded."""
+        manifest = ""
+        try:
+            manifest = await self._load_manifest()
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] _load_manifest failed (non-fatal): {e}")
+
+        memory_snapshot = ""
+        try:
+            memory_snapshot = await self._load_memory_snapshot()
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] _load_memory_snapshot failed (non-fatal): {e}")
+
+        file_tree = ""
+        try:
+            file_tree = await asyncio.to_thread(self._list_workspace_files)
+        except Exception as e:
+            logger.warning(f"[{self.project_id}] _list_workspace_files failed (non-fatal): {e}")
+
+        return manifest, memory_snapshot, file_tree
+
     async def _run_dag_session(self, user_message: str):
         """
         Execution path using the Typed Contract Protocol v2:
@@ -1116,34 +1138,25 @@ class OrchestratorManager:
             nexus_dir = Path(self.project_dir) / ".nexus"
             nexus_dir.mkdir(parents=True, exist_ok=True)
 
-            await self._send_result("🧠 **Loading project memory...**")
+            # ── Step 0: Load project context ──
+            await self._send_result("🧠 **Orchestrator** loading project context...")
+            manifest, memory_snapshot, file_tree = await self._load_project_context()
 
-            # Step 0: Load project memory for context continuity
-            # Each loader is individually guarded so a single failure
-            # (e.g. corrupt JSON, permission error, blocking I/O timeout)
-            # does not crash the entire DAG session.
-            try:
-                manifest = await self._load_manifest()
-            except Exception as _mf_err:
-                logger.warning(f"[{self.project_id}] _load_manifest failed (non-fatal): {_mf_err}")
-                manifest = ""
-
-            try:
-                memory_snapshot = await self._load_memory_snapshot()
-            except Exception as _ms_err:
-                logger.warning(f"[{self.project_id}] _load_memory_snapshot failed (non-fatal): {_ms_err}")
-                memory_snapshot = ""
-
-            try:
-                file_tree = await asyncio.to_thread(self._list_workspace_files)
-            except Exception as _ft_err:
-                logger.warning(f"[{self.project_id}] _list_workspace_files failed (non-fatal): {_ft_err}")
-                file_tree = ""
-
+            context_parts = []
             if memory_snapshot:
-                await self._notify("📚 Found existing project memory — PM will use it for context.")
+                context_parts.append("project memory")
+            if manifest:
+                context_parts.append("manifest")
+            if file_tree:
+                context_parts.append(f"file tree ({file_tree.count(chr(10))} files)")
+            if context_parts:
+                await self._send_result(f"📚 Loaded: {', '.join(context_parts)}")
 
-            await self._send_result("🗺️ **PM Agent** is creating the execution plan...")
+            # ── Step 1: PM creates the plan ──
+            await self._send_result(
+                f"🗺️ **PM Agent** is analyzing your request and creating an execution plan...\n"
+                f"_Request: {user_message[:150]}{'...' if len(user_message) > 150 else ''}_"
+            )
 
             # Step 1: PM Agent → TaskGraph (now with memory context)
             try:
@@ -1158,13 +1171,16 @@ class OrchestratorManager:
                 logger.warning(f"[{self.project_id}] PM Agent failed: {pm_err}. Using fallback.")
                 graph = fallback_single_task_graph(user_message, self.project_id)
 
-            # Report the plan with artifact requirements
-            artifact_count = sum(len(t.required_artifacts) for t in graph.tasks)
+            # Report the plan — show each task so the user sees what's coming
+            task_lines = []
+            for i, t in enumerate(graph.tasks, 1):
+                deps = f" (after: {', '.join(t.depends_on)})" if t.depends_on else ""
+                task_lines.append(f"  {i}. **{t.role.value}** — {t.goal[:80]}{deps}")
+            plan_detail = chr(10).join(task_lines)
             await self._send_result(
-                f"📋 **Plan ready:** {graph.vision}\n"
-                f"Tasks: {len(graph.tasks)} | "
-                f"Epics: {len(graph.epic_breakdown)} | "
-                f"Required artifacts: {artifact_count}"
+                f"📋 **Plan ready:** {graph.vision}\n\n"
+                f"{plan_detail}\n\n"
+                f"_Total: {len(graph.tasks)} tasks, {len(graph.epic_breakdown)} epics_"
             )
 
             # Emit the full graph to the frontend for visualization
@@ -1210,6 +1226,20 @@ class OrchestratorManager:
             summary = build_execution_summary(graph, result)
             if result.healing_history:
                 summary += f"\n\n🔧 **Self-healing activated:** {result.remediation_count} auto-fixes applied."
+
+            # Count successes and failures
+            ok_count = sum(1 for o in result.outputs if o.is_successful())
+            fail_count = len(result.outputs) - ok_count
+            if fail_count > 0:
+                # List failure reasons
+                fail_lines = []
+                for o in result.outputs:
+                    if not o.is_successful():
+                        reason = o.failure_details[:100] if o.failure_details else (o.failure_category.value if o.failure_category else 'unknown')
+                        fail_lines.append(f"  - `{o.task_id}`: {reason}")
+                summary += f"\n\n⚠️ **{fail_count} task(s) failed:**\n" + "\n".join(fail_lines)
+
+            summary += "\n\n---\n💬 Send another message to continue working on this project."
             await self._send_final(summary)
 
             # Record outputs in conversation log for persistence
@@ -1223,7 +1253,10 @@ class OrchestratorManager:
             logger.info(f"[{self.project_id}] DAG session cancelled")
         except Exception as exc:
             logger.exception(f"[{self.project_id}] DAG session error: {exc}")
-            await self._send_final(f"❌ DAG execution error: {exc}")
+            await self._send_final(
+                f"❌ **Execution failed:** {type(exc).__name__}: {str(exc)[:300]}\n\n"
+                f"---\n💬 Send another message to retry or try a different approach."
+            )
         finally:
             self.is_running = False
             self.turn_count += 1
@@ -1275,40 +1308,68 @@ class OrchestratorManager:
 
     async def _on_dag_task_done(self, task: "TaskInput", output: "TaskOutput"):
         """Callback: fired when DAG executor completes a task."""
-        icon = "✅" if output.is_successful() else "❌"
-        prefix = "🔧 " if task.is_remediation else ""
-        artifact_info = ""
-        if output.structured_artifacts:
-            art_names = [a.title for a in output.structured_artifacts[:3]]
-            artifact_info = f" | Artifacts: {', '.join(art_names)}"
-        progress = getattr(output, 'progress', '')
-        progress_str = f" ({progress})" if progress else ""
+        import time as _time
+        is_ok = output.is_successful()
+        real_duration = round(_time.time() - getattr(task, '_started_at', _time.time()), 1)
+
+        # Build failure reason (clear, human-readable)
+        failure_reason = ""
+        if not is_ok:
+            parts = []
+            if output.failure_category:
+                parts.append(output.failure_category.value.replace('_', ' ').title())
+            if output.failure_details:
+                parts.append(output.failure_details[:200])
+            elif output.issues:
+                parts.append(output.issues[0][:200])
+            elif output.blockers:
+                parts.append(f"Blocked: {output.blockers[0][:150]}")
+            failure_reason = " | ".join(parts) if parts else "Unknown error"
+
+        # Update internal state
         self.agent_states[task.role.value] = {
-            "state": "done" if output.is_successful() else "error",
+            "state": "done" if is_ok else "error",
             "task": task.goal[:120],
             "cost": output.cost_usd,
             "turns": output.turns_used,
-            "duration": round(getattr(task, '_started_at', 0) and (__import__('time').time() - task._started_at) or 0, 1),
+            "duration": real_duration,
         }
-        self._dag_task_statuses[task.id] = "completed" if output.is_successful() else "failed"
-        # activity feed, network trace, and properly transitions agent state.
-        import time as _time
-        real_duration = round(_time.time() - getattr(task, '_started_at', _time.time()), 1)
+        self._dag_task_statuses[task.id] = "completed" if is_ok else "failed"
+
+        # Emit agent_finished for Trace + Agent cards
         await self._emit_event(
             "agent_finished",
             agent=task.role.value,
             cost=output.cost_usd,
             turns=output.turns_used,
             duration=real_duration,
-            is_error=not output.is_successful(),
+            is_error=not is_ok,
             task_id=task.id,
             task_status=output.status.value,
+            failure_reason=failure_reason,
         )
-        # Emit agent_result so the Activity Log / Chat shows what the agent produced
-        result_text = (
-            f"{icon} {prefix}**{task.role.value}** [{output.status.value}]{progress_str} "
-            f"— `{task.id}` — ${output.cost_usd:.4f}\n_{output.summary[:200]}_{artifact_info}"
-        )
+
+        # Build result message for Activity Log / Chat
+        icon = "\u2705" if is_ok else "\u274c"
+        prefix = "\ud83d\udd27 " if task.is_remediation else ""
+        artifact_info = ""
+        if output.structured_artifacts:
+            art_names = [a.title for a in output.structured_artifacts[:3]]
+            artifact_info = f"\nArtifacts: {', '.join(art_names)}"
+
+        if is_ok:
+            result_text = (
+                f"{icon} {prefix}**{task.role.value}** completed `{task.id}` "
+                f"({real_duration}s, ${output.cost_usd:.4f})\n"
+                f"{output.summary[:250]}{artifact_info}"
+            )
+        else:
+            result_text = (
+                f"{icon} {prefix}**{task.role.value}** failed `{task.id}` "
+                f"({real_duration}s, ${output.cost_usd:.4f})\n"
+                f"**Reason:** {failure_reason}{artifact_info}"
+            )
+
         await self._emit_event(
             "agent_result",
             agent=task.role.value,

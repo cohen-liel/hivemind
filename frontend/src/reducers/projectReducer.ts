@@ -482,6 +482,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
             id: nextId(), type: 'agent_finished' as const, timestamp: event.timestamp,
             agent: event.agent, cost: event.cost, turns: event.turns,
             duration: event.duration, is_error: event.is_error,
+            failure_reason: event.failure_reason,
           }]
         : state.activities;
 
