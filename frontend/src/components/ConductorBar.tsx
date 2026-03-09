@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { useAnimatedNumber, formatCost } from '../hooks/useAnimatedNumber';
 import type { AgentState, LoopProgress } from '../types';
 
 interface Props {
@@ -21,6 +22,9 @@ export default function ConductorBar({
   const turnsMax = progress?.max_turns ?? 0;
   const turnsPct = turnsMax > 0 ? Math.min((turnsUsed / turnsMax) * 100, 100) : 0;
   const costUsed = progress?.cost ?? totalCost;
+
+  // Animated cost display
+  const animatedCost = useAnimatedNumber(costUsed, 500, costUsed < 1 ? 3 : 2);
 
   const counts = { working: 0, done: 0, error: 0, idle: 0 };
   if (agentSummary) {
@@ -93,14 +97,18 @@ export default function ConductorBar({
             <h1 className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>
               {projectName}
             </h1>
+            {/* Connection + status indicator */}
             <div className="flex items-center gap-1 flex-shrink-0">
               <span
-                className={`w-1.5 h-1.5 rounded-full ${connected ? '' : ''}`}
+                className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${connected && status === 'running' ? 'animate-pulse' : ''}`}
                 style={{ backgroundColor: connected ? 'var(--accent-green)' : 'var(--accent-red)' }}
               />
               <span className="text-[9px] uppercase tracking-wider"
-                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                {status === 'running' ? 'LIVE' : status.toUpperCase()}
+                style={{
+                  color: !connected ? 'var(--accent-red)' : 'var(--text-muted)',
+                  fontFamily: 'var(--font-mono)',
+                }}>
+                {!connected ? 'RECONNECTING' : status === 'running' ? 'LIVE' : status.toUpperCase()}
               </span>
             </div>
           </div>
@@ -140,12 +148,12 @@ export default function ConductorBar({
           )}
         </div>
 
-        {/* Cost pill */}
+        {/* Cost pill — animated */}
         {costUsed > 0 && (
           <div className="flex-shrink-0 rounded-full px-2.5 py-0.5"
             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)' }}>
             <span className="telemetry" style={{ color: 'var(--accent-green)' }}>
-              ${costUsed.toFixed(3)}
+              ${animatedCost}
             </span>
           </div>
         )}
