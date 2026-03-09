@@ -129,6 +129,20 @@ class OrchestratorManager:
     directly or delegate to sub-agents via <delegate> blocks.
     """
 
+    # Agents that modify files — must run sequentially to avoid conflicts
+    _WRITER_ROLES = {
+        "developer", "devops", "backend_developer",
+        "frontend_developer", "database_expert",
+        "typescript_architect", "python_backend",
+    }
+
+    # Read-only / analysis agents — safe to run in parallel
+    # (Kept consistent with dag_executor._READER_ROLES)
+    _READER_ROLES = {
+        "researcher", "reviewer", "security_auditor",
+        "ux_critic", "test_engineer", "tester", "memory",
+    }
+
     def __init__(
         self,
         project_name: str,
@@ -604,13 +618,9 @@ class OrchestratorManager:
                 pass  # Don't block completion on detection failure
 
         # For any non-trivial task, require at least one writer + one reviewer to have run
-        _writer_roles = {
-            "developer", "backend_developer", "frontend_developer",
-            "database_expert", "devops", "typescript_architect", "python_backend",
-        }
         _reviewer_roles = {"reviewer", "security_auditor", "ux_critic"}
         if complexity != "SIMPLE":
-            if not self._agents_used & _writer_roles:
+            if not self._agents_used & self._WRITER_ROLES:
                 return "No code-writing agent has been used yet. Delegate implementation work."
             if not self._agents_used & _reviewer_roles:
                 return "No review agent has been used yet. Delegate a code review before completing."
@@ -1174,39 +1184,43 @@ class OrchestratorManager:
     async def _load_manifest(self) -> str:
         """Load .nexus/PROJECT_MANIFEST.md if it exists."""
         manifest_path = Path(self.project_dir) / ".nexus" / "PROJECT_MANIFEST.md"
-        if manifest_path.exists():
-            try:
-                return manifest_path.read_text(encoding="utf-8")[:4000]
-            except Exception:
-                pass
-        return ""
+        def _read() -> str:
+            if manifest_path.exists():
+                try:
+                    return manifest_path.read_text(encoding="utf-8")[:4000]
+                except Exception:
+                    pass
+            return ""
+        return await asyncio.to_thread(_read)
 
     async def _load_memory_snapshot(self) -> str:
         """Load .nexus/memory_snapshot.json if it exists (structured memory for PM)."""
         snapshot_path = Path(self.project_dir) / ".nexus" / "memory_snapshot.json"
-        if snapshot_path.exists():
-            try:
-                content = snapshot_path.read_text(encoding="utf-8")
-                if len(content) <= 8000:
-                    return content
-                # Truncate-safe: parse and re-serialize with size limit
-                import json as _json
-                data = _json.loads(content)
-                # Remove large fields first to fit
-                for key in ["file_map", "key_decisions", "known_issues"]:
-                    result = _json.dumps(data)
-                    if len(result) <= 8000:
-                        break
-                    if key in data and isinstance(data[key], (dict, list)):
-                        if isinstance(data[key], dict):
-                            items = list(data[key].items())[:20]
-                            data[key] = dict(items)
-                        else:
-                            data[key] = data[key][:10]
-                return _json.dumps(data)[:8000]
-            except Exception:
-                pass
-        return ""
+        def _read() -> str:
+            if snapshot_path.exists():
+                try:
+                    content = snapshot_path.read_text(encoding="utf-8")
+                    if len(content) <= 8000:
+                        return content
+                    # Truncate-safe: parse and re-serialize with size limit
+                    import json as _json
+                    data = _json.loads(content)
+                    # Remove large fields first to fit
+                    for key in ["file_map", "key_decisions", "known_issues"]:
+                        result = _json.dumps(data)
+                        if len(result) <= 8000:
+                            break
+                        if key in data and isinstance(data[key], (dict, list)):
+                            if isinstance(data[key], dict):
+                                items = list(data[key].items())[:20]
+                                data[key] = dict(items)
+                            else:
+                                data[key] = data[key][:10]
+                    return _json.dumps(data)[:8000]
+                except Exception:
+                    pass
+            return ""
+        return await asyncio.to_thread(_read)
 
     def _list_workspace_files(self, max_files: int = 200) -> str:
         """Return a concise file tree of the project directory for the PM Agent."""
@@ -2343,18 +2357,12 @@ class OrchestratorManager:
         # Code-modifying agents (developer, devops) run FIRST and SEQUENTIALLY
         # to avoid conflicting file changes. Read-only agents (reviewer, tester,
         # researcher) run AFTER in PARALLEL.
-        _WRITER_ROLES = {  # Agents that modify files
-            "developer", "devops", "backend_developer",
-            "frontend_developer", "database_expert",
-            "typescript_architect", "python_backend",
-        }
-        _READER_ROLES = {"reviewer", "tester", "researcher"}  # Agents that read/verify
 
-        writer_roles = {r: d for r, d in by_role.items() if r in _WRITER_ROLES}
-        reader_roles = {r: d for r, d in by_role.items() if r in _READER_ROLES}
+        writer_roles = {r: d for r, d in by_role.items() if r in self._WRITER_ROLES}
+        reader_roles = {r: d for r, d in by_role.items() if r in self._READER_ROLES}
         # Any unknown roles go to readers (safer default)
         for r, d in by_role.items():
-            if r not in _WRITER_ROLES and r not in _READER_ROLES:
+            if r not in self._WRITER_ROLES and r not in self._READER_ROLES:
                 reader_roles[r] = d
 
         # Run different roles with proper exception handling
