@@ -2,8 +2,23 @@ import { useMemo } from 'react';
 import type { ActivityEntry } from '../types';
 import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 
+// Minimal DAG types (mirrors WSEvent['graph'])
+interface DagTask {
+  id: string;
+  role: string;
+  goal: string;
+  depends_on?: string[];
+  is_remediation?: boolean;
+}
+interface DagGraph {
+  vision?: string;
+  tasks?: DagTask[];
+}
+
 interface Props {
   activities: ActivityEntry[];
+  dagGraph?: DagGraph | null;
+  dagTaskStatus?: Record<string, 'pending' | 'working' | 'completed' | 'failed'>;
 }
 
 interface PlanStep {
@@ -11,11 +26,37 @@ interface PlanStep {
   text: string;
   status: 'pending' | 'in_progress' | 'done' | 'error';
   agent?: string;
+  taskId?: string;
+}
+
+/**
+ * Converts a DAG graph + task statuses into PlanStep[].
+ * This is the primary plan source when DAG mode is active.
+ */
+function dagToPlanSteps(
+  graph: DagGraph,
+  dagTaskStatus: Record<string, 'pending' | 'working' | 'completed' | 'failed'>,
+): PlanStep[] {
+  return (graph.tasks ?? []).map((task, i) => {
+    const taskStatus = dagTaskStatus[task.id] ?? 'pending';
+    const planStatus: PlanStep['status'] =
+      taskStatus === 'completed' ? 'done' :
+      taskStatus === 'working' ? 'in_progress' :
+      taskStatus === 'failed' ? 'error' :
+      'pending';
+    return {
+      index: i + 1,
+      text: task.goal,
+      status: planStatus,
+      agent: task.role,
+      taskId: task.id,
+    };
+  });
 }
 
 /**
  * Parses orchestrator output for numbered steps and tracks their completion
- * based on agent_finished events.
+ * based on agent_finished events. Used as fallback when no DAG graph is available.
  */
 function extractPlan(activities: ActivityEntry[]): PlanStep[] {
   const steps: PlanStep[] = [];
@@ -128,8 +169,16 @@ function StatusIcon({ status, agentName }: { status: PlanStep['status']; agentNa
   }
 }
 
-export default function PlanView({ activities }: Props) {
-  const steps = useMemo(() => extractPlan(activities), [activities]);
+export default function PlanView({ activities, dagGraph, dagTaskStatus = {} }: Props) {
+  const isDagMode = !!(dagGraph && dagGraph.tasks && dagGraph.tasks.length > 0);
+
+  const steps = useMemo(() => {
+    // DAG graph is the primary source when available
+    if (dagGraph && dagGraph.tasks && dagGraph.tasks.length > 0) {
+      return dagToPlanSteps(dagGraph, dagTaskStatus);
+    }
+    return extractPlan(activities);
+  }, [activities, dagGraph, dagTaskStatus]);
 
   if (steps.length === 0) {
     return (
@@ -138,9 +187,9 @@ export default function PlanView({ activities }: Props) {
           style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)' }}>
           📋
         </div>
-        <p className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>No plan detected</p>
-        <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-          The orchestrator will show its execution plan here
+        <p className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>No plan yet</p>
+        <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
+          Send a task and the agent will show its execution plan here
         </p>
       </div>
     );
@@ -152,13 +201,22 @@ export default function PlanView({ activities }: Props) {
 
   return (
     <div className="p-4">
+      {/* Plan source badge */}
+      {isDagMode && dagGraph?.vision && (
+        <div className="mb-4 px-3 py-2 rounded-lg text-xs leading-relaxed"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)', color: 'var(--text-secondary)' }}>
+          <span className="font-semibold" style={{ color: 'var(--accent-blue)' }}>🎯 Vision: </span>
+          {dagGraph.vision}
+        </div>
+      )}
+
       {/* Progress header */}
       <div className="flex items-center gap-3 mb-5">
         <div className="flex-1">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs font-bold uppercase tracking-wider"
               style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-              Execution Plan
+              {isDagMode ? 'DAG Execution Plan' : 'Execution Plan'}
             </span>
             <span className="text-xs font-bold"
               style={{ color: pct === 100 ? 'var(--accent-green)' : 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
@@ -207,7 +265,7 @@ export default function PlanView({ activities }: Props) {
 
             return (
               <div
-                key={i}
+                key={step.taskId ?? i}
                 className={`flex items-start gap-3 relative py-2.5 transition-all duration-300
                   ${isActive ? 'animate-[fadeSlideIn_0.3s_ease-out]' : ''}`}
                 style={{
@@ -235,7 +293,7 @@ export default function PlanView({ activities }: Props) {
 
                   {/* Agent badge */}
                   {step.agent && (
-                    <div className="flex items-center gap-1.5 mt-1.5">
+                    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                       <span className="text-xs">{AGENT_ICONS[step.agent] || '🔧'}</span>
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
                         style={{
@@ -245,6 +303,11 @@ export default function PlanView({ activities }: Props) {
                         }}>
                         {AGENT_LABELS[step.agent] || step.agent}
                       </span>
+                      {step.taskId && (
+                        <span className="text-[9px] font-mono opacity-40" style={{ color: 'var(--text-muted)' }}>
+                          {step.taskId}
+                        </span>
+                      )}
                       {isActive && (
                         <span className="text-[9px] font-bold tracking-wider animate-pulse"
                           style={{ color: accent.color, fontFamily: 'var(--font-mono)' }}>
