@@ -681,6 +681,22 @@ class SessionManager:
         )
         await db.commit()
 
+    async def invalidate_all_sessions(self, project_id: str):
+        """Mark ALL sessions for a project as invalidated.
+
+        Called when user clears chat history — forces every agent to start
+        a fresh session instead of resuming with stale context.
+        """
+        db = await self._get_db()
+        result = await db.execute(
+            "UPDATE sessions SET status='invalidated', updated_at=? "
+            "WHERE project_id=? AND status != 'invalidated'",
+            (time.time(), project_id),
+        )
+        await db.commit()
+        count = result.rowcount if hasattr(result, 'rowcount') else 0
+        logger.info(f"[{project_id}] Invalidated {count} active sessions (full context reset)")
+
     # --- Message CRUD ---
 
     async def add_message(

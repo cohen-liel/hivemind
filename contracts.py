@@ -1251,7 +1251,9 @@ def task_input_to_prompt(
         "3. Are there any issues or edge cases I missed?\n"
         "4. What is my confidence level (0.0-1.0)?\n"
         "</self_review>\n\n"
-        "Then end your response with ONLY this JSON block (no text after it):\n\n"
+        "⚠️ CRITICAL: You MUST end your response with this JSON block.\n"
+        "Without it, your work will be marked as FAILED regardless of what you accomplished.\n"
+        "If you are about to run out of turns, STOP other work and produce this JSON FIRST.\n\n"
         '```json\n'
         '{\n'
         f'  "task_id": "{task.id}",\n'

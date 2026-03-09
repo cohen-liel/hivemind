@@ -1126,9 +1126,25 @@ class OrchestratorManager:
             cost_str = f" | ${response.cost_usd:.4f}" if response.cost_usd > 0 else ""
             await self._send_final(f"💬 *{target}*{cost_str}\n\n{summary}")
         else:
-            # Enqueue — the orchestrator loop will drain all pending messages
+            # Enqueue — the orchestrator loop / _on_task_done will drain pending messages
             await self._message_queue.put((agent_name, message))
-            logger.info(f"[{self.project_id}] Queued message for {agent_name} (queue size: {self._message_queue.qsize()})")
+            queue_size = self._message_queue.qsize()
+            logger.info(
+                f"[{self.project_id}] Queued message for {agent_name} "
+                f"(queue size: {queue_size})"
+            )
+            # Notify the user that their message is queued (not lost)
+            await self._send_result(
+                f"\U0001f4ec **Message queued** (position #{queue_size})\n"
+                f"_Your message will be processed after the current task completes._\n"
+                f"> {message[:200]}{'...' if len(message) > 200 else ''}"
+            )
+            # Emit event so frontend can show queue indicator
+            await self._emit_event(
+                "message_queued",
+                queue_size=queue_size,
+                message_preview=message[:100],
+            )
             if self.is_paused:
                 self.resume()
 

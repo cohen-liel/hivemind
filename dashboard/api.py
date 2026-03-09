@@ -953,12 +953,41 @@ def create_app() -> FastAPI:
         if state.session_mgr:
             await state.session_mgr.clear_project_data(project_id)
 
-        # Reset live state on active manager
+        # Reset ALL live state on active manager — full context wipe.
+        # Without this, agents resume with stale context from previous sessions.
         if manager:
+            # Core state
             manager.shared_context = []
+            manager.conversation_log = []
             manager.turn_count = 0
             manager.total_cost_usd = 0.0
             manager.agent_states = {}
+
+            # Agent tracking
+            manager._completed_rounds = []
+            manager._agents_used = set()
+
+            # DAG state
+            manager._current_dag_graph = None
+            manager._dag_task_statuses = {}
+
+            # Message queue (drain any pending messages)
+            while not manager._message_queue.empty():
+                try:
+                    manager._message_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+            # SDK session IDs — forces agents to start fresh sessions
+            # (otherwise they resume with context from cleared conversations)
+            if hasattr(manager, 'session_mgr') and manager.session_mgr:
+                await manager.session_mgr.invalidate_all_sessions(project_id)
+
+            logger.info(
+                f"[{project_id}] Full context reset: conversation_log, "
+                f"completed_rounds, agents_used, dag_graph, message_queue, "
+                f"SDK sessions all cleared"
+            )
 
         # Notify connected clients so UI updates in real-time
         await event_bus.publish({
@@ -1238,11 +1267,12 @@ def create_app() -> FastAPI:
         if not manager.is_running:
             logger.info(f"[{project_id}] Starting new session (multi_agent={manager.is_multi_agent})")
             await manager.start_session(req.message)
+            return {"ok": True, "action": "started"}
         else:
             logger.info(f"[{project_id}] Injecting message into running session")
             await manager.inject_user_message("orchestrator", req.message)
-
-        return {"ok": True}
+            queue_size = manager._message_queue.qsize()
+            return {"ok": True, "action": "queued", "queue_size": queue_size}
 
     @app.post("/api/projects/{project_id}/talk/{agent}")
     async def talk_agent(project_id: str, agent: str, req: TalkAgentRequest):

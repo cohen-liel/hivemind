@@ -879,6 +879,8 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       return { ...state, activities: [...state.activities, action.activity] };
 
     case 'CLEAR_ALL_STATE':
+      // Full state reset — clears everything including DAG graph, healing events,
+      // live streams, and sequence tracking. Called when user clears chat history.
       return {
         ...state,
         activities: [],
@@ -891,6 +893,11 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         hasMoreMessages: false,
         approvalRequest: null,
         lastAgentSummaries: {},
+        dagGraph: null,
+        dagTaskStatus: {},
+        healingEvents: [],
+        liveAgentStream: {},
+        lastSequenceId: 0,
       };
 
     default:

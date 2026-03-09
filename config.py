@@ -758,8 +758,12 @@ _TYPED_CONTRACT_FOOTER = (
     "</self_review>\n\n"
 
     "<output_format>\n"
-    "After completing your work, end your response with ONLY this JSON block.\n"
+    "CRITICAL: After completing your work, you MUST end your response with the JSON block below.\n"
+    "This JSON block is how the system knows your work was successful.\n"
+    "Without it, your work will be marked as FAILED even if you completed everything perfectly.\n"
     "No text or explanation after the closing ```.\n\n"
+    "If you are running low on turns or about to stop, produce the JSON FIRST, then stop.\n"
+    "The JSON block is MORE IMPORTANT than finishing the last minor task.\n\n"
     "```json\n"
     "{\n"
     '  "task_id": "<the task_id from your TaskInput>",\n'
@@ -881,12 +885,16 @@ _TYPED_CONTRACT_FOOTER = (
     "</examples>\n\n"
 
     "<constraints>\n"
-    "- Do NOT run git commit, git push, or git add — the DAG Executor handles all commits\n"
+    "- Do NOT run git commit, git push, or git add \u2014 the DAG Executor handles all commits\n"
     "- Set status to 'failed' if you could not complete the goal\n"
     "- Set status to 'blocked' if a dependency is missing (specify in blockers)\n"
     "- Set confidence below 0.7 if you are uncertain about correctness\n"
     "- Always include a file_manifest artifact listing every file you created or modified\n"
-    "- Check your TaskInput for required_artifacts — you must produce all of them\n"
+    "- Check your TaskInput for required_artifacts \u2014 you must produce all of them\n"
+    "- ALWAYS produce the JSON output block, even if your work is incomplete\n"
+    "- If you run out of turns/time, set status='completed' with confidence reflecting\n"
+    "  how much you finished, and list remaining work in followups\n"
+    "- The JSON block is your RECEIPT \u2014 without it, the system cannot credit your work\n"
     "</constraints>"
 )
 SPECIALIST_PROMPTS: dict[str, str] = {

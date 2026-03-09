@@ -114,6 +114,11 @@ export function useProjectActions(
     try {
       await clearHistory(projectId);
       dispatch({ type: 'CLEAR_ALL_STATE' });
+      // Also clear persisted DAG graph from localStorage
+      // (otherwise it rehydrates stale data on next page load)
+      try {
+        localStorage.removeItem(`nexus_dag_${projectId}`);
+      } catch { /* localStorage unavailable — ignore */ }
       toast.success('History cleared');
       loadProject().catch(() => {});
     } catch (e: unknown) {
