@@ -337,16 +337,39 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     # --- Rate limiting middleware ---
-    # Simple in-memory rate limiter per IP address
+    # Simple in-memory rate limiter per IP address with TTL-based cleanup
     _rate_limit_store: dict[str, list[float]] = {}  # ip -> list of timestamps
     _RATE_LIMIT_WINDOW = 60  # seconds
     _RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "120"))  # per window
     _RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "30"))  # max burst in 5s
     _RATE_LIMIT_EXEMPT = {"/api/health", "/api/stats"}  # endpoints exempt from rate limiting
+    _RATE_LIMIT_REQUEST_COUNT = 0  # track requests for periodic cleanup
+    _RATE_LIMIT_CLEANUP_INTERVAL = 500  # run cleanup every N requests
+    _RATE_LIMIT_MAX_STORE_SIZE = 500  # force cleanup when store exceeds this many entries
+    _RATE_LIMIT_TTL_MULTIPLIER = 3  # evict IPs idle for window × this multiplier
+
+    def _rate_limit_cleanup(now: float) -> None:
+        """Evict stale IPs whose last request is older than 3× the rate limit window.
+
+        Called every 500 requests or when the store exceeds 500 entries.
+        Guarantees the store never exceeds ~1000 entries in normal operation.
+        """
+        ttl = _RATE_LIMIT_WINDOW * _RATE_LIMIT_TTL_MULTIPLIER
+        stale_ips = [
+            ip for ip, ts in _rate_limit_store.items()
+            if not ts or now - ts[-1] > ttl
+        ]
+        for ip in stale_ips:
+            del _rate_limit_store[ip]
+        if stale_ips:
+            logger.debug("Rate limiter cleanup: evicted %d stale IPs, %d remaining",
+                         len(stale_ips), len(_rate_limit_store))
 
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next):
         """Per-IP rate limiting with sliding window and burst protection."""
+        nonlocal _RATE_LIMIT_REQUEST_COUNT
+
         # Skip non-API routes and exempt endpoints
         if not request.url.path.startswith("/api/") or request.url.path in _RATE_LIMIT_EXEMPT:
             return await call_next(request)
@@ -388,14 +411,13 @@ def create_app() -> FastAPI:
         timestamps.append(now)
         _rate_limit_store[client_ip] = timestamps
 
-        # Periodic cleanup of stale IPs (every ~100 requests)
-        if len(_rate_limit_store) > 100 and hash(client_ip) % 50 == 0:
-            stale_ips = [
-                ip for ip, ts in _rate_limit_store.items()
-                if not ts or now - ts[-1] > _RATE_LIMIT_WINDOW * 2
-            ]
-            for ip in stale_ips:
-                del _rate_limit_store[ip]
+        # Increment request counter
+        _RATE_LIMIT_REQUEST_COUNT += 1
+
+        # TTL-based cleanup: every 500 requests or when store exceeds 500 entries
+        if (_RATE_LIMIT_REQUEST_COUNT % _RATE_LIMIT_CLEANUP_INTERVAL == 0
+                or len(_rate_limit_store) > _RATE_LIMIT_MAX_STORE_SIZE):
+            _rate_limit_cleanup(now)
 
         response = await call_next(request)
         response.headers["X-RateLimit-Remaining"] = str(

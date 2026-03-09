@@ -204,6 +204,11 @@ class OrchestratorManager:
         # Track fire-and-forget tasks to prevent GC and log errors
         self._background_tasks: set[asyncio.Task] = set()
 
+        # FIX(task_001): Guard flag to prevent duplicate auto-restarts.
+        # Without this, multiple rapid _on_task_done callbacks could each
+        # drain the queue and schedule concurrent start_session() calls.
+        self._restarting: bool = False
+
         # Current orchestrator loop count (readable by /live endpoint)
         self._current_loop: int = 0
         # Effective budget (respects per-project override)
@@ -392,23 +397,40 @@ class OrchestratorManager:
                 f"[{self.project_id}] Orchestrator task crashed: {exc}",
                 exc_info=exc,
             )
-        # If messages arrived while the task was finishing, restart
-        if not self._message_queue.empty() and not self._stop_event.is_set():
-            pending_parts: list[str] = []
-            while not self._message_queue.empty():
-                try:
-                    _target, msg = self._message_queue.get_nowait()
-                    pending_parts.append(msg)
-                except asyncio.QueueEmpty:
-                    break
-            if pending_parts:
-                combined = "\n\n---\n\n".join(pending_parts)
-                logger.info(
-                    f"[{self.project_id}] {len(pending_parts)} pending message(s) "
-                    f"found after task ended — auto-restarting"
-                )
-                # Schedule a new session (can't await from a sync callback)
-                self._create_background_task(self.start_session(combined))
+        # FIX(task_001): Replaced empty() TOCTOU guard with direct get_nowait()
+        # drain. The prior pattern — `if not queue.empty(): get_nowait()` — is a
+        # race: another coroutine can drain the queue between the check and the
+        # get.  Instead, we try get_nowait() in a loop and break on QueueEmpty.
+        # Also added _restarting flag to prevent duplicate concurrent restarts.
+        if self._stop_event.is_set() or self._restarting:
+            return
+        pending_parts: list[str] = []
+        while True:
+            try:
+                _target, msg = self._message_queue.get_nowait()
+                pending_parts.append(msg)
+            except asyncio.QueueEmpty:
+                break
+        if pending_parts:
+            self._restarting = True
+            combined = "\n\n---\n\n".join(pending_parts)
+            logger.info(
+                f"[{self.project_id}] {len(pending_parts)} pending message(s) "
+                f"found after task ended — auto-restarting"
+            )
+            # Schedule a new session (can't await from a sync callback)
+            self._create_background_task(self._restart_with_message(combined))
+
+    async def _restart_with_message(self, message: str):
+        """Wrapper that resets the _restarting guard after start_session completes.
+
+        FIX(task_001): Without this wrapper, _restarting would stay True forever
+        if start_session raised, preventing all future auto-restarts.
+        """
+        try:
+            await self.start_session(message)
+        finally:
+            self._restarting = False
 
     async def _notify(self, text: str):
         """Send a progress/status update to the client."""
@@ -1046,8 +1068,11 @@ class OrchestratorManager:
                 logger.warning(f"[{self.project_id}] Cancelled {len(still_pending)} stuck background tasks")
 
         # Drain any remaining queued messages
+        # FIX(task_001): Replaced empty() TOCTOU guard with direct get_nowait()
+        # drain.  The prior `while not queue.empty()` has a race window where
+        # another coroutine can drain the queue between empty() and get_nowait().
         drained = 0
-        while not self._message_queue.empty():
+        while True:
             try:
                 self._message_queue.get_nowait()
                 drained += 1
@@ -1695,8 +1720,11 @@ class OrchestratorManager:
                     break
 
                 # Drain all pending messages from the queue (no message is lost)
+                # FIX(task_001): Replaced empty() TOCTOU guard with direct
+                # get_nowait() drain.  The prior `while not queue.empty()` pattern
+                # races with concurrent put() calls from inject_user_message().
                 injected_parts = []
-                while not self._message_queue.empty():
+                while True:
                     try:
                         target_name, injected_msg = self._message_queue.get_nowait()
                         injected_parts.append(f"[User message to {target_name}]:\n{injected_msg}")

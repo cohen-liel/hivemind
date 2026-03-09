@@ -396,9 +396,15 @@ class EventBus:
             )
 
         # Queue for DB persistence (non-blocking)
+        # FIX(task_001): Removed redundant full() check before put_nowait().
+        # The prior pattern — `if not queue.full(): queue.put_nowait(...)` — is a
+        # TOCTOU race: another coroutine can fill the queue between the check and
+        # the put.  put_nowait() already raises QueueFull atomically, so we just
+        # attempt the put and handle the exception.  This is safe because asyncio
+        # Queue.put_nowait is synchronous and will raise immediately if full.
         event_type = event.get("type", "")
         if project_id and event_type in _PERSIST_EVENT_TYPES:
-            if self._write_queue and not self._write_queue.full():
+            if self._write_queue is not None:
                 try:
                     self._write_queue.put_nowait(event)
                 except asyncio.QueueFull:

@@ -349,10 +349,10 @@ class ConnectionPool:
                 conn = await self._pool.get()
 
         try:
-            # Health check — recreate if broken
+            # Health check — recreate if broken (2s timeout to prevent blocking)
             try:
-                await conn.execute("SELECT 1")
-            except Exception:
+                await asyncio.wait_for(conn.execute("SELECT 1"), timeout=2.0)
+            except (asyncio.TimeoutError, Exception):
                 try:
                     await conn.close()
                 except Exception:
@@ -503,13 +503,20 @@ class SessionManager:
         await self.close()
 
     async def is_healthy(self) -> bool:
-        """Return ``True`` if the database connection is alive and responsive."""
+        """Return ``True`` if the database connection is alive and responsive.
+
+        Uses a 2-second timeout to prevent blocking on stuck connections.
+        """
         try:
             db = await self._get_db()
-            cursor = await db.execute("SELECT 1")
-            row = await cursor.fetchone()
+            cursor = await asyncio.wait_for(db.execute("SELECT 1"), timeout=2.0)
+            row = await asyncio.wait_for(cursor.fetchone(), timeout=2.0)
             return row is not None and row[0] == 1
+        except asyncio.TimeoutError:
+            logger.error("Database health check timed out after 2s", exc_info=True)
+            return False
         except Exception:
+            logger.error("Database health check failed", exc_info=True)
             return False
 
     async def _get_db(self) -> aiosqlite.Connection:

@@ -189,9 +189,17 @@ async def execute_graph(
             )
 
             # Convert exceptions to FAILED TaskOutputs
+            # FIX(task_001): Check for CancelledError before the generic
+            # BaseException handler so task cancellations are re-raised
+            # (propagating cancellation) rather than misclassified as failures.
             results: list[TaskOutput] = []
             for task_item, raw in zip(batch, raw_results):
-                if isinstance(raw, BaseException):
+                if isinstance(raw, asyncio.CancelledError):
+                    # Propagate cancellation — the entire graph execution
+                    # should stop, not record this as a task failure.
+                    logger.info(f"[DAG] Task {task_item.id} cancelled — propagating")
+                    raise raw
+                elif isinstance(raw, BaseException):
                     logger.error(f"[DAG] Task {task_item.id} raised exception: {raw}")
                     error_output = TaskOutput(
                         task_id=task_item.id,
@@ -433,6 +441,14 @@ async def _run_single_task(
         )
         output.failure_category = FailureCategory.TIMEOUT
         return output
+    except asyncio.CancelledError:
+        # FIX(task_001): Explicit CancelledError handler — must come before any
+        # generic Exception catch.  Without this, a cancellation (e.g. from
+        # session stop or budget exhaustion) would be misclassified as a task
+        # failure by asyncio.gather(return_exceptions=True) in execute_graph.
+        # Re-raising preserves correct cancellation semantics.
+        logger.info(f"[DAG] Task {task.id} was cancelled")
+        raise
     except CircuitOpenError as exc:
         logger.error(f"[DAG] Task {task.id} rejected by circuit breaker: {exc}")
         output = TaskOutput(
