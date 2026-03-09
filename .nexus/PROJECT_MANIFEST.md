@@ -191,6 +191,28 @@ Full report: `.nexus/CODE_REVIEW.md`
 | CR-M4 | `dict(manager.agent_states)` snapshot before iterating | server.py |
 | CR-M5 | `asyncio.to_thread()` for blocking `write_text()` | server.py |
 
+### Reviewer Verification (2026-03-09, Round 3):
+All 7 fixes from commit `864297e` verified correct:
+
+| Change | Verdict | Notes |
+|--------|---------|-------|
+| `_run_dag_session` 3× independent try/except | ✅ Correct | Sensible `""` defaults, warning logs with project_id |
+| `asyncio.to_thread(_list_workspace_files)` | ✅ Correct | Method is sync (`def`), does blocking `rglob()` + `is_file()` |
+| `_check_premature_completion` writer/reviewer sets | ✅ Correct | Set intersection `&` checks ANY matching role |
+| `_WRITER_ROLES` expansion in `_plan_batches` | ✅ Correct | Matches `dag_executor.py` writer set exactly |
+| `dict(manager.agent_states).items()` snapshot | ✅ Correct | Prevents RuntimeError on dict mutation |
+| `asyncio.to_thread(state_file.write_text, ...)` | ✅ Correct | Blocking file write offloaded to thread pool |
+| `DASHBOARD_HOST` default `127.0.0.1` | ✅ Correct | Security fix, env override preserved |
+
+**New issues found during review:**
+
+| ID | Sev | File:Line | Issue |
+|----|-----|-----------|-------|
+| R3-1 | MEDIUM | orchestrator.py:1174-1182 | `_load_manifest()` is `async def` but does blocking `Path.exists()` + `read_text()` — should use `asyncio.to_thread()` like `_list_workspace_files` (BIO fix was incomplete) |
+| R3-2 | MEDIUM | orchestrator.py:1184-1209 | `_load_memory_snapshot()` same issue — blocking `Path.exists()` + `read_text()` + `json.loads()` in async method |
+| R3-3 | LOW | orchestrator.py:607-610+2328-2332 | `_writer_roles` / `_WRITER_ROLES` duplicated as local vars in two methods — should be a class-level constant for single source of truth |
+| R3-4 | LOW | orchestrator.py:2333 | `_READER_ROLES` in `_plan_batches` only has 3 roles vs 7 in `dag_executor.py` — functionally OK (unknown roles fall through to readers) but inconsistent |
+
 ### Top Quick Wins:
 1. Add Pydantic validators to `UpdateSettingsRequest` and `SetBudgetRequest` — prevent invalid config values
 2. Add field name whitelist to `session_manager.update_project_fields()` — prevent SQL column injection ✅ Done
