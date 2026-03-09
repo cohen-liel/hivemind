@@ -1,12 +1,14 @@
 """
-DAG Executor — The Orchestrator's new brain.
+DAG Executor — The Orchestrator's execution engine.
 
-Replaces the regex-based delegate-parsing loop with a clean DAG execution engine:
-- Reads TaskInput objects (typed contracts)
-- Runs independent tasks in PARALLEL, conflicting tasks SEQUENTIALLY
-- Reads TaskOutput.status — NO text parsing
-- Auto-commits after each round (only the executor touches git)
-- Handles retries, failures, and blocked paths gracefully
+v2: Self-Healing DAG with Artifact-Based Context Passing.
+
+Key upgrades:
+- Self-healing: auto-classifies failures and injects remediation tasks into the DAG
+- Artifact passing: downstream agents receive structured artifacts, not just summaries
+- Smart retry: different retry strategies based on failure category
+- Artifact validation: verifies agents produced their required artifacts
+- Enhanced parallelism: better conflict detection using artifact dependencies
 """
 
 from __future__ import annotations
@@ -15,15 +17,20 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 
 import state
 from contracts import (
     AgentRole,
+    Artifact,
+    ArtifactType,
+    FailureCategory,
     TaskGraph,
     TaskInput,
     TaskOutput,
     TaskStatus,
+    classify_failure,
+    create_remediation_task,
     extract_task_output,
     task_input_to_prompt,
 )
@@ -32,8 +39,11 @@ from skills_registry import build_skill_prompt, select_skills_for_task
 
 logger = logging.getLogger(__name__)
 
-# Max times a single task can be retried on failure
-MAX_TASK_RETRIES = 2
+# --- Configuration ---
+MAX_TASK_RETRIES = 2          # Direct retries per task
+MAX_REMEDIATION_DEPTH = 2     # Max chain of fix_xxx tasks before giving up
+MAX_TOTAL_REMEDIATIONS = 5    # Max total remediation tasks per graph execution
+MAX_ROUNDS = 50               # Safety limit on execution rounds
 
 # Roles that write/modify files — must run sequentially when file scopes overlap
 _WRITER_ROLES = {
@@ -41,7 +51,6 @@ _WRITER_ROLES = {
     AgentRole.BACKEND_DEVELOPER,
     AgentRole.DATABASE_EXPERT,
     AgentRole.DEVOPS,
-    # Legacy
     AgentRole.TYPESCRIPT_ARCHITECT,
     AgentRole.PYTHON_BACKEND,
     AgentRole.DEVELOPER,
@@ -54,8 +63,15 @@ _READER_ROLES = {
     AgentRole.SECURITY_AUDITOR,
     AgentRole.UX_CRITIC,
     AgentRole.TEST_ENGINEER,
-    # Legacy
     AgentRole.TESTER,
+    AgentRole.MEMORY,
+}
+
+# Failure categories that should NOT be retried (waste of money)
+_NO_RETRY_CATEGORIES = {
+    FailureCategory.UNCLEAR_GOAL,
+    FailureCategory.PERMISSION,
+    FailureCategory.EXTERNAL,
 }
 
 
@@ -70,33 +86,42 @@ async def execute_graph(
     sdk_client=None,
     on_task_start: Callable[[TaskInput], Awaitable[None]] | None = None,
     on_task_done: Callable[[TaskInput, TaskOutput], Awaitable[None]] | None = None,
+    on_remediation: Callable[[TaskInput, TaskOutput, TaskInput], Awaitable[None]] | None = None,
     max_budget_usd: float = 50.0,
     session_id_store: dict[str, str] | None = None,
-) -> list[TaskOutput]:
+) -> ExecutionResult:
     """
-    Execute a TaskGraph to completion.
+    Execute a TaskGraph to completion with self-healing.
 
     Args:
         graph: The PM's execution plan
         project_dir: Working directory for all agents
         specialist_prompts: dict[role_value -> system_prompt]
         sdk_client: ClaudeSDKManager instance (defaults to state.sdk_client)
-        on_task_start: Optional async callback fired when a task begins
-        on_task_done: Optional async callback fired when a task finishes
+        on_task_start: Async callback fired when a task begins
+        on_task_done: Async callback fired when a task finishes
+        on_remediation: Async callback fired when a remediation task is created
         max_budget_usd: Hard budget cap across the entire graph
         session_id_store: Mutable dict to persist agent session IDs for resume
 
     Returns:
-        List of TaskOutput for all executed tasks (in completion order)
+        ExecutionResult with all outputs, stats, and healing history
     """
     sdk = sdk_client or state.sdk_client
     if sdk is None:
         raise RuntimeError("SDK client not initialized")
 
-    completed: dict[str, TaskOutput] = {}   # task_id -> TaskOutput
-    retries: dict[str, int] = {}             # task_id -> retry count
-    total_cost = 0.0
-    session_ids = session_id_store or {}
+    ctx = _ExecutionContext(
+        graph=graph,
+        project_dir=project_dir,
+        specialist_prompts=specialist_prompts,
+        sdk=sdk,
+        max_budget_usd=max_budget_usd,
+        session_ids=session_id_store or {},
+        on_task_start=on_task_start,
+        on_task_done=on_task_done,
+        on_remediation=on_remediation,
+    )
 
     logger.info(
         f"[DAG] Starting graph execution: project={graph.project_id} "
@@ -104,86 +129,167 @@ async def execute_graph(
     )
 
     round_num = 0
-    while not graph.is_complete(completed):
+    while not graph.is_complete(ctx.completed):
         round_num += 1
-        ready = graph.ready_tasks(completed)
+        if round_num > MAX_ROUNDS:
+            logger.error(f"[DAG] Safety limit: exceeded {MAX_ROUNDS} rounds")
+            break
+
+        ready = graph.ready_tasks(ctx.completed)
 
         if not ready:
-            # No tasks ready but graph not complete → deadlock or all failed
-            if graph.has_failed(completed):
-                logger.error("[DAG] Graph has unresolvable failures. Stopping.")
+            if graph.has_failed(ctx.completed):
+                # Try self-healing before giving up
+                healed = await _try_self_heal(ctx)
+                if healed:
+                    continue  # New tasks were added, re-check ready
+                logger.error("[DAG] Graph has unresolvable failures after healing attempts. Stopping.")
                 break
             logger.warning("[DAG] No ready tasks but graph not complete. Deadlock?")
             break
 
-        if total_cost >= max_budget_usd:
-            logger.error(f"[DAG] Budget exhausted (${total_cost:.2f} >= ${max_budget_usd})")
+        if ctx.total_cost >= max_budget_usd:
+            logger.error(f"[DAG] Budget exhausted (${ctx.total_cost:.2f} >= ${max_budget_usd})")
             break
 
         logger.info(f"[DAG] Round {round_num}: {len(ready)} ready tasks")
 
-        # Split into parallel batches (no file conflicts) vs sequential
+        # Split into parallel batches
         batches = _plan_batches(ready)
 
         for batch in batches:
-            # Fire all tasks in this batch concurrently
             coros = [
-                _run_single_task(
-                    task=task,
-                    graph=graph,
-                    completed=completed,
-                    project_dir=project_dir,
-                    specialist_prompts=specialist_prompts,
-                    sdk=sdk,
-                    session_ids=session_ids,
-                    on_start=on_task_start,
-                )
+                _run_single_task(task, ctx)
                 for task in batch
             ]
-            results: list[TaskOutput] = await asyncio.gather(*coros, return_exceptions=False)
+            results: list[TaskOutput] = await asyncio.gather(
+                *coros, return_exceptions=False
+            )
 
             for task, output in zip(batch, results):
-                completed[task.id] = output
-                total_cost += output.cost_usd
+                ctx.completed[task.id] = output
+                ctx.total_cost += output.cost_usd
+
                 logger.info(
-                    f"[DAG] Task {task.id} ({task.role.value}) → "
+                    f"[DAG] Task {task.id} ({task.role.value}) -> "
                     f"{output.status.value} (${output.cost_usd:.4f}, "
                     f"confidence={output.confidence:.2f})"
                 )
-                if on_task_done:
+
+                if ctx.on_task_done:
                     try:
-                        await on_task_done(task, output)
+                        await ctx.on_task_done(task, output)
                     except Exception as exc:
-                        logger.warning(f"[DAG] on_task_done callback failed for {task.id}: {exc}")
+                        logger.warning(f"[DAG] on_task_done callback failed: {exc}")
 
-                # Handle failures: retry if budget allows
-                if not output.is_successful() and not output.is_terminal():
-                    retries[task.id] = retries.get(task.id, 0) + 1
-                    if retries[task.id] <= MAX_TASK_RETRIES:
-                        logger.warning(
-                            f"[DAG] Task {task.id} failed ({output.status.value}), "
-                            f"retrying ({retries[task.id]}/{MAX_TASK_RETRIES})"
-                        )
-                        del completed[task.id]  # Remove to make it eligible again
+                # Handle failures
+                if not output.is_successful():
+                    await _handle_failure(task, output, ctx)
 
-        # Auto-commit after each round (only executor commits)
+                # Validate required artifacts
+                if output.is_successful() and task.required_artifacts:
+                    _validate_artifacts(task, output)
+
+        # Auto-commit after each round
         try:
-            round_outputs = [completed[t.id] for t in ready if t.id in completed]
+            round_outputs = [ctx.completed[t.id] for t in ready if t.id in ctx.completed]
             committed = await executor_commit(project_dir, round_outputs, round_num)
             if committed:
                 logger.info(f"[DAG] Round {round_num} committed: {committed}")
         except Exception as exc:
             logger.warning(f"[DAG] Auto-commit failed (non-fatal): {exc}")
 
-    all_outputs = list(completed.values())
-    total_cost_final = sum(o.cost_usd for o in all_outputs)
-    success_count = sum(1 for o in all_outputs if o.is_successful())
+    return _build_result(ctx, graph)
 
-    logger.info(
-        f"[DAG] Graph complete: {success_count}/{len(all_outputs)} succeeded, "
-        f"total cost=${total_cost_final:.4f}"
+
+# ---------------------------------------------------------------------------
+# Execution context (mutable state for a single graph execution)
+# ---------------------------------------------------------------------------
+
+class _ExecutionContext:
+    """Mutable state for a single graph execution."""
+
+    def __init__(
+        self,
+        graph: TaskGraph,
+        project_dir: str,
+        specialist_prompts: dict[str, str],
+        sdk: Any,
+        max_budget_usd: float,
+        session_ids: dict[str, str],
+        on_task_start: Callable | None = None,
+        on_task_done: Callable | None = None,
+        on_remediation: Callable | None = None,
+    ):
+        self.graph = graph
+        self.project_dir = project_dir
+        self.specialist_prompts = specialist_prompts
+        self.sdk = sdk
+        self.max_budget_usd = max_budget_usd
+        self.session_ids = session_ids
+        self.on_task_start = on_task_start
+        self.on_task_done = on_task_done
+        self.on_remediation = on_remediation
+
+        self.completed: dict[str, TaskOutput] = {}
+        self.retries: dict[str, int] = {}
+        self.total_cost: float = 0.0
+        self.remediation_count: int = 0
+        self.healing_history: list[dict[str, str]] = []
+        self.task_counter: int = len(graph.tasks)
+
+
+# ---------------------------------------------------------------------------
+# Execution Result
+# ---------------------------------------------------------------------------
+
+class ExecutionResult:
+    """Result of a graph execution, including healing history."""
+
+    def __init__(
+        self,
+        outputs: list[TaskOutput],
+        total_cost: float,
+        success_count: int,
+        failure_count: int,
+        remediation_count: int,
+        healing_history: list[dict[str, str]],
+    ):
+        self.outputs = outputs
+        self.total_cost = total_cost
+        self.success_count = success_count
+        self.failure_count = failure_count
+        self.remediation_count = remediation_count
+        self.healing_history = healing_history
+
+    @property
+    def all_successful(self) -> bool:
+        return self.failure_count == 0
+
+    def summary_text(self) -> str:
+        lines = [
+            f"Tasks: {self.success_count + self.failure_count} total, "
+            f"{self.success_count} succeeded, {self.failure_count} failed",
+            f"Remediations: {self.remediation_count}",
+            f"Total cost: ${self.total_cost:.4f}",
+        ]
+        if self.healing_history:
+            lines.append("\nSelf-healing actions:")
+            for h in self.healing_history:
+                lines.append(f"  - {h.get('action', 'unknown')}: {h.get('detail', '')}")
+        return "\n".join(lines)
+
+
+def _build_result(ctx: _ExecutionContext, graph: TaskGraph) -> ExecutionResult:
+    all_outputs = list(ctx.completed.values())
+    return ExecutionResult(
+        outputs=all_outputs,
+        total_cost=sum(o.cost_usd for o in all_outputs),
+        success_count=sum(1 for o in all_outputs if o.is_successful()),
+        failure_count=sum(1 for o in all_outputs if not o.is_successful()),
+        remediation_count=ctx.remediation_count,
+        healing_history=ctx.healing_history,
     )
-    return all_outputs
 
 
 # ---------------------------------------------------------------------------
@@ -192,69 +298,60 @@ async def execute_graph(
 
 async def _run_single_task(
     task: TaskInput,
-    graph: TaskGraph,
-    completed: dict[str, TaskOutput],
-    project_dir: str,
-    specialist_prompts: dict[str, str],
-    sdk,
-    session_ids: dict[str, str],
-    on_start: Callable | None,
+    ctx: _ExecutionContext,
 ) -> TaskOutput:
-    """Run one task: build prompt → call specialist → parse TaskOutput."""
-    if on_start:
+    """Run one task: build prompt -> call specialist -> parse TaskOutput."""
+    if ctx.on_task_start:
         try:
-            await on_start(task)
+            await ctx.on_task_start(task)
         except Exception:
             pass
 
-    # Gather context from upstream tasks
+    # Gather context from upstream tasks (now with structured artifacts)
     context_outputs = {
-        tid: completed[tid]
+        tid: ctx.completed[tid]
         for tid in task.context_from
-        if tid in completed
+        if tid in ctx.completed
     }
 
     # Build the prompt using the typed contract serialiser
     prompt = task_input_to_prompt(task, context_outputs)
 
     # Get specialist system prompt
-    system_prompt = specialist_prompts.get(
+    system_prompt = ctx.specialist_prompts.get(
         task.role.value,
-        specialist_prompts.get("backend_developer", "You are an expert software engineer.")
+        ctx.specialist_prompts.get("backend_developer", "You are an expert software engineer.")
     )
 
-    # Inject relevant skills for this role + task (top 5, relevance-ranked)
+    # Inject relevant skills
     try:
         skill_names = select_skills_for_task(task.role.value, task.goal, max_skills=5)
         if skill_names:
             system_prompt = system_prompt + build_skill_prompt(skill_names)
-            logger.debug(
-                f"[DAG] Task {task.id}: injected skills {skill_names}"
-            )
     except Exception as exc:
         logger.warning(f"[DAG] Task {task.id}: skill injection failed (non-fatal): {exc}")
 
-    # Resume session if we have one for this role
-    session_key = f"{graph.project_id}:{task.role.value}"
-    session_id = session_ids.get(session_key)
+    # Resume session if available
+    session_key = f"{ctx.graph.project_id}:{task.role.value}"
+    session_id = ctx.session_ids.get(session_key)
 
     t0 = time.monotonic()
-    response = await sdk.query_with_retry(
+    response = await ctx.sdk.query_with_retry(
         prompt=prompt,
         system_prompt=system_prompt,
-        cwd=project_dir,
+        cwd=ctx.project_dir,
         session_id=session_id,
         max_turns=30,
         max_budget_usd=15.0,
     )
     elapsed = time.monotonic() - t0
 
-    # Persist session ID for resume
+    # Persist session ID
     if response.session_id:
-        session_ids[session_key] = response.session_id
+        ctx.session_ids[session_key] = response.session_id
 
     if response.is_error:
-        return TaskOutput(
+        output = TaskOutput(
             task_id=task.id,
             status=TaskStatus.FAILED,
             summary=f"Agent error: {response.error_message}",
@@ -262,17 +359,171 @@ async def _run_single_task(
             cost_usd=response.cost_usd,
             turns_used=response.num_turns,
             confidence=0.0,
+            failure_details=response.error_message,
         )
+        output.failure_category = classify_failure(output)
+        return output
 
     output = extract_task_output(response.text, task.id)
     output.cost_usd = response.cost_usd
     output.turns_used = response.num_turns
+
+    # Auto-classify failure if agent didn't
+    if not output.is_successful() and not output.failure_category:
+        output.failure_category = classify_failure(output)
 
     logger.debug(
         f"[DAG] Task {task.id} finished in {elapsed:.1f}s "
         f"({response.num_turns} turns, ${response.cost_usd:.4f})"
     )
     return output
+
+
+# ---------------------------------------------------------------------------
+# Failure handling — smart retry + self-healing
+# ---------------------------------------------------------------------------
+
+async def _handle_failure(
+    task: TaskInput,
+    output: TaskOutput,
+    ctx: _ExecutionContext,
+) -> None:
+    """Handle a failed task: decide between retry, remediation, or give up."""
+    category = output.failure_category or classify_failure(output)
+
+    # Don't retry certain categories
+    if category in _NO_RETRY_CATEGORIES:
+        logger.warning(
+            f"[DAG] Task {task.id} failed with {category.value} — not retryable"
+        )
+        return
+
+    # Check if we already retried too many times
+    retry_count = ctx.retries.get(task.id, 0)
+
+    if retry_count < MAX_TASK_RETRIES and not output.is_terminal():
+        # Simple retry: remove from completed so it becomes eligible again
+        ctx.retries[task.id] = retry_count + 1
+        logger.warning(
+            f"[DAG] Task {task.id} failed ({category.value}), "
+            f"retrying ({ctx.retries[task.id]}/{MAX_TASK_RETRIES})"
+        )
+        del ctx.completed[task.id]
+        return
+
+    # Retries exhausted — try remediation
+    if ctx.remediation_count < MAX_TOTAL_REMEDIATIONS:
+        # Check remediation depth (don't chain too many fix tasks)
+        depth = _remediation_depth(task)
+        if depth < MAX_REMEDIATION_DEPTH:
+            await _create_remediation(task, output, ctx)
+
+
+def _remediation_depth(task: TaskInput) -> int:
+    """Count how deep in the remediation chain this task is."""
+    depth = 0
+    if task.is_remediation:
+        depth = 1
+        # Could trace further via original_task_id, but 1 level is enough
+    return depth
+
+
+async def _create_remediation(
+    failed_task: TaskInput,
+    failed_output: TaskOutput,
+    ctx: _ExecutionContext,
+) -> None:
+    """Create and inject a remediation task into the graph."""
+    ctx.task_counter += 1
+    remediation = create_remediation_task(
+        failed_task=failed_task,
+        failed_output=failed_output,
+        task_counter=ctx.task_counter,
+    )
+
+    if remediation is None:
+        logger.warning(
+            f"[DAG] No remediation strategy for {failed_task.id} "
+            f"({failed_output.failure_category})"
+        )
+        return
+
+    # Inject into the live graph
+    ctx.graph.add_task(remediation)
+    ctx.remediation_count += 1
+
+    healing_entry = {
+        "action": "remediation_created",
+        "failed_task": failed_task.id,
+        "failure_category": (failed_output.failure_category or FailureCategory.UNKNOWN).value,
+        "remediation_task": remediation.id,
+        "detail": f"Auto-created {remediation.id} ({remediation.role.value}) to fix "
+                  f"{failed_task.id}: {failed_output.failure_details[:100]}",
+    }
+    ctx.healing_history.append(healing_entry)
+
+    logger.info(
+        f"[DAG] Self-healing: created {remediation.id} ({remediation.role.value}) "
+        f"to fix {failed_task.id} [{failed_output.failure_category}]"
+    )
+
+    if ctx.on_remediation:
+        try:
+            await ctx.on_remediation(failed_task, failed_output, remediation)
+        except Exception as exc:
+            logger.warning(f"[DAG] on_remediation callback failed: {exc}")
+
+
+async def _try_self_heal(ctx: _ExecutionContext) -> bool:
+    """Last-resort self-healing: check all failed tasks for possible remediation.
+
+    Returns True if at least one remediation task was created.
+    """
+    healed = False
+    for task in ctx.graph.tasks:
+        if task.id not in ctx.completed:
+            continue
+        output = ctx.completed[task.id]
+        if output.is_successful() or output.is_terminal():
+            continue
+        if task.is_remediation:
+            continue  # Don't remediate a remediation
+
+        # Check if we already created a remediation for this task
+        existing_fix = any(
+            t.is_remediation and t.original_task_id == task.id
+            for t in ctx.graph.tasks
+        )
+        if existing_fix:
+            continue
+
+        if ctx.remediation_count < MAX_TOTAL_REMEDIATIONS:
+            await _create_remediation(task, output, ctx)
+            healed = True
+
+    return healed
+
+
+# ---------------------------------------------------------------------------
+# Artifact validation
+# ---------------------------------------------------------------------------
+
+def _validate_artifacts(task: TaskInput, output: TaskOutput) -> None:
+    """Warn if an agent didn't produce its required artifacts."""
+    if not task.required_artifacts:
+        return
+
+    produced_types = {a.type for a in output.structured_artifacts}
+    missing = set(task.required_artifacts) - produced_types
+
+    if missing:
+        missing_names = [m.value for m in missing]
+        logger.warning(
+            f"[DAG] Task {task.id} missing required artifacts: {missing_names}"
+        )
+        output.issues.append(
+            f"Missing required artifacts: {', '.join(missing_names)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -311,17 +562,13 @@ def _plan_batches(tasks: list[TaskInput]) -> list[list[TaskInput]]:
 
 
 def _split_writers_by_conflicts(writers: list[TaskInput]) -> list[list[TaskInput]]:
-    """
-    Group writer tasks into sequential batches to avoid file conflicts.
-    Tasks with no known file_scope (empty) are treated as potentially conflicting.
-    """
+    """Group writer tasks into sequential batches to avoid file conflicts."""
     batches: list[list[TaskInput]] = []
     claimed_files: set[str] = set()
     current_batch: list[TaskInput] = []
 
     for task in writers:
         if not task.files_scope:
-            # Unknown scope → flush current batch, run alone
             if current_batch:
                 batches.append(current_batch)
                 current_batch = []
@@ -331,7 +578,6 @@ def _split_writers_by_conflicts(writers: list[TaskInput]) -> list[list[TaskInput
 
         scope = set(task.files_scope)
         if scope & claimed_files:
-            # Conflict: flush and start new batch
             if current_batch:
                 batches.append(current_batch)
             current_batch = [task]
@@ -347,32 +593,50 @@ def _split_writers_by_conflicts(writers: list[TaskInput]) -> list[list[TaskInput
 
 
 # ---------------------------------------------------------------------------
-# Summary helpers (for the orchestrator to surface to frontend)
+# Summary helpers
 # ---------------------------------------------------------------------------
 
-def build_execution_summary(graph: TaskGraph, outputs: list[TaskOutput]) -> str:
+def build_execution_summary(graph: TaskGraph, result: ExecutionResult) -> str:
     """Build a human-readable summary of the graph execution."""
-    output_map = {o.task_id: o for o in outputs}
+    output_map = {o.task_id: o for o in result.outputs}
     lines = [
         f"## Execution Summary — {graph.vision}",
-        f"Tasks: {len(outputs)}/{len(graph.tasks)} executed",
+        f"Tasks: {result.success_count + result.failure_count}/{len(graph.tasks)} executed "
+        f"({result.success_count} succeeded, {result.failure_count} failed)",
+        f"Self-healing: {result.remediation_count} remediation tasks created",
+        f"Total cost: ${result.total_cost:.4f}",
         "",
     ]
-    total_cost = 0.0
+
     for task in graph.tasks:
         output = output_map.get(task.id)
         if output:
-            icon = "✅" if output.is_successful() else "❌" if output.status == TaskStatus.FAILED else "⚠️"
+            if output.is_successful():
+                icon = "✅"
+            elif output.status == TaskStatus.FAILED:
+                icon = "❌"
+            else:
+                icon = "⚠️"
+
+            prefix = "🔧 " if task.is_remediation else ""
             lines.append(
-                f"{icon} [{task.id}] {task.role.value}: {output.summary[:120]}"
+                f"{icon} {prefix}[{task.id}] {task.role.value}: {output.summary[:120]}"
             )
+            if output.structured_artifacts:
+                art_names = [a.title for a in output.structured_artifacts[:3]]
+                lines.append(f"   Artifacts: {', '.join(art_names)}")
             if output.artifacts:
                 lines.append(f"   Files: {', '.join(output.artifacts[:5])}")
             if output.issues:
                 lines.append(f"   Issues: {'; '.join(output.issues[:2])}")
-            total_cost += output.cost_usd
+            if output.failure_category:
+                lines.append(f"   Failure: {output.failure_category.value}")
         else:
             lines.append(f"⏭️  [{task.id}] {task.role.value}: Not executed")
 
-    lines.append(f"\nTotal cost: ${total_cost:.4f}")
+    if result.healing_history:
+        lines.append("\n### Self-Healing Actions")
+        for h in result.healing_history:
+            lines.append(f"  🔧 {h.get('detail', '')}")
+
     return "\n".join(lines)

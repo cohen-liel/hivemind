@@ -922,42 +922,54 @@ class OrchestratorManager:
 
     async def _run_dag_session(self, user_message: str):
         """
-        New execution path using the Typed Contract Protocol:
+        Execution path using the Typed Contract Protocol v2:
 
-        1. PM Agent  → creates TaskGraph (structured, typed)
-        2. DAG Executor → runs tasks in dependency order, parallel when safe
-        3. Commits  → only the executor commits (git discipline)
-        4. Summary  → returned to user as final output
+        1. Load Memory  → read existing MemorySnapshot for context continuity
+        2. PM Agent     → creates TaskGraph (structured, typed, artifact-aware)
+        3. DAG Executor → runs tasks with self-healing, artifact passing, smart retry
+        4. Memory Agent → updates project memory from all task outputs
+        5. Summary      → returned to user as final output
 
         Falls back to legacy _run_orchestrator if PM fails.
         """
-        # Lazy imports to avoid circular dependency (orchestrator→pm_agent→state→orchestrator)
+        # Lazy imports to avoid circular dependency
         from pm_agent import create_task_graph, fallback_single_task_graph
-        from dag_executor import execute_graph, build_execution_summary
+        from dag_executor import execute_graph, build_execution_summary, ExecutionResult
+        from memory_agent import update_project_memory
 
         try:
-            await self._notify("🗺️ **PM Agent** is creating the execution plan...")
+            await self._notify("🧠 **Loading project memory...**")
 
-            # Load project manifest and file tree for PM context
+            # Step 0: Load project memory for context continuity
             manifest = await self._load_manifest()
+            memory_snapshot = await self._load_memory_snapshot()
             file_tree = self._list_workspace_files()
 
-            # Step 1: PM Agent → TaskGraph
+            if memory_snapshot:
+                await self._notify("📚 Found existing project memory — PM will use it for context.")
+
+            await self._notify("🗺️ **PM Agent** is creating the execution plan...")
+
+            # Step 1: PM Agent → TaskGraph (now with memory context)
             try:
                 graph = await create_task_graph(
                     user_message=user_message,
                     project_id=self.project_id,
                     manifest=manifest,
                     file_tree=file_tree,
+                    memory_snapshot=memory_snapshot,
                 )
             except Exception as pm_err:
                 logger.warning(f"[{self.project_id}] PM Agent failed: {pm_err}. Using fallback.")
                 graph = fallback_single_task_graph(user_message, self.project_id)
 
+            # Report the plan with artifact requirements
+            artifact_count = sum(len(t.required_artifacts) for t in graph.tasks)
             await self._notify(
                 f"📋 **Plan ready:** {graph.vision}\n"
                 f"Tasks: {len(graph.tasks)} | "
-                f"Epics: {len(graph.epic_breakdown)}"
+                f"Epics: {len(graph.epic_breakdown)} | "
+                f"Required artifacts: {artifact_count}"
             )
 
             # Emit the full graph to the frontend for visualization
@@ -966,25 +978,45 @@ class OrchestratorManager:
             # Session IDs shared across tasks (agent resume)
             session_id_store: dict[str, str] = {}
 
-            # Step 2: DAG Executor
-            outputs = await execute_graph(
+            # Step 2: DAG Executor (now with self-healing + artifact passing)
+            result: ExecutionResult = await execute_graph(
                 graph=graph,
                 project_dir=self.project_dir,
                 specialist_prompts=SPECIALIST_PROMPTS,
                 sdk_client=self.sdk,
                 on_task_start=self._on_dag_task_start,
                 on_task_done=self._on_dag_task_done,
+                on_remediation=self._on_dag_remediation,
                 max_budget_usd=self._effective_budget,
                 session_id_store=session_id_store,
             )
 
-            # Step 3: Final summary
-            summary = build_execution_summary(graph, outputs)
+            # Step 3: Memory Agent — update project knowledge
+            try:
+                await self._notify("🧠 **Memory Agent** is updating project knowledge...")
+                await update_project_memory(
+                    project_dir=self.project_dir,
+                    project_id=self.project_id,
+                    graph=graph,
+                    outputs=result.outputs,
+                    use_llm=len(result.outputs) >= 3,
+                )
+                await self._notify("📝 Project memory updated successfully.")
+            except Exception as mem_err:
+                logger.warning(f"[{self.project_id}] Memory Agent failed (non-fatal): {mem_err}")
+
+            # Step 4: Final summary with healing history
+            summary = build_execution_summary(graph, result)
+            if result.healing_history:
+                summary += f"\n\n🔧 **Self-healing activated:** {result.remediation_count} auto-fixes applied."
             await self._send_final(summary)
 
             # Record outputs in conversation log for persistence
-            for output in outputs:
+            for output in result.outputs:
                 self._record_dag_output(output)
+
+            # Update total cost
+            self.total_cost_usd += result.total_cost
 
         except asyncio.CancelledError:
             logger.info(f"[{self.project_id}] DAG session cancelled")
@@ -998,37 +1030,85 @@ class OrchestratorManager:
 
     async def _on_dag_task_start(self, task: "TaskInput"):
         """Callback: fired when DAG executor starts a task."""
+        prefix = "🔧 " if task.is_remediation else ""
+        required = ""
+        if task.required_artifacts:
+            art_names = [a.value for a in task.required_artifacts]
+            required = f" | Artifacts: {', '.join(art_names)}"
         await self._emit_event(
             "agent_update",
             agent=task.role.value,
             status="working",
             task=task.goal[:120],
+            is_remediation=task.is_remediation,
         )
-        await self._notify(f"🔄 **{task.role.value}** starting: {task.goal[:80]}...")
+        await self._notify(
+            f"🔄 {prefix}**{task.role.value}** starting: {task.goal[:80]}...{required}"
+        )
 
     async def _on_dag_task_done(self, task: "TaskInput", output: "TaskOutput"):
         """Callback: fired when DAG executor completes a task."""
         icon = "✅" if output.is_successful() else "❌"
+        prefix = "🔧 " if task.is_remediation else ""
+        artifact_info = ""
+        if output.structured_artifacts:
+            art_names = [a.title for a in output.structured_artifacts[:3]]
+            artifact_info = f" | Artifacts: {', '.join(art_names)}"
         await self._emit_event(
             "agent_update",
             agent=task.role.value,
             status="done" if output.is_successful() else "error",
             summary=output.summary[:200],
             cost=output.cost_usd,
+            artifacts_count=len(output.structured_artifacts),
+            is_remediation=task.is_remediation,
         )
         await self._notify(
-            f"{icon} **{task.role.value}** [{output.status.value}] "
-            f"${output.cost_usd:.4f} — {output.summary[:100]}"
+            f"{icon} {prefix}**{task.role.value}** [{output.status.value}] "
+            f"${output.cost_usd:.4f} — {output.summary[:100]}{artifact_info}"
+        )
+
+    async def _on_dag_remediation(
+        self,
+        failed_task: "TaskInput",
+        failed_output: "TaskOutput",
+        remediation_task: "TaskInput",
+    ):
+        """Callback: fired when DAG executor creates a self-healing remediation task."""
+        category = failed_output.failure_category
+        cat_str = category.value if category else "unknown"
+        await self._emit_event(
+            "self_healing",
+            failed_task=failed_task.id,
+            failure_category=cat_str,
+            remediation_task=remediation_task.id,
+            remediation_role=remediation_task.role.value,
+        )
+        await self._notify(
+            f"🔧 **Self-healing:** Task {failed_task.id} failed ({cat_str}). "
+            f"Auto-created fix task {remediation_task.id} ({remediation_task.role.value})."
         )
 
     def _record_dag_output(self, output: "TaskOutput"):
         """Store a TaskOutput in the conversation log for persistence."""
+        artifact_lines = []
+        if output.structured_artifacts:
+            for art in output.structured_artifacts:
+                artifact_lines.append(f"  [{art.type.value}] {art.title}: {art.summary}")
+        artifacts_str = "\n".join(artifact_lines) if artifact_lines else "none"
+
         content = (
             f"[{output.task_id}] {output.status.value.upper()}\n"
             f"{output.summary}\n"
-            f"Artifacts: {', '.join(output.artifacts) or 'none'}\n"
-            f"Cost: ${output.cost_usd:.4f}"
+            f"Files: {', '.join(output.artifacts[:10]) or 'none'}\n"
+            f"Structured Artifacts:\n{artifacts_str}\n"
+            f"Confidence: {output.confidence:.2f} | Cost: ${output.cost_usd:.4f}"
         )
+        if output.failure_category:
+            content += f"\nFailure: {output.failure_category.value}"
+        if output.issues:
+            content += f"\nIssues: {'; '.join(output.issues[:3])}"
+
         self.conversation_log.append(
             Message(
                 agent_name=output.task_id,
@@ -1044,6 +1124,16 @@ class OrchestratorManager:
         if manifest_path.exists():
             try:
                 return manifest_path.read_text(encoding="utf-8")[:4000]
+            except Exception:
+                pass
+        return ""
+
+    async def _load_memory_snapshot(self) -> str:
+        """Load .nexus/memory_snapshot.json if it exists (structured memory for PM)."""
+        snapshot_path = Path(self.project_dir) / ".nexus" / "memory_snapshot.json"
+        if snapshot_path.exists():
+            try:
+                return snapshot_path.read_text(encoding="utf-8")[:8000]
             except Exception:
                 pass
         return ""

@@ -1,11 +1,19 @@
 """
 PM Agent — Project Manager that creates the TaskGraph.
 
+v2: Artifact-aware planning with Memory Agent integration.
+
 The PM Agent's ONLY job is to:
-1. Understand the user's intent
-2. Create a clear Vision
-3. Break it into Epics
-4. Decompose into specific Tasks with dependency wiring
+1. Read the project's memory snapshot (if it exists)
+2. Understand the user's intent
+3. Create a clear Vision
+4. Break it into Epics
+5. Decompose into specific Tasks with:
+   - Dependency wiring (depends_on)
+   - Context wiring (context_from)
+   - Required artifact types per task
+   - File scope for conflict detection
+   - Acceptance criteria for verification
 
 The PM does NOT read code, does NOT write code, does NOT commit.
 It only creates the structured execution plan (TaskGraph).
@@ -20,7 +28,14 @@ import time
 from pathlib import Path
 
 import state
-from contracts import AgentRole, TaskGraph, TaskInput, TaskStatus, task_graph_schema
+from contracts import (
+    AgentRole,
+    ArtifactType,
+    TaskGraph,
+    TaskInput,
+    TaskStatus,
+    task_graph_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +69,33 @@ Just the raw JSON object matching the schema below.
 - TypeScript patterns → frontend_developer (NOT typescript_architect — that role is retired)
 - Do NOT use developer, ux_critic, typescript_architect, python_backend — they are legacy aliases
 
+## Artifact System — CRITICAL for agent coordination:
+Each task can specify `required_artifacts` — structured outputs the agent MUST produce.
+Downstream agents receive these artifacts as typed context, not free text.
+
+Available artifact types:
+- api_contract      → Backend MUST produce this: endpoint definitions for frontend to consume
+- schema            → Database MUST produce this: table definitions, TypeScript interfaces
+- component_map     → Frontend MUST produce this: component tree with props and API calls
+- test_report       → Test engineer MUST produce this: pass/fail results
+- security_report   → Security auditor MUST produce this: vulnerability findings
+- review_report     → Reviewer MUST produce this: code quality findings
+- architecture      → For architecture decisions
+- research          → Researcher MUST produce this: findings summary
+- deployment        → DevOps MUST produce this: deployment config
+- file_manifest     → ALL agents should produce this: list of files created/modified
+
+## Artifact wiring rules:
+1. If frontend depends on backend → backend task MUST have required_artifacts: ["api_contract"]
+   and frontend task MUST have context_from pointing to the backend task
+2. If tests depend on code → code task MUST have required_artifacts: ["file_manifest"]
+3. If security audit depends on code → code task MUST have required_artifacts: ["file_manifest"]
+4. Database tasks MUST have required_artifacts: ["schema"]
+
 ## Your thinking process:
 1. VISION — Write one sentence: "We will [outcome] by [method]."
-2. EPICS — Break the request into 3–7 high-level epics (what, not how)
-3. TASKS — For each epic, create 1–4 specific tasks:
+2. EPICS — Break the request into 3-7 high-level epics (what, not how)
+3. TASKS — For each epic, create 1-4 specific tasks:
    - Assign to the RIGHT specialist (not generic "developer")
    - Write a CLEAR, MEASURABLE goal (not vague)
    - Add acceptance_criteria so the agent knows when it's DONE
@@ -65,6 +103,7 @@ Just the raw JSON object matching the schema below.
    - Wire depends_on (e.g. backend task must complete before test task)
    - Wire context_from (e.g. test task needs backend output as context)
    - Add files_scope if you know which files will be touched
+   - Add required_artifacts for the artifact types this task MUST produce
 
 ## Parallelism rules:
 - Tasks with NO shared files_scope CAN run in parallel (no depends_on needed)
@@ -76,9 +115,11 @@ Just the raw JSON object matching the schema below.
 
 ## CRITICAL:
 - Do NOT assign tasks to "developer" (generic) — use the specific specialist
-- Each task goal must be ≥ 15 words and describe the WHAT + WHY
+- Each task goal must be >= 15 words and describe the WHAT + WHY
 - Maximum 20 tasks per graph
 - Always include a reviewer task at the end
+- Backend tasks that frontend depends on MUST have required_artifacts: ["api_contract", "file_manifest"]
+- Database tasks MUST have required_artifacts: ["schema", "file_manifest"]
 
 ## JSON Schema you must follow:
 ```json
@@ -98,10 +139,19 @@ async def create_task_graph(
     project_id: str,
     manifest: str = "",
     file_tree: str = "",
+    memory_snapshot: str = "",
     max_retries: int = 2,
 ) -> TaskGraph:
     """
     Query the PM Agent and return a validated TaskGraph.
+
+    Args:
+        user_message: The user's request
+        project_id: Project identifier
+        manifest: Contents of PROJECT_MANIFEST.md (human-readable)
+        file_tree: Current file tree listing
+        memory_snapshot: JSON string of MemorySnapshot (structured)
+        max_retries: Number of retries on parse failure
 
     Raises ValueError if the graph cannot be parsed after max_retries.
     """
@@ -109,7 +159,7 @@ async def create_task_graph(
     if sdk is None:
         raise RuntimeError("SDK client not initialized. Call state.initialize() first.")
 
-    prompt = _build_pm_prompt(user_message, project_id, manifest, file_tree)
+    prompt = _build_pm_prompt(user_message, project_id, manifest, file_tree, memory_snapshot)
 
     last_error: str = ""
     for attempt in range(max_retries + 1):
@@ -132,6 +182,9 @@ async def create_task_graph(
 
         graph, error = _parse_task_graph(response.text, project_id, user_message)
         if graph is not None:
+            # Post-process: ensure artifact wiring is correct
+            graph = _enforce_artifact_requirements(graph)
+
             logger.info(
                 f"[PM] Created TaskGraph: vision='{graph.vision[:80]}' "
                 f"tasks={len(graph.tasks)} cost=${response.cost_usd:.4f}"
@@ -155,12 +208,18 @@ def _build_pm_prompt(
     project_id: str,
     manifest: str,
     file_tree: str,
+    memory_snapshot: str = "",
 ) -> str:
     parts = [
         f"## Project ID: {project_id}",
         f"## User Request:\n{user_message}",
     ]
-    if manifest:
+    if memory_snapshot:
+        parts.append(
+            f"## Project Memory (structured — use this for context):\n"
+            f"```json\n{memory_snapshot[:4000]}\n```"
+        )
+    elif manifest:
         parts.append(f"## Project Manifest (team memory):\n{manifest[:3000]}")
     if file_tree:
         parts.append(f"## Current File Tree:\n{file_tree[:2000]}")
@@ -197,7 +256,7 @@ def _parse_task_graph(
     for match in _JSON_FENCE_RE.finditer(raw_text):
         candidates.append(match.group(1).strip())
 
-    # Try raw JSON (find first { ... } at the top level)
+    # Try raw JSON
     start = raw_text.find("{")
     if start != -1:
         depth = 0
@@ -213,7 +272,6 @@ def _parse_task_graph(
     for candidate in candidates:
         try:
             data = json.loads(candidate)
-            # Inject project_id and user_message if missing
             data.setdefault("project_id", project_id)
             data.setdefault("user_message", user_message)
 
@@ -234,6 +292,52 @@ def _parse_task_graph(
             continue
 
     return None, f"No valid JSON found in PM response (length={len(raw_text)})"
+
+
+# ---------------------------------------------------------------------------
+# Post-processing: enforce artifact requirements
+# ---------------------------------------------------------------------------
+
+# Role -> artifact types that should always be required
+_ROLE_DEFAULT_ARTIFACTS: dict[AgentRole, list[ArtifactType]] = {
+    AgentRole.BACKEND_DEVELOPER: [ArtifactType.API_CONTRACT, ArtifactType.FILE_MANIFEST],
+    AgentRole.FRONTEND_DEVELOPER: [ArtifactType.COMPONENT_MAP, ArtifactType.FILE_MANIFEST],
+    AgentRole.DATABASE_EXPERT: [ArtifactType.SCHEMA, ArtifactType.FILE_MANIFEST],
+    AgentRole.DEVOPS: [ArtifactType.DEPLOYMENT, ArtifactType.FILE_MANIFEST],
+    AgentRole.TEST_ENGINEER: [ArtifactType.TEST_REPORT],
+    AgentRole.SECURITY_AUDITOR: [ArtifactType.SECURITY_REPORT],
+    AgentRole.REVIEWER: [ArtifactType.REVIEW_REPORT],
+    AgentRole.RESEARCHER: [ArtifactType.RESEARCH],
+}
+
+
+def _enforce_artifact_requirements(graph: TaskGraph) -> TaskGraph:
+    """Ensure every task has appropriate required_artifacts based on its role.
+
+    If the PM forgot to add required_artifacts, we add sensible defaults.
+    This guarantees downstream agents always get structured context.
+    """
+    for task in graph.tasks:
+        defaults = _ROLE_DEFAULT_ARTIFACTS.get(task.role, [])
+        if not task.required_artifacts and defaults:
+            task.required_artifacts = defaults
+            logger.debug(
+                f"[PM] Auto-added required_artifacts to {task.id}: "
+                f"{[a.value for a in defaults]}"
+            )
+
+        # Ensure file_manifest is always required for writer roles
+        if task.role in (
+            AgentRole.BACKEND_DEVELOPER,
+            AgentRole.FRONTEND_DEVELOPER,
+            AgentRole.DATABASE_EXPERT,
+            AgentRole.DEVOPS,
+            AgentRole.DEVELOPER,
+        ):
+            if ArtifactType.FILE_MANIFEST not in task.required_artifacts:
+                task.required_artifacts.append(ArtifactType.FILE_MANIFEST)
+
+    return graph
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +365,7 @@ def fallback_single_task_graph(
                 role=role,
                 goal=user_message[:500],
                 acceptance_criteria=["Task completed as requested by user"],
+                required_artifacts=[ArtifactType.FILE_MANIFEST],
             )
         ],
     )

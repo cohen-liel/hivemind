@@ -739,17 +739,51 @@ _TYPED_CONTRACT_FOOTER = (
     '  "issues": ["any problems found or concerns — empty list if none"],\n'
     '  "blockers": ["things preventing full completion — empty if none"],\n'
     '  "followups": ["recommended next steps for other agents — empty if none"],\n'
-    '  "confidence": 0.95\n'
+    '  "confidence": 0.95,\n'
+    '  "structured_artifacts": [\n'
+    '    {\n'
+    '      "type": "<artifact_type — see REQUIRED ARTIFACTS below>",\n'
+    '      "title": "<descriptive title>",\n'
+    '      "summary": "<1-2 sentence summary>",\n'
+    '      "file_path": "<path to the file if applicable>",\n'
+    '      "data": { "<structured data relevant to the artifact type>" }\n'
+    '    }\n'
+    '  ]\n'
     "}\n"
     "```\n\n"
+    "═══ STRUCTURED ARTIFACTS — HOW AGENTS SHARE KNOWLEDGE ═══\n"
+    "The `structured_artifacts` array is HOW you pass typed information to downstream agents.\n"
+    "Without it, the next agent gets only your summary text — losing critical details.\n\n"
+    "Available artifact types and their expected `data` fields:\n\n"
+    "• api_contract → { endpoints: [{method, path, description, request_body, response_body}] }\n"
+    "  REQUIRED for: backend_developer when building APIs\n\n"
+    "• schema → { tables: [name], columns: {table: [{name, type, constraints}]}, relationships: [] }\n"
+    "  REQUIRED for: database_expert\n\n"
+    "• component_map → { components: [{name, props, children}], api_calls: ['GET /api/x'] }\n"
+    "  REQUIRED for: frontend_developer\n\n"
+    "• test_report → { total: N, passed: N, failed: N, failures: [{test, error}], coverage: '85%' }\n"
+    "  REQUIRED for: test_engineer\n\n"
+    "• security_report → { findings: [{severity, location, description, fix}], risk_score: 'LOW' }\n"
+    "  REQUIRED for: security_auditor\n\n"
+    "• review_report → { issues: [{severity, file, line, problem, fix}], approved: true/false }\n"
+    "  REQUIRED for: reviewer\n\n"
+    "• architecture → { decisions: ['Use X because Y'], patterns: [], tech_stack: {} }\n"
+    "  For any agent making architectural decisions\n\n"
+    "• research → { findings: [{title, source, summary}], recommendation: '' }\n"
+    "  REQUIRED for: researcher\n\n"
+    "• deployment → { services: [{name, port, image}], env_vars: [], commands: {} }\n"
+    "  REQUIRED for: devops\n\n"
+    "• file_manifest → { files: {'path/to/file.py': 'description of what it does'} }\n"
+    "  REQUIRED for: ALL agents that create or modify files\n\n"
     "CRITICAL RULES:\n"
     "- Do NOT run `git commit` or `git push` — the DAG Executor handles all commits\n"
     "- Do NOT run `git add` — the DAG Executor stages files\n"
     "- Set status to 'failed' if you could not complete the goal\n"
     "- Set status to 'blocked' if a dependency is missing (specify in blockers)\n"
     "- Set confidence < 0.7 if you are uncertain about correctness\n"
+    "- ALWAYS include a file_manifest artifact listing every file you created/modified\n"
+    "- Check your TaskInput for `required_artifacts` — you MUST produce all of them\n"
 )
-
 SPECIALIST_PROMPTS: dict[str, str] = {
 
     "typescript_architect": (
