@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { AGENT_ICONS } from '../constants';
 
 interface Props {
@@ -9,13 +9,14 @@ interface Props {
   onSend: (message: string) => void;
 }
 
-export default function Controls({ status, onPause, onResume, onStop, onSend }: Props) {
+export default function Controls({ status, onPause, onResume, onStop, onSend }: Props): React.ReactElement {
   const [message, setMessage] = useState('');
   // All messages go through the Orchestrator — no direct agent targeting
   const targetAgent = 'orchestrator';
   const [sending, setSending] = useState(false);
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Auto-resize textarea (grows up to 5 lines, then scrolls)
   useEffect(() => {
@@ -27,7 +28,66 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
     el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
   }, [message]);
 
-  const handleSend = async () => {
+  // iOS keyboard viewport fix: when the textarea is focused, the virtual keyboard
+  // may cover it. Use the visualViewport API to adjust position on iOS Safari.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const adjustForKeyboard = (): void => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      // Calculate the keyboard offset: the difference between layout viewport and visual viewport
+      const keyboardOffset = window.innerHeight - vv.height - vv.offsetTop;
+
+      if (keyboardOffset > 50) {
+        // Keyboard is open — translate the controls up so they sit above the keyboard
+        container.style.transform = `translateY(-${keyboardOffset}px)`;
+      } else {
+        // Keyboard is closed
+        container.style.transform = 'translateY(0)';
+      }
+    };
+
+    // Only attach listeners when focused to avoid unnecessary work
+    if (focused) {
+      adjustForKeyboard();
+      vv.addEventListener('resize', adjustForKeyboard);
+      vv.addEventListener('scroll', adjustForKeyboard);
+    }
+
+    return () => {
+      vv.removeEventListener('resize', adjustForKeyboard);
+      vv.removeEventListener('scroll', adjustForKeyboard);
+      // Reset transform when cleaning up
+      if (containerRef.current) {
+        containerRef.current.style.transform = 'translateY(0)';
+      }
+    };
+  }, [focused]);
+
+  const handleFocus = useCallback((): void => {
+    setFocused(true);
+    // On iOS, scroll to ensure the input is visible after keyboard animation
+    setTimeout(() => {
+      textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }, 300);
+  }, []);
+
+  const handleBlur = useCallback((): void => {
+    setFocused(false);
+    // Reset any viewport adjustments
+    if (containerRef.current) {
+      containerRef.current.style.transform = 'translateY(0)';
+    }
+    // Reset iOS scroll offset after keyboard closes
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+    }, 100);
+  }, []);
+
+  const handleSend = async (): Promise<void> => {
     if (!message.trim() || sending) return;
     setSending(true);
     try {
@@ -38,7 +98,7 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -51,11 +111,13 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
 
   return (
     <div
+      ref={containerRef}
       className="sticky bottom-0 z-20 safe-area-bottom transition-all duration-300 overflow-hidden"
       style={{
         background: 'var(--bg-panel)',
         borderTop: focused ? '1px solid var(--border-active)' : '1px solid var(--border-dim)',
         boxShadow: focused ? '0 -8px 30px rgba(0,0,0,0.3)' : '0 -4px 12px rgba(0,0,0,0.15)',
+        willChange: focused ? 'transform' : 'auto',
       }}
     >
       {/* Control buttons — pill-style */}
@@ -64,12 +126,13 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
           {status === 'running' && (
             <button
               onClick={onPause}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2"
               style={{
                 background: 'rgba(245,166,35,0.1)',
                 color: 'var(--accent-amber)',
                 border: '1px solid rgba(245,166,35,0.15)',
               }}
+              aria-label="Pause project"
               onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,166,35,0.18)'; e.currentTarget.style.borderColor = 'rgba(245,166,35,0.3)'; }}
               onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,166,35,0.1)'; e.currentTarget.style.borderColor = 'rgba(245,166,35,0.15)'; }}
             >
@@ -80,12 +143,13 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
           {status === 'paused' && (
             <button
               onClick={onResume}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2"
               style={{
                 background: 'rgba(61,214,140,0.1)',
                 color: 'var(--accent-green)',
                 border: '1px solid rgba(61,214,140,0.15)',
               }}
+              aria-label="Resume project"
               onMouseEnter={e => { e.currentTarget.style.background = 'rgba(61,214,140,0.18)'; e.currentTarget.style.borderColor = 'rgba(61,214,140,0.3)'; }}
               onMouseLeave={e => { e.currentTarget.style.background = 'rgba(61,214,140,0.1)'; e.currentTarget.style.borderColor = 'rgba(61,214,140,0.15)'; }}
             >
@@ -95,12 +159,13 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
           )}
           <button
             onClick={onStop}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2"
             style={{
               background: 'rgba(245,71,91,0.08)',
               color: 'var(--accent-red)',
               border: '1px solid rgba(245,71,91,0.12)',
             }}
+            aria-label="Stop project"
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,71,91,0.15)'; e.currentTarget.style.borderColor = 'rgba(245,71,91,0.25)'; }}
             onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,71,91,0.08)'; e.currentTarget.style.borderColor = 'rgba(245,71,91,0.12)'; }}
           >
@@ -134,6 +199,7 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
             border: '1px solid var(--border-subtle)',
           }}
           title="All messages go through the Orchestrator"
+          aria-hidden="true"
         >
           {targetIcon}
         </div>
@@ -152,12 +218,13 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
+            onFocus={handleFocus}
+            onBlur={handleBlur}
             placeholder={status === 'idle' ? 'Describe a task for your agents…' : 'Send a message…'}
             rows={1}
             className="w-full px-4 py-2.5 text-[15px] resize-none focus:outline-none bg-transparent leading-relaxed"
             style={{ color: 'var(--text-primary)', maxHeight: '122px' }}
+            aria-label="Message input"
           />
         </div>
 
@@ -165,7 +232,7 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
         <button
           onClick={handleSend}
           disabled={!hasContent || sending}
-          className="flex-shrink-0 rounded-xl transition-all duration-300 flex items-center justify-center active:scale-90"
+          className="flex-shrink-0 rounded-xl transition-all duration-300 flex items-center justify-center active:scale-90 focus:outline-none focus-visible:ring-2"
           style={{
             width: hasContent && !sending ? '44px' : '40px',
             height: hasContent && !sending ? '44px' : '40px',
@@ -179,6 +246,7 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
             border: hasContent && !sending ? 'none' : '1px solid var(--border-subtle)',
             cursor: hasContent && !sending ? 'pointer' : 'default',
           }}
+          aria-label="Send message"
         >
           {sending ? (
             <svg className="w-5 h-5 animate-spin" viewBox="0 0 20 20" fill="none">

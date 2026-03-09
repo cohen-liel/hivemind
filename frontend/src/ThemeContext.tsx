@@ -61,6 +61,11 @@ function applyThemeToDOM(theme: Theme): void {
   document.documentElement.setAttribute(DATA_ATTR, theme);
 }
 
+/** Validate that a value is a valid Theme */
+function isValidTheme(value: unknown): value is Theme {
+  return value === 'dark' || value === 'light';
+}
+
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
 /** Props for the ThemeProvider component */
@@ -72,6 +77,7 @@ interface ThemeProviderProps {
  * ThemeProvider — manages dark/light theme state with:
  * - localStorage persistence under 'nexus-theme' key
  * - prefers-color-scheme media query for initial theme
+ * - Cross-tab sync via storage event
  * - Applies data-theme attribute to <html> for CSS variable switching
  */
 export function ThemeProvider({ children }: ThemeProviderProps): React.ReactElement {
@@ -89,6 +95,18 @@ export function ThemeProvider({ children }: ThemeProviderProps): React.ReactElem
     }
   }, [theme]);
 
+  // Cross-tab sync: listen for storage changes from other tabs
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent): void => {
+      if (e.key === STORAGE_KEY && e.newValue && isValidTheme(e.newValue)) {
+        setThemeState(e.newValue);
+      }
+    };
+
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
+
   // Listen for OS-level theme changes (only if no stored preference)
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
@@ -97,8 +115,13 @@ export function ThemeProvider({ children }: ThemeProviderProps): React.ReactElem
 
     const handleChange = (e: MediaQueryListEvent): void => {
       // Only auto-switch if user hasn't explicitly set a preference
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (!stored) {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (!stored) {
+          setThemeState(e.matches ? 'dark' : 'light');
+        }
+      } catch {
+        // localStorage unavailable — follow OS preference
         setThemeState(e.matches ? 'dark' : 'light');
       }
     };

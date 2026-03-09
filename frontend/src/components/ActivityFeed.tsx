@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
 import type { ActivityEntry } from '../types';
 import { AGENT_ICONS, formatTime } from '../constants';
 
@@ -37,6 +37,8 @@ interface MessageGroup {
   sender: Sender;
   agent?: string;
   entries: ActivityEntry[];
+  /** Stable key derived from first entry ID */
+  key: string;
 }
 
 function groupBySender(activities: ActivityEntry[]): MessageGroup[] {
@@ -50,14 +52,14 @@ function groupBySender(activities: ActivityEntry[]): MessageGroup[] {
     if (last && last.sender === sender && last.agent === agent) {
       last.entries.push(entry);
     } else {
-      groups.push({ sender, agent, entries: [entry] });
+      groups.push({ sender, agent, entries: [entry], key: entry.id });
     }
   }
   return groups;
 }
 
 // --- Render code blocks inside text ---
-function renderContent(text: string) {
+function renderContent(text: string): React.ReactNode[] {
   const parts = text.split(/(```[\s\S]*?```)/g);
   return parts.map((part, i) => {
     if (part.startsWith('```') && part.endsWith('```')) {
@@ -94,10 +96,10 @@ function renderContent(text: string) {
 }
 
 // ============================================================
-// BUBBLE COMPONENTS
+// BUBBLE COMPONENTS (memoized for virtual scroll performance)
 // ============================================================
 
-function Avatar({ icon, side }: { icon: string; side: 'left' | 'right' }) {
+const Avatar = memo(function Avatar({ icon, side }: { icon: string; side: 'left' | 'right' }): React.ReactElement {
   return (
     <div
       className={`w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0 ${
@@ -108,13 +110,13 @@ function Avatar({ icon, side }: { icon: string; side: 'left' | 'right' }) {
       {icon}
     </div>
   );
-}
+});
 
-function AvatarSpacer() {
+function AvatarSpacer(): React.ReactElement {
   return <div className="w-8 flex-shrink-0" />;
 }
 
-function GroupTimestamp({ ts, align }: { ts: number; align: 'left' | 'right' | 'center' }) {
+const GroupTimestamp = memo(function GroupTimestamp({ ts, align }: { ts: number; align: 'left' | 'right' | 'center' }): React.ReactElement {
   const justify =
     align === 'right' ? 'justify-end pr-10' : align === 'left' ? 'justify-start pl-10' : 'justify-center';
   return (
@@ -122,10 +124,10 @@ function GroupTimestamp({ ts, align }: { ts: number; align: 'left' | 'right' | '
       <span className="text-[11px] select-none" style={{ color: 'var(--text-muted)' }}>{formatTime(ts)}</span>
     </div>
   );
-}
+});
 
 // ---------- Agent text bubble ----------
-function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }) {
+function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
   const content = entry.content || '';
   const isLong = content.length > 300;
@@ -149,8 +151,9 @@ function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvat
           {isLong && (
             <button
               onClick={() => setExpanded(!expanded)}
-              className="block text-xs mt-1.5 font-medium transition-opacity hover:opacity-80"
+              className="block text-xs mt-1.5 font-medium transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2"
               style={{ color: 'var(--accent-blue)' }}
+              aria-label={expanded ? 'Show less content' : 'Show more content'}
             >
               {expanded ? 'Show less' : `Show more (${(content.length / 1024).toFixed(1)}KB)`}
             </button>
@@ -162,7 +165,7 @@ function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvat
 }
 
 // ---------- User message bubble ----------
-function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }) {
+const UserMessageBubble = memo(function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   return (
     <div className="flex items-end gap-2 justify-end animate-[fadeSlideIn_0.3s_ease-out_both]">
       <div className="max-w-[70%] min-w-[60px] overflow-hidden">
@@ -178,7 +181,7 @@ function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAv
       {showAvatar ? <Avatar icon={'\u{1F464}'} side="right" /> : <AvatarSpacer />}
     </div>
   );
-}
+});
 
 // ---------- Error translation ----------
 function translateError(raw: string): { title: string; detail: string; actions: ('retry' | 'dismiss')[] } {
@@ -211,7 +214,7 @@ function translateError(raw: string): { title: string; detail: string; actions: 
 }
 
 // ---------- Error bubble (Decision Card) ----------
-function ErrorBubble({ entry, onRetry }: { entry: ActivityEntry; onRetry?: () => void }) {
+function ErrorBubble({ entry, onRetry }: { entry: ActivityEntry; onRetry?: () => void }): React.ReactElement | null {
   const translated = translateError(entry.content || 'Unknown error');
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
@@ -245,8 +248,9 @@ function ErrorBubble({ entry, onRetry }: { entry: ActivityEntry; onRetry?: () =>
           <div className="flex gap-2 mt-3 justify-end">
             {translated.actions.includes('dismiss') && (
               <button onClick={() => setDismissed(true)}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95"
+                className="px-3 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95 focus:outline-none focus-visible:ring-2"
                 style={{ color: 'var(--text-muted)' }}
+                aria-label="Dismiss error"
                 onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-elevated)'; }}
                 onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
               >
@@ -255,12 +259,13 @@ function ErrorBubble({ entry, onRetry }: { entry: ActivityEntry; onRetry?: () =>
             )}
             {translated.actions.includes('retry') && onRetry && (
               <button onClick={onRetry}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95"
+                className="px-3 py-1.5 text-xs font-medium rounded-lg transition-all active:scale-95 focus:outline-none focus-visible:ring-2"
                 style={{
                   background: 'var(--glow-red)',
                   color: 'var(--accent-red)',
                   border: '1px solid rgba(245,71,91,0.2)',
                 }}
+                aria-label="Retry action"
                 onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,71,91,0.2)'; }}
                 onMouseLeave={e => { e.currentTarget.style.background = 'var(--glow-red)'; }}
               >
@@ -275,7 +280,7 @@ function ErrorBubble({ entry, onRetry }: { entry: ActivityEntry; onRetry?: () =>
 }
 
 // ---------- Tool use bubble ----------
-function ToolUseBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }) {
+const ToolUseBubble = memo(function ToolUseBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   return (
     <div className="flex items-end gap-2 animate-[fadeSlideIn_0.25s_ease-out_both]">
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
@@ -296,7 +301,7 @@ function ToolUseBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar
       </div>
     </div>
   );
-}
+});
 
 // ---------- Tool group (collapsed) bubble ----------
 function ToolGroupBubble({
@@ -307,7 +312,7 @@ function ToolGroupBubble({
   agent: string;
   entries: ActivityEntry[];
   showAvatar: boolean;
-}) {
+}): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -321,8 +326,10 @@ function ToolGroupBubble({
           style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
           <button
             onClick={() => setExpanded(!expanded)}
-            className="flex items-center gap-1.5 w-full transition-colors"
+            className="flex items-center gap-1.5 w-full transition-colors focus:outline-none focus-visible:ring-2"
             style={{ color: 'var(--text-secondary)' }}
+            aria-expanded={expanded}
+            aria-label={`${entries.length} tool calls - click to ${expanded ? 'collapse' : 'expand'}`}
           >
             <span style={{ color: 'var(--text-muted)' }}>🔧</span>
             <span style={{ fontFamily: 'var(--font-mono)' }} className="truncate">
@@ -355,7 +362,7 @@ function ToolGroupBubble({
 }
 
 // ---------- Agent started bubble ----------
-function AgentStartedBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }) {
+const AgentStartedBubble = memo(function AgentStartedBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   return (
     <div className="flex items-end gap-2 animate-[fadeSlideIn_0.3s_ease-out_both]">
       {showAvatar ? <Avatar icon={agentIcon(entry.agent)} side="left" /> : <AvatarSpacer />}
@@ -376,10 +383,10 @@ function AgentStartedBubble({ entry, showAvatar }: { entry: ActivityEntry; showA
       </div>
     </div>
   );
-}
+});
 
 // ---------- Agent finished bubble ----------
-function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }) {
+const AgentFinishedBubble = memo(function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   const isError = entry.is_error;
   const stats: string[] = [];
   if (entry.cost !== undefined) stats.push(`$${entry.cost.toFixed(4)}`);
@@ -412,10 +419,10 @@ function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; show
       </div>
     </div>
   );
-}
+});
 
 // ---------- Delegation bubble (system/center) ----------
-function DelegationBubble({ entry }: { entry: ActivityEntry }) {
+const DelegationBubble = memo(function DelegationBubble({ entry }: { entry: ActivityEntry }): React.ReactElement {
   return (
     <div className="flex justify-center animate-[fadeSlideIn_0.3s_ease-out_both]">
       <div className="rounded-2xl px-4 py-2 text-xs inline-flex items-center gap-2"
@@ -436,10 +443,10 @@ function DelegationBubble({ entry }: { entry: ActivityEntry }) {
       </div>
     </div>
   );
-}
+});
 
 // ---------- Loop progress bubble (system/center) ----------
-function LoopProgressBubble({ entry }: { entry: ActivityEntry }) {
+const LoopProgressBubble = memo(function LoopProgressBubble({ entry }: { entry: ActivityEntry }): React.ReactElement {
   const loop = entry.loop ?? 0;
   const maxLoops = entry.max_loops ?? 0;
   const turn = entry.turn ?? 0;
@@ -475,33 +482,305 @@ function LoopProgressBubble({ entry }: { entry: ActivityEntry }) {
       </div>
     </div>
   );
-}
+});
 
 // ============================================================
-// MAIN COMPONENT
+// MEMOIZED MESSAGE GROUP RENDERER
 // ============================================================
 
-export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props) {
+/** Renders a single message group with all its bubbles */
+const MessageGroupRenderer = memo(function MessageGroupRenderer({
+  group,
+  groupIndex,
+}: {
+  group: MessageGroup;
+  groupIndex: number;
+}): React.ReactElement {
+  const items: React.ReactElement[] = [];
+  let toolAccum: ActivityEntry[] = [];
+
+  const flushTools = (): void => {
+    if (toolAccum.length === 0) return;
+    if (toolAccum.length === 1) {
+      items.push(
+        <ToolUseBubble
+          key={toolAccum[0].id}
+          entry={toolAccum[0]}
+          showAvatar={items.length === 0}
+        />
+      );
+    } else {
+      items.push(
+        <ToolGroupBubble
+          key={`tg-${toolAccum[0].id}`}
+          agent={group.agent || ''}
+          entries={toolAccum}
+          showAvatar={items.length === 0}
+        />
+      );
+    }
+    toolAccum = [];
+  };
+
+  for (const entry of group.entries) {
+    if (group.sender === 'agent' && entry.type === 'tool_use') {
+      toolAccum.push(entry);
+      continue;
+    }
+    flushTools();
+
+    const showAvatar = items.length === 0;
+
+    switch (entry.type) {
+      case 'agent_text':
+        items.push(<AgentTextBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
+        break;
+      case 'user_message':
+        items.push(<UserMessageBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
+        break;
+      case 'agent_started':
+        items.push(<AgentStartedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
+        break;
+      case 'agent_finished':
+        items.push(<AgentFinishedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
+        break;
+      case 'delegation':
+        items.push(<DelegationBubble key={entry.id} entry={entry} />);
+        break;
+      case 'loop_progress':
+        items.push(<LoopProgressBubble key={entry.id} entry={entry} />);
+        break;
+      case 'error':
+        items.push(<ErrorBubble key={entry.id} entry={entry} />);
+        break;
+      default:
+        break;
+    }
+  }
+  flushTools();
+
+  const lastTs = group.entries[group.entries.length - 1].timestamp;
+  const tsAlign: 'left' | 'right' | 'center' =
+    group.sender === 'user' ? 'right' : group.sender === 'agent' ? 'left' : 'center';
+
+  return (
+    <div className={`flex flex-col gap-1 ${groupIndex > 0 ? 'mt-4' : ''}`}>
+      {items}
+      <GroupTimestamp ts={lastTs} align={tsAlign} />
+    </div>
+  );
+}, (prev, next) => {
+  // Custom comparator: re-render only when group content actually changes
+  if (prev.group.key !== next.group.key) return false;
+  if (prev.group.entries.length !== next.group.entries.length) return false;
+  if (prev.groupIndex !== next.groupIndex) return false;
+  // Check last entry ID to detect appended entries within the group
+  const prevLast = prev.group.entries[prev.group.entries.length - 1];
+  const nextLast = next.group.entries[next.group.entries.length - 1];
+  return prevLast.id === nextLast.id;
+});
+
+// ============================================================
+// VIRTUAL SCROLL CONSTANTS
+// ============================================================
+
+const ESTIMATED_GROUP_HEIGHT = 100;
+const OVERSCAN_COUNT = 8;
+
+// ============================================================
+// MAIN COMPONENT WITH VIRTUAL SCROLL
+// ============================================================
+
+export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('detail');
 
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activities.length]);
+  // Virtual scroll state
+  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({ start: 0, end: 50 });
+  const heightCacheRef = useRef<Map<string, number>>(new Map());
+  const isNearBottomRef = useRef<boolean>(true);
+  const prevActivitiesLenRef = useRef<number>(0);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const elementMapRef = useRef<Map<string, HTMLElement>>(new Map());
+  // Track whether user has scrolled up to show "new messages" indicator
+  const [hasNewBelow, setHasNewBelow] = useState<boolean>(false);
 
   // Filter activities based on view mode
-  const filtered = viewMode === 'summary'
-    ? activities.filter(a =>
-        a.type === 'user_message' ||
-        a.type === 'delegation' ||
-        a.type === 'agent_text' ||
-        a.type === 'agent_finished' ||
-        a.type === 'loop_progress' ||
-        a.type === 'error'
-      )
-    : activities;
+  const filtered = useMemo((): ActivityEntry[] =>
+    viewMode === 'summary'
+      ? activities.filter(a =>
+          a.type === 'user_message' ||
+          a.type === 'delegation' ||
+          a.type === 'agent_text' ||
+          a.type === 'agent_finished' ||
+          a.type === 'loop_progress' ||
+          a.type === 'error'
+        )
+      : activities,
+    [activities, viewMode]
+  );
+
+  // Compute message groups with stable keys
+  const groups = useMemo((): MessageGroup[] => groupBySender(filtered), [filtered]);
+
+  // Get height for a group from cache or use estimate
+  const getGroupHeight = useCallback((groupKey: string): number => {
+    return heightCacheRef.current.get(groupKey) ?? ESTIMATED_GROUP_HEIGHT;
+  }, []);
+
+  // Setup single ResizeObserver for all group elements
+  useEffect(() => {
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const key = el.dataset.groupKey;
+        if (key) {
+          const height = entry.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
+          heightCacheRef.current.set(key, height);
+        }
+      }
+    });
+    observerRef.current = observer;
+    return () => observer.disconnect();
+  }, []);
+
+  // Ref callback to observe/unobserve group elements
+  const groupRefCallback = useCallback((groupKey: string) => (el: HTMLElement | null): void => {
+    const observer = observerRef.current;
+    if (!observer) return;
+
+    const prevEl = elementMapRef.current.get(groupKey);
+    if (prevEl && prevEl !== el) {
+      observer.unobserve(prevEl);
+      elementMapRef.current.delete(groupKey);
+    }
+
+    if (el) {
+      el.dataset.groupKey = groupKey;
+      observer.observe(el);
+      elementMapRef.current.set(groupKey, el);
+    }
+  }, []);
+
+  // Calculate visible range from scroll position
+  const calculateVisibleRange = useCallback((): void => {
+    const el = scrollRef.current;
+    if (!el || groups.length === 0) {
+      setVisibleRange({ start: 0, end: Math.min(groups.length, 50) });
+      return;
+    }
+
+    const scrollTop = el.scrollTop;
+    const containerHeight = el.clientHeight;
+
+    // Track if user is near bottom
+    const nearBottom = scrollTop + containerHeight >= el.scrollHeight - 150;
+    isNearBottomRef.current = nearBottom;
+    if (nearBottom) {
+      setHasNewBelow(false);
+    }
+
+    // Find first visible group (linear scan — fine for <2000 groups)
+    let cumHeight = 0;
+    let startIdx = 0;
+    while (startIdx < groups.length) {
+      const h = getGroupHeight(groups[startIdx].key);
+      if (cumHeight + h > scrollTop) break;
+      cumHeight += h;
+      startIdx++;
+    }
+
+    // Find last visible group
+    let endIdx = startIdx;
+    let visibleHeight = cumHeight;
+    while (endIdx < groups.length && visibleHeight < scrollTop + containerHeight) {
+      visibleHeight += getGroupHeight(groups[endIdx].key);
+      endIdx++;
+    }
+
+    // Apply overscan
+    const start = Math.max(0, startIdx - OVERSCAN_COUNT);
+    const end = Math.min(groups.length, endIdx + OVERSCAN_COUNT);
+
+    setVisibleRange(prev => {
+      if (prev.start === start && prev.end === end) return prev;
+      return { start, end };
+    });
+  }, [groups, getGroupHeight]);
+
+  // Attach scroll listener with rAF throttling
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    let ticking = false;
+    const onScroll = (): void => {
+      if (!ticking) {
+        ticking = true;
+        requestAnimationFrame(() => {
+          calculateVisibleRange();
+          ticking = false;
+        });
+      }
+    };
+
+    el.addEventListener('scroll', onScroll, { passive: true });
+
+    // Recalculate on container resize
+    const containerObserver = new ResizeObserver(() => calculateVisibleRange());
+    containerObserver.observe(el);
+
+    // Initial calculation
+    calculateVisibleRange();
+
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      containerObserver.disconnect();
+    };
+  }, [calculateVisibleRange]);
+
+  // Recalculate when groups change
+  useEffect(() => {
+    calculateVisibleRange();
+  }, [groups.length, calculateVisibleRange]);
+
+  // Auto-scroll to bottom when new events arrive (only if user was near bottom)
+  useEffect(() => {
+    if (activities.length > prevActivitiesLenRef.current) {
+      if (isNearBottomRef.current) {
+        requestAnimationFrame(() => {
+          const el = scrollRef.current;
+          if (el) {
+            el.scrollTop = el.scrollHeight;
+          }
+        });
+      } else {
+        // User has scrolled up — show "new messages" indicator
+        setHasNewBelow(true);
+      }
+    }
+    prevActivitiesLenRef.current = activities.length;
+  }, [activities.length]);
+
+  // Scroll-to-bottom handler for the indicator button
+  const scrollToBottom = useCallback((): void => {
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      isNearBottomRef.current = true;
+      setHasNewBelow(false);
+    }
+  }, []);
+
+  // Calculate spacer heights for off-screen groups
+  let offsetBefore = 0;
+  for (let i = 0; i < visibleRange.start; i++) {
+    offsetBefore += getGroupHeight(groups[i].key);
+  }
+  let offsetAfter = 0;
+  for (let i = visibleRange.end; i < groups.length; i++) {
+    offsetAfter += getGroupHeight(groups[i].key);
+  }
 
   // Empty state
   if (activities.length === 0) {
@@ -517,132 +796,111 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
     );
   }
 
-  const groups = groupBySender(filtered);
-
   return (
-    <div
-      ref={scrollRef}
-      className="flex flex-col h-full overflow-y-auto overflow-x-hidden p-4 scroll-smooth"
-      style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-    >
-      {/* View mode toggle */}
-      <div className="flex justify-end mb-2 sticky top-0 z-10">
-        <div className="rounded-full p-0.5 flex gap-0.5"
-          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-dim)', backdropFilter: 'blur(8px)' }}>
-          <button
-            onClick={() => setViewMode('summary')}
-            className="px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors"
-            style={{
-              background: viewMode === 'summary' ? 'var(--bg-elevated)' : 'transparent',
-              color: viewMode === 'summary' ? 'var(--text-primary)' : 'var(--text-muted)',
-            }}
-          >
-            Summary
-          </button>
-          <button
-            onClick={() => setViewMode('detail')}
-            className="px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors"
-            style={{
-              background: viewMode === 'detail' ? 'var(--bg-elevated)' : 'transparent',
-              color: viewMode === 'detail' ? 'var(--text-primary)' : 'var(--text-muted)',
-            }}
-          >
-            Detail
-          </button>
-        </div>
-      </div>
-      {/* Load earlier messages */}
-      {hasMore && onLoadMore && (
-        <div className="flex justify-center mb-3">
-          <button
-            onClick={onLoadMore}
-            className="px-3 py-1.5 text-xs rounded-lg transition-colors"
-            style={{
-              color: 'var(--text-muted)',
-              background: 'var(--bg-panel)',
-              border: '1px solid var(--border-dim)',
-            }}
-          >
-            Load earlier messages
-          </button>
-        </div>
-      )}
-      {groups.map((group, gi) => {
-        const items: JSX.Element[] = [];
-        let toolAccum: ActivityEntry[] = [];
-
-        const flushTools = () => {
-          if (toolAccum.length === 0) return;
-          if (toolAccum.length === 1) {
-            items.push(
-              <ToolUseBubble
-                key={toolAccum[0].id}
-                entry={toolAccum[0]}
-                showAvatar={items.length === 0}
-              />
-            );
-          } else {
-            items.push(
-              <ToolGroupBubble
-                key={`tg-${toolAccum[0].id}`}
-                agent={group.agent || ''}
-                entries={toolAccum}
-                showAvatar={items.length === 0}
-              />
-            );
-          }
-          toolAccum = [];
-        };
-
-        for (const entry of group.entries) {
-          if (group.sender === 'agent' && entry.type === 'tool_use') {
-            toolAccum.push(entry);
-            continue;
-          }
-          flushTools();
-
-          const showAvatar = items.length === 0;
-
-          switch (entry.type) {
-            case 'agent_text':
-              items.push(<AgentTextBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
-              break;
-            case 'user_message':
-              items.push(<UserMessageBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
-              break;
-            case 'agent_started':
-              items.push(<AgentStartedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
-              break;
-            case 'agent_finished':
-              items.push(<AgentFinishedBubble key={entry.id} entry={entry} showAvatar={showAvatar} />);
-              break;
-            case 'delegation':
-              items.push(<DelegationBubble key={entry.id} entry={entry} />);
-              break;
-            case 'loop_progress':
-              items.push(<LoopProgressBubble key={entry.id} entry={entry} />);
-              break;
-            case 'error':
-              items.push(<ErrorBubble key={entry.id} entry={entry} />);
-              break;
-            default:
-              break;
-          }
-        }
-        flushTools();
-
-        const lastTs = group.entries[group.entries.length - 1].timestamp;
-        const tsAlign =
-          group.sender === 'user' ? 'right' : group.sender === 'agent' ? 'left' : 'center';
-
-        return (
-          <div key={`g-${gi}`} className={`flex flex-col gap-1 ${gi > 0 ? 'mt-4' : ''}`}>
-            {items}
-            <GroupTimestamp ts={lastTs} align={tsAlign as 'left' | 'right' | 'center'} />
+    <div className="relative h-full">
+      <div
+        ref={scrollRef}
+        className="flex flex-col h-full overflow-y-auto overflow-x-hidden p-4"
+        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+        role="log"
+        aria-label="Activity feed"
+        aria-live="polite"
+      >
+        {/* View mode toggle */}
+        <div className="flex justify-end mb-2 sticky top-0 z-10">
+          <div className="rounded-full p-0.5 flex gap-0.5"
+            style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-dim)', backdropFilter: 'blur(8px)' }}>
+            <button
+              onClick={() => setViewMode('summary')}
+              className="px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors focus:outline-none focus-visible:ring-2"
+              style={{
+                background: viewMode === 'summary' ? 'var(--bg-elevated)' : 'transparent',
+                color: viewMode === 'summary' ? 'var(--text-primary)' : 'var(--text-muted)',
+              }}
+              aria-label="Summary view"
+              aria-pressed={viewMode === 'summary'}
+            >
+              Summary
+            </button>
+            <button
+              onClick={() => setViewMode('detail')}
+              className="px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors focus:outline-none focus-visible:ring-2"
+              style={{
+                background: viewMode === 'detail' ? 'var(--bg-elevated)' : 'transparent',
+                color: viewMode === 'detail' ? 'var(--text-primary)' : 'var(--text-muted)',
+              }}
+              aria-label="Detail view"
+              aria-pressed={viewMode === 'detail'}
+            >
+              Detail
+            </button>
           </div>
-        );
-      })}
-      <div ref={endRef} />
+        </div>
+
+        {/* Load earlier messages */}
+        {hasMore && onLoadMore && (
+          <div className="flex justify-center mb-3">
+            <button
+              onClick={onLoadMore}
+              className="px-3 py-1.5 text-xs rounded-lg transition-colors focus:outline-none focus-visible:ring-2"
+              style={{
+                color: 'var(--text-muted)',
+                background: 'var(--bg-panel)',
+                border: '1px solid var(--border-dim)',
+              }}
+              aria-label="Load earlier messages"
+            >
+              Load earlier messages
+            </button>
+          </div>
+        )}
+
+        {/* Virtual scroll: spacer before visible groups */}
+        {offsetBefore > 0 && (
+          <div style={{ height: offsetBefore, flexShrink: 0 }} aria-hidden="true" />
+        )}
+
+        {/* Render only visible groups */}
+        {groups.slice(visibleRange.start, visibleRange.end).map((group, i) => {
+          const gi = visibleRange.start + i;
+          return (
+            <div
+              key={group.key}
+              ref={groupRefCallback(group.key)}
+              style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 100px' }}
+            >
+              <MessageGroupRenderer
+                group={group}
+                groupIndex={gi}
+              />
+            </div>
+          );
+        })}
+
+        {/* Virtual scroll: spacer after visible groups */}
+        {offsetAfter > 0 && (
+          <div style={{ height: offsetAfter, flexShrink: 0 }} aria-hidden="true" />
+        )}
+      </div>
+
+      {/* Scroll to bottom indicator — shown when user scrolled up and new messages arrived */}
+      {hasNewBelow && (
+        <button
+          onClick={scrollToBottom}
+          className="absolute bottom-4 right-4 flex items-center gap-1.5 px-3 py-2 rounded-full transition-all active:scale-90 z-20 focus:outline-none focus-visible:ring-2 animate-[fadeSlideIn_0.2s_ease-out]"
+          style={{
+            background: 'var(--accent-blue)',
+            color: 'white',
+            boxShadow: '0 4px 15px rgba(99,140,255,0.4)',
+          }}
+          aria-label="Scroll to latest messages"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <path d="M12 5v14M5 12l7 7 7-7" />
+          </svg>
+          <span className="text-xs font-medium">New messages</span>
+        </button>
+      )}
     </div>
   );
 }
