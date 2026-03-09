@@ -166,6 +166,9 @@ export interface AgentState {
   delegated_at?: number;
   // Last result preview
   last_result?: string;
+  // Timing for elapsed display & stale detection
+  started_at?: number;
+  last_update_at?: number;
 }
 
 export interface LoopProgress {

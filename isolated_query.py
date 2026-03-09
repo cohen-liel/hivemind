@@ -513,9 +513,23 @@ async def isolated_query(
             error_category=ErrorCategory.UNKNOWN,
         )
     finally:
+        # Signal drain task to stop, then wait for it to finish naturally.
+        # CRITICAL: Do NOT cancel() the drain task immediately — that can leak
+        # CancelledError to the parent task's event loop and poison asyncio.wait().
         drain_done.set()
-        drain_task.cancel()
         try:
-            await asyncio.wait_for(drain_task, timeout=3.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+            await asyncio.wait_for(drain_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            # Only force-cancel as last resort
+            drain_task.cancel()
+            try:
+                await drain_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except asyncio.CancelledError:
+            # If WE got cancelled, still clean up the drain task
+            drain_task.cancel()
+            try:
+                await drain_task
+            except (asyncio.CancelledError, Exception):
+                pass

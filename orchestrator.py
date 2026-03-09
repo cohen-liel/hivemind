@@ -1482,6 +1482,24 @@ class OrchestratorManager:
                 orch_hb = asyncio.create_task(_orch_heartbeat())
                 try:
                     response = await self._query_agent("orchestrator", orchestrator_input)
+                except asyncio.CancelledError:
+                    # The orchestrator query runs WITHOUT isolation, so the SDK's
+                    # anyio cancel-scope bug can leak a CancelledError here.
+                    # Absorb it: uncancel so the event loop stays clean.
+                    ct = asyncio.current_task()
+                    if ct is not None and hasattr(ct, 'uncancel'):
+                        ct.uncancel()
+                    if self._stop_event.is_set():
+                        raise  # Real cancellation — propagate
+                    logger.warning(
+                        f"[{self.project_id}] Orchestrator query got spurious CancelledError "
+                        f"(anyio leak) — treating as transient error"
+                    )
+                    response = SDKResponse(
+                        text="Orchestrator query was interrupted (anyio cancel scope leak). Retrying.",
+                        is_error=True,
+                        error_message="CancelledError (anyio leak)",
+                    )
                 finally:
                     orch_hb.cancel()
                     try:
@@ -2433,6 +2451,8 @@ class OrchestratorManager:
             _wait_timeout = AGENT_TIMEOUT_SECONDS + 60
             remaining = set(_role_tasks.values())
             still_pending = set()
+            _wait_cancel_retries = 0
+            _MAX_WAIT_CANCEL_RETRIES = 50
             while remaining:
                 try:
                     done, still_pending = await asyncio.wait(
@@ -2444,13 +2464,35 @@ class OrchestratorManager:
                 except asyncio.CancelledError:
                     if self._stop_event.is_set():
                         raise
+                    # Uncancel so we can keep running
+                    ct = asyncio.current_task()
+                    if ct is not None and hasattr(ct, 'uncancel'):
+                        ct.uncancel()
                     remaining = {t for t in remaining if not t.done()}
                     if not remaining:
                         break
-                    logger.warning(
-                        f"[{self.project_id}] Spurious CancelledError in asyncio.wait — "
-                        f"{len(remaining)} agent(s) still running, re-waiting..."
-                    )
+                    _wait_cancel_retries += 1
+                    if _wait_cancel_retries > _MAX_WAIT_CANCEL_RETRIES:
+                        logger.error(
+                            f"[{self.project_id}] Too many CancelledErrors in asyncio.wait "
+                            f"({_wait_cancel_retries}) — force-cancelling {len(remaining)} remaining agent(s)"
+                        )
+                        for t in remaining:
+                            t.cancel()
+                        try:
+                            await asyncio.wait(remaining, timeout=5.0)
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        remaining = set()
+                        break
+                    if _wait_cancel_retries <= 3:
+                        logger.warning(
+                            f"[{self.project_id}] Spurious CancelledError in asyncio.wait — "
+                            f"{len(remaining)} agent(s) still running, re-waiting... "
+                            f"(attempt {_wait_cancel_retries}/{_MAX_WAIT_CANCEL_RETRIES})"
+                        )
+                    # Exponential backoff to prevent tight CPU spin
+                    await asyncio.sleep(min(0.1 * (2 ** _wait_cancel_retries), 5.0))
                     continue
 
             if still_pending:

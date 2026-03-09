@@ -230,6 +230,7 @@ input, textarea, select {
 .cost-badge {
   font-family: var(--font-mono);
   font-size: 9px;
+  font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   padding: 1px 5px;
   border-radius: 6px;
@@ -329,7 +330,13 @@ input, textarea, select {
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
+}
+
+/* Tabular-nums for any numeric display (costs, durations, counters) */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Card hover lift */

@@ -332,22 +332,20 @@ class ClaudeSDKManager:
             )
         except asyncio.CancelledError:
             logger.info(f"[{request_id}] SDK query CANCELLED")
-            # Suppress the anyio cancel-scope RuntimeError that can occur
-            # when the async generator cleanup runs in a different task.
-            # This happens when multiple queries run via asyncio.gather().
-            try:
-                raise  # Let cancellation propagate
-            except RuntimeError as cleanup_err:
-                if "cancel scope" in str(cleanup_err):
-                    logger.warning(f"[{request_id}] Suppressed anyio cancel scope error during cleanup")
-                    return SDKResponse(
-                        text="Agent was cancelled.",
-                        session_id=session_id or "",
-                        is_error=True,
-                        error_message="Cancelled (anyio cleanup error)",
-                        error_category=ErrorCategory.TRANSIENT,
-                    )
-                raise
+            # The anyio cancel-scope bug in the SDK can cause a CancelledError
+            # even when nothing requested cancellation.  Instead of propagating,
+            # return a safe error response and let the caller decide to retry.
+            #
+            # NOTE: The old code tried `raise` then `except RuntimeError` which
+            # is logically impossible — re-raised CancelledError can never be
+            # caught as RuntimeError.
+            return SDKResponse(
+                text="Agent was cancelled (anyio cancel scope leak).",
+                session_id=session_id or "",
+                is_error=True,
+                error_message="CancelledError (likely anyio cancel scope leak)",
+                error_category=ErrorCategory.TRANSIENT,
+            )
         except Exception as e:
             elapsed = time.monotonic() - query_start
             category = classify_error(str(e))

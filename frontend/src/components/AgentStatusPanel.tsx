@@ -1,5 +1,5 @@
 import type { AgentState } from '../types';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AGENT_ICONS, AGENT_LABELS, AGENT_ACCENTS, getAgentAccent } from '../constants';
 
 interface Props {
@@ -41,6 +41,15 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [soloAgent, setSoloAgent] = useState<string | null>(null);
 
+  // Tick for live elapsed time (every 5s)
+  const [, setTick] = useState(0);
+  const anyWorking = agents.some(a => a.state === 'working');
+  useEffect(() => {
+    if (!anyWorking) return;
+    const timer = setInterval(() => setTick(t => t + 1), 5000);
+    return () => clearInterval(timer);
+  }, [anyWorking]);
+
   if (agents.length === 0) {
     return (
       <div className="text-sm italic p-8 text-center" style={{ color: 'var(--text-muted)' }}>
@@ -51,7 +60,6 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
 
   const subAgents = agents.filter(a => a.name !== 'orchestrator');
   const workingAgents = subAgents.filter(a => a.state === 'working');
-  const anyWorking = workingAgents.length > 0;
 
   // === COMPACT LAYOUT ===
   if (layout === 'compact') {
@@ -201,11 +209,22 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                               <span className="text-xs font-bold" style={{ color: accent.color }}>
                                 {AGENT_LABELS[agent.name] || agent.name}
                               </span>
-                              {agent.duration > 0 && (
-                                <span className="text-[9px]" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                                  {Math.round(agent.duration)}s
-                                </span>
-                              )}
+                              {(() => {
+                                const elapsed = agent.started_at ? Math.round((Date.now() - agent.started_at) / 1000) : (agent.duration > 0 ? Math.round(agent.duration) : 0);
+                                const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 60000 : false;
+                                return (
+                                  <>
+                                    {elapsed > 0 && (
+                                      <span className="text-[9px]" style={{ color: isStale ? 'var(--accent-amber)' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                                        {elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`}
+                                      </span>
+                                    )}
+                                    {isStale && (
+                                      <span className="text-[8px] font-bold" style={{ color: 'var(--accent-amber)' }}>STALE</span>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
                             {agent.current_tool && (
                               <p className="text-[11px] truncate text-fade-right mt-0.5"
@@ -422,9 +441,27 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                   <h3 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{label}</h3>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-[9px] font-bold tracking-[0.1em]" style={{ color: s.labelColor, fontFamily: 'var(--font-mono)' }}>{s.label}</span>
-                    {agent.state === 'working' && agent.duration > 0 && (
-                      <span className="text-[9px]" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{Math.round(agent.duration)}s</span>
-                    )}
+                    {agent.state === 'working' && (() => {
+                      const elapsed = agent.started_at ? Math.round((Date.now() - agent.started_at) / 1000) : (agent.duration > 0 ? Math.round(agent.duration) : 0);
+                      const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 60000 : false;
+                      return (
+                        <>
+                          {elapsed > 0 && (
+                            <span className="text-[9px]" style={{ color: isStale ? 'var(--accent-amber)' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                              {elapsed >= 60 ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s` : `${elapsed}s`}
+                            </span>
+                          )}
+                          {isStale && (
+                            <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full" style={{
+                              background: 'rgba(245,166,35,0.1)', color: 'var(--accent-amber)',
+                              border: '1px solid rgba(245,166,35,0.2)', fontFamily: 'var(--font-mono)',
+                            }}>
+                              STALE
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>

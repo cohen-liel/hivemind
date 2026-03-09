@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState, clearHistory, getResumableTask, resumeInterruptedTask, discardInterruptedTask, getActivity } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
+import { useToast } from '../components/Toast';
 import ActivityFeed from '../components/ActivityFeed';
 import AgentStatusPanel from '../components/AgentStatusPanel';
 import ConductorBar from '../components/ConductorBar';
@@ -154,6 +155,8 @@ function reconstructAgentStates(events: ActivityEvent[]): Record<string, AgentSt
         cost: states[evt.agent]?.cost ?? 0,
         turns: states[evt.agent]?.turns ?? 0,
         duration: 0,
+        started_at: evt.timestamp * 1000, // convert to ms
+        last_update_at: evt.timestamp * 1000,
       };
     } else if (evt.type === 'agent_finished' && evt.agent) {
       states[evt.agent] = {
@@ -163,6 +166,8 @@ function reconstructAgentStates(events: ActivityEvent[]): Record<string, AgentSt
         cost: (states[evt.agent]?.cost ?? 0) + (evt.cost ?? 0),
         turns: (states[evt.agent]?.turns ?? 0) + (evt.turns ?? 0),
         duration: evt.duration ?? 0,
+        started_at: undefined,
+        last_update_at: evt.timestamp * 1000,
       };
     } else if (evt.type === 'delegation' && evt.to_agent) {
       // Mark delegated agent as working with its task
@@ -172,6 +177,8 @@ function reconstructAgentStates(events: ActivityEvent[]): Record<string, AgentSt
         state: 'working',
         task: evt.task,
         delegated_from: evt.from_agent,
+        started_at: evt.timestamp * 1000,
+        last_update_at: evt.timestamp * 1000,
       };
     }
   }
@@ -184,6 +191,7 @@ type DesktopTab = 'nexus' | 'agents' | 'plan' | 'code' | 'diff' | 'trace';
 
 export default function ProjectView() {
   const { id } = useParams<{ id: string }>();
+  const toast = useToast();
   const [project, setProject] = useState<Project | null>(null);
   const [activities, setActivities] = useState<ActivityEntry[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, AgentStateType>>({});
@@ -211,6 +219,13 @@ export default function ProjectView() {
 
   // Track the latest activity timestamp loaded from DB to prevent duplicate WS events
   const activityLoadedUpToRef = useRef<number>(0);
+
+  // Tick counter to force re-render for elapsed time displays (every 5s)
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 5000);
+    return () => clearInterval(timer);
+  }, []);
 
   const loadProject = useCallback(async () => {
     if (!id) return;
@@ -245,6 +260,9 @@ export default function ProjectView() {
               cost: s.cost ?? updated[name]?.cost ?? 0,
               turns: s.turns ?? updated[name]?.turns ?? 0,
               duration: updated[name]?.duration ?? 0,
+              // Preserve timing if we had it, otherwise set for working agents
+              started_at: updated[name]?.started_at ?? (serverState === 'working' ? Date.now() : undefined),
+              last_update_at: serverState === 'working' ? Date.now() : updated[name]?.last_update_at,
             };
             changed = true;
           }
@@ -337,6 +355,7 @@ export default function ProjectView() {
       if (live.agent_states && Object.keys(live.agent_states).length > 0) {
         const restored: Record<string, AgentStateType> = {};
         for (const [name, s] of Object.entries(live.agent_states)) {
+          const isWorking = (s.state as AgentStateType['state']) === 'working';
           restored[name] = {
             name,
             state: (s.state as AgentStateType['state']) ?? 'idle',
@@ -345,6 +364,8 @@ export default function ProjectView() {
             cost: s.cost ?? 0,
             turns: s.turns ?? 0,
             duration: s.duration ?? 0,
+            started_at: isWorking ? Date.now() : undefined,
+            last_update_at: isWorking ? Date.now() : undefined,
           };
         }
         setAgentStates(prev => {
@@ -386,6 +407,8 @@ export default function ProjectView() {
               state: agentStatus,
               current_tool: event.summary || event.text?.slice(0, 150),
               cost: event.cost ?? prev[updateAgent]?.cost ?? 0,
+              last_update_at: Date.now(),
+              started_at: prev[updateAgent]?.started_at ?? (agentStatus === 'working' ? Date.now() : undefined),
             },
           }));
           // Show agent name + action + progress in ticker
@@ -407,7 +430,7 @@ export default function ProjectView() {
         if (event.agent) {
           setAgentStates(prev => ({
             ...prev,
-            [event.agent!]: { ...prev[event.agent!], name: event.agent!, current_tool: event.description },
+            [event.agent!]: { ...prev[event.agent!], name: event.agent!, current_tool: event.description, last_update_at: Date.now() },
           }));
           setLastTicker(`${event.agent}: ${event.description || event.tool_name}`);
         }
@@ -429,6 +452,8 @@ export default function ProjectView() {
               cost: prev[event.agent!]?.cost ?? 0, turns: prev[event.agent!]?.turns ?? 0,
               duration: prev[event.agent!]?.duration ?? 0,
               last_result: undefined,
+              started_at: Date.now(),
+              last_update_at: Date.now(),
             },
           }));
           setLastTicker(`${event.agent} started${event.task ? ': ' + event.task.slice(0, 60) : ''}`);
@@ -458,6 +483,8 @@ export default function ProjectView() {
               duration: event.duration ?? 0,
               delegated_from: undefined, delegated_at: undefined,
               last_result: prev[event.agent!]?.last_result,
+              started_at: undefined,
+              last_update_at: Date.now(),
             },
           }));
           setSdkCalls(prev => {
@@ -503,6 +530,8 @@ export default function ProjectView() {
               delegated_from: event.from_agent,
               delegated_at: Date.now(),
               current_tool: undefined,
+              started_at: Date.now(),
+              last_update_at: Date.now(),
             },
           }));
         }
@@ -650,6 +679,7 @@ export default function ProjectView() {
         if (event.agent_states) {
           const restored: Record<string, AgentStateType> = {};
           for (const [name, s] of Object.entries(event.agent_states as Record<string, any>)) {
+            const isWorking = (s.state ?? 'idle') === 'working';
             restored[name] = {
               name,
               state: s.state ?? 'idle',
@@ -658,6 +688,8 @@ export default function ProjectView() {
               cost: s.cost ?? 0,
               turns: s.turns ?? 0,
               duration: s.duration ?? 0,
+              started_at: isWorking ? Date.now() : undefined,
+              last_update_at: isWorking ? Date.now() : undefined,
             };
           }
           setAgentStates(prev => ({ ...prev, ...restored }));
@@ -735,9 +767,11 @@ export default function ProjectView() {
       } else {
         await sendMessage(id, message);
       }
+      toast.success('Message sent');
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error('Failed to send message:', errMsg);
+      toast.error('Send failed', errMsg);
       setActivities(prev => [...prev, {
         id: nextId(), type: 'error', timestamp: Date.now() / 1000,
         agent: 'system', content: `Failed to send: ${errMsg}`,
@@ -746,9 +780,33 @@ export default function ProjectView() {
     loadProject();
   };
 
-  const handlePause = async () => { await pauseProject(id); loadProject(); };
-  const handleResume = async () => { await resumeProject(id); loadProject(); };
-  const handleStop = async () => { await stopProject(id); loadProject(); };
+  const handlePause = async () => {
+    try {
+      await pauseProject(id);
+      toast.info('Project paused');
+      loadProject();
+    } catch (err: unknown) {
+      toast.error('Pause failed', err instanceof Error ? err.message : String(err));
+    }
+  };
+  const handleResume = async () => {
+    try {
+      await resumeProject(id);
+      toast.success('Project resumed');
+      loadProject();
+    } catch (err: unknown) {
+      toast.error('Resume failed', err instanceof Error ? err.message : String(err));
+    }
+  };
+  const handleStop = async () => {
+    try {
+      await stopProject(id);
+      toast.warning('Project stopped');
+      loadProject();
+    } catch (err: unknown) {
+      toast.error('Stop failed', err instanceof Error ? err.message : String(err));
+    }
+  };
   const handleClearHistory = async () => {
     if (!confirm('Clear all history and start fresh?')) return;
     try {
@@ -763,9 +821,11 @@ export default function ProjectView() {
       setMessageOffset(0);
       setHasMoreMessages(false);
       setApprovalRequest(null);
+      toast.success('History cleared');
       loadProject();
     } catch (e) {
       console.error('Failed to clear history:', e);
+      toast.error('Clear failed', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -879,11 +939,12 @@ export default function ProjectView() {
                 try {
                   await resumeInterruptedTask(id);
                   setResumableTask(null);
+                  toast.success('Task resumed');
                   loadProject();
                 } catch (e: unknown) {
                   const msg = e instanceof Error ? e.message : 'Unknown error';
                   console.error('Resume failed:', msg);
-                  alert(`Failed to resume task: ${msg}`);
+                  toast.error('Failed to resume task', msg);
                 }
               }}
             >
@@ -901,10 +962,11 @@ export default function ProjectView() {
                 try {
                   await discardInterruptedTask(id);
                   setResumableTask(null);
+                  toast.info('Task discarded');
                 } catch (e: unknown) {
                   const msg = e instanceof Error ? e.message : 'Unknown error';
                   console.error('Discard failed:', msg);
-                  alert(`Failed to discard task: ${msg}`);
+                  toast.error('Failed to discard task', msg);
                 }
               }}
             >
@@ -1160,14 +1222,26 @@ export default function ProjectView() {
               style={{ borderBottom: '1px solid var(--border-dim)', background: 'linear-gradient(180deg, var(--bg-panel), var(--bg-void))' }}>
               {workingAgents.map(agent => {
                 const ac = getAgentAccent(agent.name);
+                const elapsedSec = agent.started_at ? Math.round((Date.now() - agent.started_at) / 1000) : 0;
+                const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 60000 : false;
                 return (
                   <div key={agent.name} className="flex items-center gap-2 px-2.5 py-1 rounded-lg flex-shrink-0 animate-[fadeSlideIn_0.2s_ease-out]"
-                    style={{ background: ac.bg, border: `1px solid ${ac.color}25` }}>
-                    <div className="w-1.5 h-1.5 rounded-full animate-pulse flex-shrink-0" style={{ background: ac.color }} />
-                    <span className="text-[11px] font-semibold" style={{ color: ac.color }}>
+                    style={{ background: isStale ? 'rgba(245,166,35,0.06)' : ac.bg, border: `1px solid ${isStale ? 'rgba(245,166,35,0.25)' : ac.color + '25'}` }}>
+                    <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isStale ? '' : 'animate-pulse'}`} style={{ background: isStale ? 'var(--accent-amber)' : ac.color }} />
+                    <span className="text-[11px] font-semibold" style={{ color: isStale ? 'var(--accent-amber)' : ac.color }}>
                       {AGENT_ICONS[agent.name] || '\u{1F527}'} {AGENT_LABELS[agent.name] || agent.name}
                     </span>
-                    {agent.current_tool && (
+                    {elapsedSec > 0 && (
+                      <span className="text-[10px] font-mono" style={{ color: isStale ? 'var(--accent-amber)' : 'var(--text-muted)' }}>
+                        {elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s` : `${elapsedSec}s`}
+                      </span>
+                    )}
+                    {isStale && (
+                      <span className="text-[9px] font-bold tracking-wider" style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
+                        STALE
+                      </span>
+                    )}
+                    {agent.current_tool && !isStale && (
                       <span className="text-[10px] truncate max-w-[180px]" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)' }}>
                         {agent.current_tool}
                       </span>
