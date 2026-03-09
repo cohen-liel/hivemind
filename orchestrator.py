@@ -57,6 +57,7 @@ AGENT_EMOJI = {
     "test_engineer":      "🧪",
     "reviewer":           "🔍",
     "researcher":         "🔎",
+    "ux_critic":          "🎭",
     # Legacy aliases
     "developer":          "💻",
     "tester":             "🧪",
@@ -198,7 +199,9 @@ class OrchestratorManager:
     def agent_names(self) -> list[str]:
         names = ["orchestrator"]
         if self.multi_agent:
-            names.extend(SUB_AGENT_PROMPTS.keys())
+            # Include both base roles and specialist roles
+            all_roles = set(SUB_AGENT_PROMPTS.keys()) | set(SPECIALIST_PROMPTS.keys())
+            names.extend(sorted(all_roles))
         return names
 
     @property
@@ -2020,13 +2023,14 @@ class OrchestratorManager:
         by_role: dict[str, list[Delegation]] = {}
         results: dict[str, list[SDKResponse]] = {}
         for d in delegations:
-            if d.agent not in SUB_AGENT_PROMPTS:
+            if d.agent not in SUB_AGENT_PROMPTS and d.agent not in SPECIALIST_PROMPTS:
                 logger.warning(f"Unknown sub-agent role: {d.agent}, skipping")
+                all_roles = set(SUB_AGENT_PROMPTS.keys()) | set(SPECIALIST_PROMPTS.keys())
                 # Feed back to orchestrator so it can retry with a valid role name
                 results.setdefault("⚠ Invalid Role", []).append(SDKResponse(
                     text=(
                         f"Delegation to unknown role '{d.agent}' was skipped.\n"
-                        f"Valid roles are: {', '.join(SUB_AGENT_PROMPTS.keys())}.\n"
+                        f"Valid roles are: {', '.join(sorted(all_roles))}.\n"
                         f"Task was: {d.task[:200]}"
                     ),
                     is_error=True,

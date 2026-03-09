@@ -224,10 +224,16 @@ else:
 DEFAULT_AGENTS: list[dict[str, str]] = [
     {"name": "orchestrator", "role": "Orchestrator"},
     {"name": "developer", "role": "Developer"},
+    {"name": "frontend_developer", "role": "Frontend Developer"},
+    {"name": "backend_developer", "role": "Backend Developer"},
+    {"name": "database_expert", "role": "Database Expert"},
     {"name": "reviewer", "role": "Reviewer"},
     {"name": "tester", "role": "Tester"},
+    {"name": "security_auditor", "role": "Security Auditor"},
     {"name": "devops", "role": "DevOps"},
     {"name": "researcher", "role": "Researcher"},
+    {"name": "ux_critic", "role": "UX Critic"},
+    {"name": "memory", "role": "Memory"},
 ]
 
 # --- Orchestrator system prompt ---
