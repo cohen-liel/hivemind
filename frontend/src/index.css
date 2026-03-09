@@ -205,6 +205,16 @@ input, textarea, select {
 .agent-border-devops { border-left: 3px solid #22d3ee; }
 .agent-border-researcher { border-left: 3px solid #10b981; }
 .agent-border-orchestrator { border-left: 3px solid #4a4e63; }
+/* New specialist roles — Layer 2: Execution */
+.agent-border-frontend_developer { border-left: 3px solid #638cff; }
+.agent-border-backend_developer { border-left: 3px solid #4f6ef5; }
+.agent-border-database_expert { border-left: 3px solid #f59e0b; }
+/* New specialist roles — Layer 3: Quality */
+.agent-border-security_auditor { border-left: 3px solid #f5475b; }
+.agent-border-test_engineer { border-left: 3px solid #f5a623; }
+.agent-border-ux_critic { border-left: 3px solid #ec4899; }
+/* PM / Brain layer */
+.agent-border-pm { border-left: 3px solid #8b5cf6; }
 
 /* New messages indicator pill */
 @keyframes slideInUp {

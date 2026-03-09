@@ -34,22 +34,27 @@ logger = logging.getLogger(__name__)
 # Max times a single task can be retried on failure
 MAX_TASK_RETRIES = 2
 
-# Roles that write files and must run sequentially when scopes overlap
+# Roles that write/modify files — must run sequentially when file scopes overlap
 _WRITER_ROLES = {
-    AgentRole.PYTHON_BACKEND,
-    AgentRole.TYPESCRIPT_ARCHITECT,
-    AgentRole.DEVOPS,
+    AgentRole.FRONTEND_DEVELOPER,
+    AgentRole.BACKEND_DEVELOPER,
     AgentRole.DATABASE_EXPERT,
-    AgentRole.DEVELOPER,  # legacy
+    AgentRole.DEVOPS,
+    # Legacy
+    AgentRole.TYPESCRIPT_ARCHITECT,
+    AgentRole.PYTHON_BACKEND,
+    AgentRole.DEVELOPER,
 }
 
-# Roles that are read-only and can always run in parallel
+# Roles that are read-only / analysis only — always safe to run in parallel
 _READER_ROLES = {
     AgentRole.RESEARCHER,
     AgentRole.REVIEWER,
     AgentRole.SECURITY_AUDITOR,
     AgentRole.UX_CRITIC,
     AgentRole.TEST_ENGINEER,
+    # Legacy
+    AgentRole.TESTER,
 }
 
 

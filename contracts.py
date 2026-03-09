@@ -30,20 +30,25 @@ class TaskStatus(str, Enum):
 
 
 class AgentRole(str, Enum):
-    PM                  = "pm"
+    # Layer 1: Brain
+    PM                   = "pm"
+    ORCHESTRATOR         = "orchestrator"
+    # Layer 2: Execution
+    FRONTEND_DEVELOPER   = "frontend_developer"
+    BACKEND_DEVELOPER    = "backend_developer"
+    DATABASE_EXPERT      = "database_expert"
+    DEVOPS               = "devops"
+    # Layer 3: Quality
+    SECURITY_AUDITOR     = "security_auditor"
+    TEST_ENGINEER        = "test_engineer"
+    REVIEWER             = "reviewer"
+    RESEARCHER           = "researcher"
+    # Legacy (backward compat)
     TYPESCRIPT_ARCHITECT = "typescript_architect"
-    PYTHON_BACKEND      = "python_backend"
-    TEST_ENGINEER       = "test_engineer"
-    SECURITY_AUDITOR    = "security_auditor"
-    UX_CRITIC           = "ux_critic"
-    DATABASE_EXPERT     = "database_expert"
-    DEVOPS              = "devops"
-    RESEARCHER          = "researcher"
-    REVIEWER            = "reviewer"
-    # Legacy roles kept for backward compatibility
-    DEVELOPER           = "developer"
-    TESTER              = "tester"
-    ORCHESTRATOR        = "orchestrator"
+    PYTHON_BACKEND       = "python_backend"
+    UX_CRITIC            = "ux_critic"
+    DEVELOPER            = "developer"
+    TESTER               = "tester"
 
 
 # ---------------------------------------------------------------------------
