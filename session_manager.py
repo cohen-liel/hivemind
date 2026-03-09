@@ -20,7 +20,7 @@ from typing import Any
 
 import aiosqlite
 
-from config import SESSION_DB_PATH, SESSION_EXPIRY_HOURS, STORE_DIR, DB_MAX_CONNECTIONS, DB_BACKUP_DIR
+from config import SESSION_DB_PATH, SESSION_EXPIRY_HOURS, STORE_DIR, DB_MAX_CONNECTIONS, DB_BACKUP_DIR, DB_QUERY_CACHE_TTL
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +278,28 @@ _MIGRATIONS: list[tuple[int, str, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_agent_perf_created ON agent_performance(created_at)",
         ],
     ),
+    (
+        5,
+        "add_query_optimization_indexes",
+        [
+            # projects: user_id — is_away(), set_away_mode() filter by user_id
+            "CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)",
+            # projects: status — listing active projects, dashboard filtering
+            "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status, updated_at)",
+            # away_digest: project_id — FK-like index for cascading deletes / lookups
+            "CREATE INDEX IF NOT EXISTS idx_away_digest_project ON away_digest(project_id)",
+            # schedules: project_id — FK-like index for project-scoped schedule queries
+            "CREATE INDEX IF NOT EXISTS idx_schedules_project ON schedules(project_id)",
+            # schedules: user_id — get_schedules() filters by user_id
+            "CREATE INDEX IF NOT EXISTS idx_schedules_user ON schedules(user_id)",
+            # messages: (project_id, id DESC) — keyset pagination cursor
+            "CREATE INDEX IF NOT EXISTS idx_messages_project_id ON messages(project_id, id DESC)",
+            # task_history: user_id — FK-like index
+            "CREATE INDEX IF NOT EXISTS idx_task_history_user ON task_history(user_id)",
+            # agent_performance: project_id — FK-like index for project-scoped queries
+            "CREATE INDEX IF NOT EXISTS idx_agent_perf_project_only ON agent_performance(project_id)",
+        ],
+    ),
 ]
 
 
@@ -426,6 +448,81 @@ def _retry_on_db_error(max_retries: int = 2, delay: float = 0.1):
     return decorator
 
 
+# ── Query Cache ──────────────────────────────────────────────────────────
+
+class QueryCache:
+    """Lightweight in-memory TTL cache for repeated database reads.
+
+    Stores query results keyed by a string identifier. Entries expire after
+    ``ttl_seconds`` and can be manually invalidated by exact key or prefix.
+
+    Thread-safety: designed for single-event-loop async code (no locking needed).
+
+    Usage::
+
+        cache = QueryCache(ttl_seconds=30)
+        result = cache.get("project:my-proj")
+        if result is None:
+            result = await expensive_query(...)
+            cache.set("project:my-proj", result)
+    """
+
+    def __init__(self, ttl_seconds: int = 30) -> None:
+        self._ttl: int = max(1, ttl_seconds)
+        self._store: dict[str, tuple[float, Any]] = {}  # key -> (expires_at, value)
+        self._hits: int = 0
+        self._misses: int = 0
+
+    def get(self, key: str) -> Any | None:
+        """Return cached value if present and not expired, else None."""
+        entry = self._store.get(key)
+        if entry is None:
+            self._misses += 1
+            return None
+        expires_at, value = entry
+        if time.time() > expires_at:
+            del self._store[key]
+            self._misses += 1
+            return None
+        self._hits += 1
+        return value
+
+    def set(self, key: str, value: Any) -> None:
+        """Store a value with TTL expiration."""
+        self._store[key] = (time.time() + self._ttl, value)
+
+    def invalidate(self, key: str) -> None:
+        """Remove a specific key from the cache."""
+        self._store.pop(key, None)
+
+    def invalidate_prefix(self, prefix: str) -> None:
+        """Remove all keys starting with *prefix*.
+
+        Useful for invalidating all entries related to a project::
+
+            cache.invalidate_prefix("project:my-proj")
+        """
+        keys_to_remove = [k for k in self._store if k.startswith(prefix)]
+        for k in keys_to_remove:
+            del self._store[k]
+
+    def clear(self) -> None:
+        """Remove all cached entries."""
+        self._store.clear()
+
+    def _evict_expired(self) -> None:
+        """Remove all expired entries (called periodically to prevent unbounded growth)."""
+        now = time.time()
+        expired = [k for k, (exp, _) in self._store.items() if now > exp]
+        for k in expired:
+            del self._store[k]
+
+    @property
+    def stats(self) -> dict[str, int]:
+        """Return cache hit/miss statistics."""
+        return {"hits": self._hits, "misses": self._misses, "size": len(self._store)}
+
+
 class SessionManager:
     """Async SQLite persistence for sessions, projects, and messages.
 
@@ -442,11 +539,12 @@ class SessionManager:
             await mgr.save_project(…)
     """
 
-    def __init__(self, db_path: str = SESSION_DB_PATH, max_connections: int = DB_MAX_CONNECTIONS) -> None:
+    def __init__(self, db_path: str = SESSION_DB_PATH, max_connections: int = DB_MAX_CONNECTIONS, cache_ttl: int = DB_QUERY_CACHE_TTL) -> None:
         self.db_path: str = db_path
         self._db: aiosqlite.Connection | None = None
         self._pool: ConnectionPool = ConnectionPool(db_path, max_connections)
         self._max_connections: int = max_connections
+        self._cache: QueryCache = QueryCache(ttl_seconds=cache_ttl)
 
     async def initialize(self) -> None:
         """Create tables, run migrations, and initialize connection pool.
@@ -471,12 +569,14 @@ class SessionManager:
         await self._migrate_add_columns()
         await self._migrate_json()
         logger.info(
-            "SessionManager initialized: %s (pool_max=%d)",
-            self.db_path, self._max_connections,
+            "SessionManager initialized: %s (pool_max=%d, cache_ttl=%ds)",
+            self.db_path, self._max_connections, self._cache._ttl,
         )
 
     async def close(self) -> None:
         """Close the connection pool and primary database connection."""
+        # Clear query cache
+        self._cache.clear()
         # Close pool connections first
         if self._pool:
             try:
@@ -638,19 +738,33 @@ class SessionManager:
              name, description, project_dir, status, now),
         )
         await db.commit()
+        # Invalidate project and list caches
+        self._cache.invalidate(f"project:{project_id}")
+        self._cache.invalidate("projects:list")
 
     async def load_project(self, project_id: str) -> dict | None:
-        """Load project metadata."""
+        """Load project metadata (cached with TTL)."""
+        cache_key = f"project:{project_id}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT * FROM projects WHERE project_id=?",
             (project_id,),
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        result = dict(row) if row else None
+        if result is not None:
+            self._cache.set(cache_key, result)
+        return result
 
     async def list_projects(self) -> list[dict]:
-        """List all projects, sorted by most recently updated."""
+        """List all projects, sorted by most recently updated (cached with TTL)."""
+        cache_key = "projects:list"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
         db = await self._get_db()
         # Use cached message_count column (maintained by triggers) instead of expensive LEFT JOIN
         cursor = await db.execute(
@@ -661,7 +775,9 @@ class SessionManager:
                ORDER BY updated_at DESC"""
         )
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        self._cache.set(cache_key, result)
+        return result
 
     async def update_status(self, project_id: str, status: str):
         """Update a project's status."""
@@ -671,6 +787,8 @@ class SessionManager:
             (status, time.time(), project_id),
         )
         await db.commit()
+        self._cache.invalidate(f"project:{project_id}")
+        self._cache.invalidate("projects:list")
 
     # Whitelist of columns that can be updated via update_project_fields.
     # Prevents SQL injection through dynamic column names.
@@ -692,27 +810,66 @@ class SessionManager:
         vals = list(fields.values()) + [time.time(), project_id]
         await db.execute(f"UPDATE projects SET {sets}, updated_at=? WHERE project_id=?", vals)
         await db.commit()
+        self._cache.invalidate(f"project:{project_id}")
+        self._cache.invalidate("projects:list")
 
-    async def get_messages_paginated(self, project_id: str, limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
+    async def get_messages_paginated(self, project_id: str, limit: int = 50, offset: int = 0, *, cursor: int | None = None) -> tuple[list[dict], int]:
         """Return paginated messages and total count.
 
-        EXPLAIN QUERY PLAN:
-            Query 1: SEARCH messages USING INDEX idx_messages_project (project_id=?)
-            Query 2: SEARCH messages USING COVERING INDEX idx_messages_project (project_id=?)
-            — Both queries use the composite (project_id, timestamp) index.
-            — COUNT(*) query benefits from covering index (no table lookup needed).
+        Supports two pagination modes:
+
+        1. **Keyset pagination** (preferred): pass ``cursor=<message_id>`` to fetch
+           messages older than the cursor.  Uses ``WHERE id < cursor`` for O(1)
+           index seek regardless of page depth.
+
+        2. **Offset pagination** (legacy): pass ``offset=N`` for traditional
+           OFFSET-based paging.  Only used when ``cursor`` is not provided.
+
+        Returns:
+            A tuple of ``(messages, total_count)`` where each message dict includes
+            an ``id`` field that can be used as the cursor for the next page.
+
+        EXPLAIN QUERY PLAN (keyset mode):
+            SEARCH messages USING INDEX idx_messages_project_id (project_id=? AND id<?)
+            — Composite (project_id, id DESC) index enables efficient range scan.
         """
         db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT agent_name, role, content, cost_usd, timestamp FROM messages "
-            "WHERE project_id=? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (project_id, limit, offset),
-        )
-        rows = await cursor.fetchall()
-        cursor2 = await db.execute(
-            "SELECT COUNT(*) FROM messages WHERE project_id=?", (project_id,)
-        )
-        total = (await cursor2.fetchone())[0]
+        if cursor is not None:
+            # Keyset pagination: use message id as cursor for O(1) seek
+            query_cursor = await db.execute(
+                "SELECT id, agent_name, role, content, cost_usd, timestamp FROM messages "
+                "WHERE project_id=? AND id < ? ORDER BY id DESC LIMIT ?",
+                (project_id, cursor, limit),
+            )
+            rows = await query_cursor.fetchall()
+        else:
+            # Legacy offset pagination (backward compatibility)
+            query_cursor = await db.execute(
+                "SELECT id, agent_name, role, content, cost_usd, timestamp FROM messages "
+                "WHERE project_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (project_id, limit, offset),
+            )
+            rows = await query_cursor.fetchall()
+
+        # Total count — use cached message_count from projects table when available
+        cache_key = f"msg_count:{project_id}"
+        total = self._cache.get(cache_key)
+        if total is None:
+            count_cursor = await db.execute(
+                "SELECT COALESCE(message_count, 0) FROM projects WHERE project_id=?",
+                (project_id,),
+            )
+            count_row = await count_cursor.fetchone()
+            if count_row:
+                total = count_row[0]
+            else:
+                # Fallback: count from messages table
+                count_cursor2 = await db.execute(
+                    "SELECT COUNT(*) FROM messages WHERE project_id=?", (project_id,)
+                )
+                total = (await count_cursor2.fetchone())[0]
+            self._cache.set(cache_key, total)
+
         return [dict(row) for row in reversed(rows)], total
 
     async def get_project_tasks(self, project_id: str, limit: int = 50) -> list[dict]:

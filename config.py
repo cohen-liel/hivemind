@@ -155,6 +155,7 @@ SESSION_DB_PATH: str = str(STORE_DIR / "sessions.db")
 DB_MAX_CONNECTIONS: int = _get("DB_MAX_CONNECTIONS", "5", int)
 DB_BACKUP_DIR: str = str(STORE_DIR / "backups")
 DB_VACUUM_INTERVAL_HOURS: int = _get("DB_VACUUM_INTERVAL_HOURS", "168", int)  # Weekly
+DB_QUERY_CACHE_TTL: int = _get("DB_QUERY_CACHE_TTL", "30", int)  # Seconds
 
 # User input validation
 MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "4000", int)
@@ -222,6 +223,7 @@ def validate_config() -> list[str]:
         "MAX_USER_MESSAGE_LENGTH": MAX_USER_MESSAGE_LENGTH,
         "DB_MAX_CONNECTIONS": DB_MAX_CONNECTIONS,
         "DB_VACUUM_INTERVAL_HOURS": DB_VACUUM_INTERVAL_HOURS,
+        "DB_QUERY_CACHE_TTL": DB_QUERY_CACHE_TTL,
     }
     for name, val in _positive_ints.items():
         if not isinstance(val, int) or val <= 0:
