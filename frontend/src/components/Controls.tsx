@@ -13,7 +13,8 @@ interface Props {
 
 export default function Controls({ status, agents, onPause, onResume, onStop, onSend }: Props) {
   const [message, setMessage] = useState('');
-  const [targetAgent, setTargetAgent] = useState('orchestrator');
+  // All messages go through the Orchestrator — no direct agent targeting
+  const targetAgent = 'orchestrator';
   const [sending, setSending] = useState(false);
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -32,7 +33,7 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
     if (!message.trim() || sending) return;
     setSending(true);
     try {
-      await onSend(message.trim(), targetAgent === 'orchestrator' ? undefined : targetAgent);
+      await onSend(message.trim());  // Always routes through Orchestrator
       setMessage('');
     } finally {
       setSending(false);
@@ -127,31 +128,17 @@ export default function Controls({ status, agents, onPause, onResume, onStop, on
 
       {/* Input row — premium feel */}
       <div className="flex items-end gap-2.5 px-3 py-3">
-        {/* Agent selector — icon button */}
-        {agents.length > 1 && (
-          <div className="relative flex-shrink-0">
-            <select
-              value={targetAgent}
-              onChange={(e) => setTargetAgent(e.target.value)}
-              className="absolute inset-0 opacity-0 cursor-pointer z-10 w-full h-full"
-            >
-              <option value="orchestrator">All agents</option>
-              {agents.filter(a => a !== 'orchestrator').map(a => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
-            <div
-              className="w-10 h-10 rounded-xl flex items-center justify-center text-base transition-all duration-200 cursor-pointer"
-              style={{
-                background: 'var(--bg-elevated)',
-                border: '1px solid var(--border-subtle)',
-              }}
-              title={`Sending to: ${targetAgent}`}
-            >
-              {targetIcon}
-            </div>
-          </div>
-        )}
+        {/* Orchestrator indicator — all messages go through the conductor */}
+        <div
+          className="w-10 h-10 rounded-xl flex items-center justify-center text-base flex-shrink-0"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-subtle)',
+          }}
+          title="All messages go through the Orchestrator"
+        >
+          {targetIcon}
+        </div>
 
         {/* Text input */}
         <div

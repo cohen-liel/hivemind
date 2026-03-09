@@ -1099,12 +1099,12 @@ class OrchestratorManager:
             "state": "working",
             "task": task.goal[:120],
         }
+        # BUG FIX: emit agent_started (not agent_update) so frontend tracks
+        # activity feed, network trace, elapsed time, and SDK calls correctly.
         await self._emit_event(
-            "agent_update",
+            "agent_started",
             agent=task.role.value,
-            status="working",
-            task=task.goal[:120],
-            is_remediation=task.is_remediation,
+            task=task.goal[:300],
         )
         await self._notify(
             f"🔄 {prefix}**{task.role.value}** starting: {task.goal[:80]}...{required}"
@@ -1124,16 +1124,18 @@ class OrchestratorManager:
             "state": "done" if output.is_successful() else "error",
             "task": task.goal[:120],
             "cost": output.cost_usd,
+            "turns": output.turns_used,
+            "duration": 0,  # Will be set by frontend from timestamps
         }
+        # BUG FIX: emit agent_finished (not agent_update) so frontend tracks
+        # activity feed, network trace, and properly transitions agent state.
         await self._emit_event(
-            "agent_update",
+            "agent_finished",
             agent=task.role.value,
-            status="done" if output.is_successful() else "error",
-            summary=output.summary[:200],
             cost=output.cost_usd,
-            artifacts_count=len(output.structured_artifacts),
-            is_remediation=task.is_remediation,
-            progress=progress,
+            turns=output.turns_used,
+            duration=0,  # DAG doesn't track per-task wall time; frontend calculates from started_at
+            is_error=not output.is_successful(),
         )
         await self._notify(
             f"{icon} {prefix}**{task.role.value}** [{output.status.value}]{progress_str} "

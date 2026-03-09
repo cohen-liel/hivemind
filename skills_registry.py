@@ -205,17 +205,20 @@ def get_skills_for_agent(agent_role: str) -> list[str]:
     ]
 
 
-def select_skills_for_task(agent_role: str, task: str, max_skills: int = 5) -> list[str]:
+def select_skills_for_task(agent_role: str, task: str, max_skills: int = 2) -> list[str]:
     """Select the most relevant skills for a task using keyword + description matching.
 
     Instead of injecting ALL skills for a role (e.g. 48 developer skills = ~43K tokens),
     this picks only the top N most relevant skills based on the task text.
     Falls back to all skills if the role has <= max_skills total.
 
+    Reduced from 5 to 2 to prevent Context Rot (per Anthropic's context engineering guide).
+    More skills = more noise = the agent loses focus on the actual task.
+
     Args:
         agent_role: The agent role (frontend_developer, backend_developer, etc.)
         task: The task description to match against.
-        max_skills: Maximum number of skills to inject (default 5 → ~5K tokens).
+        max_skills: Maximum number of skills to inject (default 2 → ~2-3K tokens).
     """
     if not _skills_cache:
         scan_skills()
@@ -270,7 +273,11 @@ def select_skills_for_task(agent_role: str, task: str, max_skills: int = 5) -> l
 
 
 def build_skill_prompt(skill_names: list[str]) -> str:
-    """Build a skill context string to append to a sub-agent's system prompt."""
+    """Build a skill context string to append to a sub-agent's system prompt.
+
+    Uses XML tags for clear separation (per Anthropic's prompt engineering guide).
+    Truncates each skill to 2500 chars to keep total injection under ~5K tokens.
+    """
     if not _skills_cache:
         scan_skills()
 
@@ -278,16 +285,18 @@ def build_skill_prompt(skill_names: list[str]) -> str:
     for name in skill_names:
         content = _skills_cache.get(name)
         if content:
-            # Truncate very long skills to keep prompt reasonable
-            truncated = content[:4000]
-            if len(content) > 4000:
-                truncated += "\n... (skill content truncated)"
-            parts.append(f"\n--- Skill: {name} ---\n{truncated}")
+            # Truncate to keep prompt reasonable — 2500 chars per skill
+            truncated = content[:2500]
+            if len(content) > 2500:
+                truncated += "\n... (truncated)"
+            parts.append(f'<skill name="{name}">\n{truncated}\n</skill>')
 
     if not parts:
         return ""
 
     return (
-        "\n\nAVAILABLE SKILLS (reference these for best practices):\n"
+        "\n\n<skills>\n"
+        "Reference these skills for best practices relevant to your task:\n"
         + "\n".join(parts)
+        + "\n</skills>"
     )

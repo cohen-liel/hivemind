@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { getProject, getMessages, getFiles, sendMessage, talkToAgent, pauseProject, resumeProject, stopProject, getLiveState, clearHistory, getResumableTask, resumeInterruptedTask, discardInterruptedTask, getActivity } from '../api';
+import { getProject, getMessages, getFiles, sendMessage, pauseProject, resumeProject, stopProject, getLiveState, clearHistory, getResumableTask, resumeInterruptedTask, discardInterruptedTask, getActivity } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
 import { useToast } from '../components/Toast';
@@ -790,17 +790,14 @@ export default function ProjectView() {
     );
   }
 
-  const handleSend = async (message: string, agent?: string) => {
+  const handleSend = async (message: string) => {
+    // All messages go through the Orchestrator — no direct agent targeting
     setActivities(prev => [...prev, {
       id: nextId(), type: 'user_message', timestamp: Date.now() / 1000,
       agent: 'user', content: message,
     }]);
     try {
-      if (agent) {
-        await talkToAgent(id, agent, message);
-      } else {
-        await sendMessage(id, message);
-      }
+      await sendMessage(id, message);
       toast.success('Message sent');
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);

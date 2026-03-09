@@ -348,7 +348,7 @@ async def _run_single_task(
 
     # Inject relevant skills
     try:
-        skill_names = select_skills_for_task(task.role.value, task.goal, max_skills=5)
+        skill_names = select_skills_for_task(task.role.value, task.goal)  # uses default max_skills=2
         if skill_names:
             system_prompt = system_prompt + build_skill_prompt(skill_names)
     except Exception as exc:
