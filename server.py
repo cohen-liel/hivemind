@@ -171,11 +171,12 @@ async def run():
 
     # Start FastAPI dashboard
     dash = create_app()
-    dashboard_host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+    dashboard_host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
     config = uvicorn.Config(
         dash, host=dashboard_host, port=DASHBOARD_PORT, log_level="info",
     )
     server = uvicorn.Server(config)
+    
 
     logger.info(f"Dashboard starting on http://{dashboard_host}:{DASHBOARD_PORT}")
 
