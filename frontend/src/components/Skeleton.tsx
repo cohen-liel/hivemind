@@ -7,6 +7,8 @@ export function SkeletonBlock({ width, height, className = '' }: { width?: strin
   return (
     <div
       className={`skeleton ${className}`}
+      role="presentation"
+      aria-hidden="true"
       style={{ width: width ?? '100%', height: height ?? '16px' }}
     />
   );
@@ -17,6 +19,8 @@ export function SkeletonStatCard() {
   return (
     <div
       className="rounded-2xl p-5"
+      role="presentation"
+      aria-hidden="true"
       style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
     >
       <div className="flex items-center justify-between mb-3">
@@ -34,6 +38,8 @@ export function SkeletonProjectCard() {
   return (
     <div
       className="rounded-2xl p-4"
+      role="presentation"
+      aria-hidden="true"
       style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
     >
       <div className="flex items-center gap-3 mb-3">
@@ -52,7 +58,7 @@ export function SkeletonProjectCard() {
 /** Skeleton for a settings form */
 export function SkeletonSettingsForm() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" role="presentation" aria-hidden="true">
       {[1, 2, 3].map(i => (
         <div key={i}>
           <SkeletonBlock width="100px" height="12px" className="mb-2" />
@@ -69,6 +75,8 @@ export function SkeletonScheduleRow() {
   return (
     <div
       className="flex items-center gap-4 p-4 rounded-xl"
+      role="presentation"
+      aria-hidden="true"
       style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
     >
       <SkeletonBlock width="40px" height="40px" className="rounded-xl" />
@@ -84,9 +92,9 @@ export function SkeletonScheduleRow() {
 /** Full page skeleton for Dashboard */
 export function DashboardSkeleton() {
   return (
-    <div className="p-6 space-y-6 page-enter">
+    <div className="p-6 space-y-6 page-enter" aria-busy="true" aria-label="Loading dashboard…">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between" aria-hidden="true">
         <div>
           <SkeletonBlock width="200px" height="28px" className="mb-2" />
           <SkeletonBlock width="300px" height="14px" />
@@ -95,14 +103,14 @@ export function DashboardSkeleton() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" aria-hidden="true">
         {[1, 2, 3, 4].map(i => (
           <SkeletonStatCard key={i} />
         ))}
       </div>
 
       {/* Project list */}
-      <div>
+      <div aria-hidden="true">
         <SkeletonBlock width="120px" height="16px" className="mb-4" />
         <div className="space-y-3">
           {[1, 2, 3].map(i => (
@@ -117,12 +125,13 @@ export function DashboardSkeleton() {
 /** Full page skeleton for Settings */
 export function SettingsSkeleton() {
   return (
-    <div className="p-6 max-w-2xl mx-auto space-y-6 page-enter">
+    <div className="p-6 max-w-2xl mx-auto space-y-6 page-enter" aria-busy="true" aria-label="Loading settings…">
       <SkeletonBlock width="160px" height="28px" className="mb-6" />
       {[1, 2].map(section => (
         <div
           key={section}
           className="rounded-2xl p-6"
+          aria-hidden="true"
           style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}
         >
           <SkeletonBlock width="140px" height="18px" className="mb-4" />
@@ -136,8 +145,8 @@ export function SettingsSkeleton() {
 /** Full page skeleton for Schedules */
 export function SchedulesSkeleton() {
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-4 page-enter">
-      <div className="flex items-center justify-between mb-4">
+    <div className="p-6 max-w-3xl mx-auto space-y-4 page-enter" aria-busy="true" aria-label="Loading schedules…">
+      <div className="flex items-center justify-between mb-4" aria-hidden="true">
         <SkeletonBlock width="160px" height="28px" />
         <SkeletonBlock width="120px" height="36px" className="rounded-xl" />
       </div>

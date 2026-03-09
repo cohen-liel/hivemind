@@ -285,6 +285,7 @@ input, textarea, select {
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
   border-radius: 8px;
+  will-change: background-position;
 }
 
 .skeleton-pulse {

@@ -57,10 +57,10 @@ export default function SettingsPage() {
       .then((s) => {
         setSettings(s);
         const d: Record<string, number> = {};
-        const raw = s as unknown as Record<string, unknown>;
         for (const section of EDITABLE_FIELDS) {
           for (const field of section.fields) {
-            d[field.key] = typeof raw[field.key] === 'number' ? (raw[field.key] as number) : 0;
+            const val = (s as Record<string, unknown>)[field.key];
+            d[field.key] = typeof val === 'number' ? val : 0;
           }
         }
         setDraft(d);
@@ -77,16 +77,17 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       await updateSettings(draft);
-      await persistSettings(draft).catch(() => {});
+      // persistSettings is best-effort — don't fail the save if it errors
+      try {
+        await persistSettings(draft);
+      } catch {
+        // persist failed (e.g. disk write) — in-memory update still succeeded
+      }
       toast.success('Settings saved successfully');
       // Update the settings reference so hasChanges resets
       setSettings(prev => {
         if (!prev) return prev;
-        const updated = { ...prev } as unknown as Record<string, unknown>;
-        for (const [k, v] of Object.entries(draft)) {
-          updated[k] = v;
-        }
-        return updated as unknown as Settings;
+        return { ...prev, ...draft } as Settings;
       });
     } catch {
       toast.error('Failed to save settings');
@@ -96,7 +97,7 @@ export default function SettingsPage() {
   };
 
   const hasChanges = settings ? EDITABLE_FIELDS.some(s => {
-    const raw = settings as unknown as Record<string, unknown>;
+    const raw = settings as Record<string, unknown>;
     return s.fields.some(f => draft[f.key] !== raw[f.key]);
   }) : false;
 
@@ -158,12 +159,15 @@ export default function SettingsPage() {
                   style={{ borderBottom: i < section.fields.length - 1 ? '1px solid var(--border-dim)' : 'none' }}
                 >
                   <div className="min-w-0">
-                    <div className="text-sm" style={{ color: 'var(--text-primary)' }}>{field.label}</div>
-                    <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{field.desc}</div>
+                    <label htmlFor={`field-${field.key}`} className="text-sm" style={{ color: 'var(--text-primary)' }}>{field.label}</label>
+                    <div id={`desc-${field.key}`} className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{field.desc}</div>
                   </div>
                   <input
+                    id={`field-${field.key}`}
                     type="number"
                     value={draft[field.key] ?? 0}
+                    aria-label={field.label}
+                    aria-describedby={`desc-${field.key}`}
                     onChange={(e) => {
                       const val = field.type === 'float'
                         ? parseFloat(e.target.value) || 0

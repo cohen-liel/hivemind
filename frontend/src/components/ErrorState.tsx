@@ -31,7 +31,7 @@ const VARIANTS = {
     title: 'Nothing Here Yet',
     message: 'Get started by creating your first item.',
   },
-};
+} as const;
 
 export default function ErrorState({
   title,
@@ -42,18 +42,27 @@ export default function ErrorState({
 }: Props) {
   const defaults = VARIANTS[variant];
 
+  const displayTitle = title ?? defaults.title;
+  const displayMessage = message ?? defaults.message;
+  const displayIcon = icon ?? defaults.icon;
+
   return (
-    <div className="flex flex-col items-center justify-center py-16 px-6 page-enter">
-      {/* Icon */}
+    <div
+      className="flex flex-col items-center justify-center py-16 px-6 page-enter"
+      role="status"
+      aria-label={displayTitle}
+    >
+      {/* Icon — decorative only */}
       <div
         className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl mb-4"
+        aria-hidden="true"
         style={{
           background: 'var(--bg-elevated)',
           border: '1px solid var(--border-dim)',
           boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
         }}
       >
-        {icon ?? defaults.icon}
+        {displayIcon}
       </div>
 
       {/* Title */}
@@ -61,7 +70,7 @@ export default function ErrorState({
         className="text-lg font-semibold mb-1.5"
         style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}
       >
-        {title ?? defaults.title}
+        {displayTitle}
       </h3>
 
       {/* Message */}
@@ -69,13 +78,14 @@ export default function ErrorState({
         className="text-sm text-center max-w-sm leading-relaxed"
         style={{ color: 'var(--text-muted)' }}
       >
-        {message ?? defaults.message}
+        {displayMessage}
       </p>
 
       {/* Retry button */}
       {onRetry && (
         <button
           onClick={onRetry}
+          aria-label="Retry"
           className="mt-5 px-5 py-2.5 text-sm font-medium rounded-xl transition-all duration-200 active:scale-95"
           style={{
             background: 'var(--bg-elevated)',

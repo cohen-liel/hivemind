@@ -11,16 +11,24 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from dashboard.events import event_bus
 import state
 
 logger = logging.getLogger(__name__)
+
+# Valid project_id: lowercase letters, digits, hyphens — max 128 chars
+_PROJECT_ID_RE = re.compile(r'^[a-z0-9][a-z0-9\-]{0,126}[a-z0-9]$|^[a-z0-9]$')
+
+
+def _valid_project_id(project_id: str) -> bool:
+    """Return True if project_id matches the expected slug format."""
+    return bool(_PROJECT_ID_RE.match(project_id))
 
 
 # --- Request / response models ---
@@ -63,11 +71,40 @@ class CreateScheduleRequest(BaseModel):
     user_id: int = 0
     repeat: str = "once"
 
+    @field_validator('project_id')
+    @classmethod
+    def validate_project_id(cls, v: str) -> str:
+        if not _PROJECT_ID_RE.match(v):
+            raise ValueError('Invalid project_id format')
+        return v
+
+    @field_validator('repeat')
+    @classmethod
+    def validate_repeat(cls, v: str) -> str:
+        if v not in ('once', 'daily', 'hourly'):
+            raise ValueError('repeat must be once, daily, or hourly')
+        return v
+
+    @field_validator('task_description')
+    @classmethod
+    def validate_task_description(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError('task_description cannot be empty')
+        if len(v) > 2000:
+            raise ValueError('task_description too long (max 2000 chars)')
+        return v
+
 
 # --- Helpers using state module ---
 
 def _find_manager(project_id: str):
-    """Find an OrchestratorManager by project_id across all users."""
+    """Find an OrchestratorManager by project_id across all users.
+
+    Returns (None, None) for invalid project_id formats to prevent injection.
+    """
+    if not _valid_project_id(project_id):
+        return None, None
     return state.get_manager(project_id)
 
 
@@ -184,6 +221,8 @@ def _create_web_manager(
 
 async def _resolve_project_dir(project_id: str) -> str | None:
     """Resolve project directory from active manager or DB."""
+    if not _valid_project_id(project_id):
+        return None
     manager, _ = _find_manager(project_id)
     if manager:
         return manager.project_dir

@@ -15,9 +15,10 @@ function KeyboardShortcuts() {
   const location = useLocation();
 
   const handler = useCallback((e: KeyboardEvent) => {
-    // Don't intercept when typing in inputs
+    // Don't intercept when typing in inputs or contenteditable
     const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const isEditable = (e.target as HTMLElement)?.isContentEditable;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || isEditable) return;
 
     // Ctrl/Cmd + N → new project
     if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
@@ -100,6 +101,7 @@ function MobileBottomNav() {
   return (
     <nav
       className="lg:hidden fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around safe-area-bottom"
+      aria-label="Mobile navigation"
       style={{
         background: 'var(--bg-panel)',
         borderTop: '1px solid var(--border-dim)',
@@ -116,14 +118,16 @@ function MobileBottomNav() {
           <Link
             key={item.path}
             to={item.path}
+            aria-current={isActive ? 'page' : undefined}
+            aria-label={item.label}
             className="flex flex-col items-center gap-0.5 px-3 py-1 rounded-lg transition-colors"
             style={{
               color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)',
               opacity: isActive ? 1 : 0.6,
             }}
           >
-            {item.icon}
-            <span className="text-[9px] font-medium">{item.label}</span>
+            <span aria-hidden="true">{item.icon}</span>
+            <span className="text-[9px] font-medium" aria-hidden="true">{item.label}</span>
           </Link>
         );
       })}

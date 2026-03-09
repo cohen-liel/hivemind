@@ -136,8 +136,9 @@ export default function SchedulesPage() {
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Project</label>
+                <label htmlFor="schedule-project" className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Project</label>
                 <select
+                  id="schedule-project"
                   value={formProject}
                   onChange={(e) => setFormProject(e.target.value)}
                   className="w-full text-sm px-3 py-2 rounded-xl focus:outline-none"
@@ -153,8 +154,9 @@ export default function SchedulesPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Time</label>
+                <label htmlFor="schedule-time" className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Time</label>
                 <input
+                  id="schedule-time"
                   type="time"
                   value={formTime}
                   onChange={(e) => setFormTime(e.target.value)}
@@ -169,8 +171,9 @@ export default function SchedulesPage() {
               </div>
             </div>
             <div>
-              <label className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Task Description</label>
+              <label htmlFor="schedule-task" className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Task Description</label>
               <input
+                id="schedule-task"
                 type="text"
                 value={formTask}
                 onChange={(e) => setFormTask(e.target.value)}
@@ -185,8 +188,9 @@ export default function SchedulesPage() {
             </div>
             <div className="flex items-end gap-4">
               <div>
-                <label className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Repeat</label>
+                <label htmlFor="schedule-repeat" className="block text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Repeat</label>
                 <select
+                  id="schedule-repeat"
                   value={formRepeat}
                   onChange={(e) => setFormRepeat(e.target.value)}
                   className="text-sm px-3 py-2 rounded-xl focus:outline-none"
@@ -276,6 +280,7 @@ export default function SchedulesPage() {
                   onClick={() => handleDelete(s.id)}
                   className="flex-shrink-0 p-2 rounded-lg transition-all"
                   style={{ color: 'var(--text-muted)' }}
+                  aria-label={`Delete schedule: ${s.task_description}`}
                   onMouseEnter={e => {
                     e.currentTarget.style.color = 'var(--accent-red)';
                     e.currentTarget.style.background = 'var(--glow-red)';
@@ -286,7 +291,7 @@ export default function SchedulesPage() {
                   }}
                   title="Delete schedule"
                 >
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                     <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
                 </button>
