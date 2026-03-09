@@ -1095,6 +1095,10 @@ class OrchestratorManager:
         if task.required_artifacts:
             art_names = [a.value for a in task.required_artifacts]
             required = f" | Artifacts: {', '.join(art_names)}"
+        self.agent_states[task.role.value] = {
+            "state": "working",
+            "task": task.goal[:120],
+        }
         await self._emit_event(
             "agent_update",
             agent=task.role.value,
@@ -1116,6 +1120,11 @@ class OrchestratorManager:
             artifact_info = f" | Artifacts: {', '.join(art_names)}"
         progress = getattr(output, '_progress', '')
         progress_str = f" ({progress})" if progress else ""
+        self.agent_states[task.role.value] = {
+            "state": "done" if output.is_successful() else "error",
+            "task": task.goal[:120],
+            "cost": output.cost_usd,
+        }
         await self._emit_event(
             "agent_update",
             agent=task.role.value,
