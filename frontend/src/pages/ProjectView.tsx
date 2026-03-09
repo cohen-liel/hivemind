@@ -62,24 +62,41 @@ export default function ProjectView(): React.ReactElement | null {
     return () => clearInterval(timer);
   }, []);
 
-  // ── 1-minute heartbeat ──
-  // Emits an "⏱️ still working" activity for agents that have been running >60s without
-  // producing a new activity entry. Fires at most once per minute per agent.
+  // ── Smart heartbeat ──
+  // Emits activity entries showing what each agent is ACTUALLY doing.
+  // Uses real tool info from agent_states instead of generic messages.
+  // Fires every 45s per agent, with stale warnings after 30s of no updates.
   const lastHeartbeatRef = useRef<Record<string, number>>({});
   useEffect(() => {
     const workingAgents = Object.entries(agentStates).filter(([, a]) => a.state === 'working');
     for (const [agentName, agentState] of workingAgents) {
       const startedAt = agentState.started_at ?? now;
       const runningMs = now - startedAt;
-      if (runningMs < 60_000) continue;          // don't fire until 1st minute passes
+      if (runningMs < 45_000) continue;          // don't fire until 45s passes
 
       const lastHb = lastHeartbeatRef.current[agentName];
-      if (lastHb === undefined || now - lastHb >= 60_000) {
+      if (lastHb === undefined || now - lastHb >= 45_000) {
         lastHeartbeatRef.current[agentName] = now;
         const totalMin = Math.floor(runningMs / 60_000);
         const remSec = Math.floor((runningMs % 60_000) / 1_000);
-        const timeStr = remSec > 0 ? `${totalMin}m ${remSec}s` : `${totalMin}m`;
-        const currentAction = (agentState.current_tool || agentState.task || 'thinking...').slice(0, 80);
+        const timeStr = totalMin > 0 ? (remSec > 0 ? `${totalMin}m ${remSec}s` : `${totalMin}m`) : `${Math.floor(runningMs / 1000)}s`;
+
+        // Use REAL tool info if available
+        const currentAction = (agentState.current_tool || agentState.task || '').slice(0, 100);
+        const lastUpdateAt = agentState.last_update_at;
+        const isStale = lastUpdateAt ? (now - lastUpdateAt) > 30_000 : runningMs > 30_000;
+
+        let message: string;
+        if (isStale && !currentAction) {
+          message = `⏳ ${agentName}: waiting for Claude response... (${timeStr})`;
+        } else if (isStale) {
+          message = `⏳ ${agentName}: ${currentAction} (${timeStr}, no new activity for 30s+)`;
+        } else if (currentAction) {
+          message = `⚡ ${agentName}: ${currentAction} (${timeStr})`;
+        } else {
+          message = `⏱️ ${agentName}: working... (${timeStr})`;
+        }
+
         dispatch({
           type: 'ADD_ACTIVITY',
           activity: {
@@ -87,7 +104,7 @@ export default function ProjectView(): React.ReactElement | null {
             type: 'agent_text',
             timestamp: now / 1000,
             agent: agentName,
-            content: `⏱️ Still working (${timeStr}) — ${currentAction}`,
+            content: message,
           },
         });
       }

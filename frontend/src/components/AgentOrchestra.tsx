@@ -136,7 +136,7 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
       {workingAgents.map(agent => {
         const ac = getAgentAccent(agent.name);
         const elapsedSec = agent.started_at ? Math.round((now - agent.started_at) / 1000) : 0;
-        const isStale = agent.last_update_at ? (now - agent.last_update_at) > 60000 : false;
+        const isStale = agent.last_update_at ? (now - agent.last_update_at) > 30000 : (agent.started_at ? (now - agent.started_at) > 30000 : false);
         return (
           <div key={agent.name} className="flex items-center gap-2 px-2.5 py-1 rounded-lg flex-shrink-0 animate-[fadeSlideIn_0.2s_ease-out]"
             style={{ background: isStale ? 'rgba(245,166,35,0.06)' : ac.bg, border: `1px solid ${isStale ? 'rgba(245,166,35,0.25)' : ac.color + '25'}` }}>

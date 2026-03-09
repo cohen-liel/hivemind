@@ -1485,6 +1485,9 @@ class OrchestratorManager:
             return
         # Truncate to avoid flooding the WebSocket
         summary = text[:200].replace('\n', ' ').strip()
+        # Update agent_states so heartbeat knows the agent is alive
+        if agent_role in self.agent_states:
+            self.agent_states[agent_role]["last_stream_at"] = time.time()
         await self._emit_event(
             "agent_update",
             agent=agent_role,
@@ -1495,9 +1498,15 @@ class OrchestratorManager:
 
     async def _on_dag_agent_tool_use(self, agent_role: str, tool_name: str, description: str = "", task_id: str = ""):
         """Callback: fired when a DAG agent uses a tool — shows in Activity Log."""
+        # Update agent_states so the heartbeat shows real tool activity
+        tool_display = description[:120] if description else tool_name
+        if agent_role in self.agent_states:
+            self.agent_states[agent_role]["current_tool"] = tool_display
+            count = self.agent_states[agent_role].get("tool_count", 0) + 1
+            self.agent_states[agent_role]["tool_count"] = count
         summary = f"Using tool: {tool_name}"
         if description:
-            summary += f" — {description[:100]}"
+            summary += f" \u2014 {description[:100]}"
         await self._emit_event(
             "tool_use",
             agent=agent_role,
@@ -1831,29 +1840,38 @@ class OrchestratorManager:
                 # Orchestrator heartbeat — emit periodic updates while it's thinking
                 # so the UI knows it's not stuck (it has no tools, so no tool_use events)
                 async def _orch_heartbeat():
-                    phases = [
-                        "analyzing request...",
-                        "reviewing context...",
-                        "deciding delegation strategy...",
-                        "composing agent instructions...",
-                        "finalizing plan...",
-                    ]
-                    tick = 0
+                    _last_real_tool = ""
+                    _last_tool_time = time.monotonic()
                     while True:
                         await asyncio.sleep(4)
-                        tick += 1
                         elapsed = int(time.monotonic() - agent_start)
-                        phase = phases[min(tick - 1, len(phases) - 1)]
+                        state_info = self.agent_states.get("orchestrator", {})
+                        real_tool = state_info.get("current_tool", "")
+
+                        # Check if on_tool_use updated the state with real activity
+                        if real_tool and real_tool != _last_real_tool:
+                            _last_real_tool = real_tool
+                            _last_tool_time = time.monotonic()
+                            status = f"{real_tool} ({elapsed}s)"
+                        else:
+                            stale_secs = int(time.monotonic() - _last_tool_time)
+                            if _last_real_tool and stale_secs < 15:
+                                status = f"{_last_real_tool} ({elapsed}s)"
+                            elif elapsed < 8:
+                                status = f"analyzing request... ({elapsed}s)"
+                            else:
+                                status = f"thinking... ({elapsed}s)"
+
                         self.agent_states["orchestrator"] = {
                             "state": "working",
-                            "task": phase,
-                            "current_tool": f"thinking ({elapsed}s)",
+                            "task": status,
+                            "current_tool": status,
                         }
                         await self._emit_event(
                             "agent_update",
                             agent="orchestrator",
-                            text=f"🎯 {phase} ({elapsed}s)",
-                            summary=f"🎯 Orchestrator: {phase} ({elapsed}s)",
+                            text=f"\U0001f3af {status}",
+                            summary=f"\U0001f3af Orchestrator: {status}",
                             timestamp=time.time(),
                         )
 
@@ -2570,32 +2588,52 @@ class OrchestratorManager:
                         "\n".join(conflict_lines)
                     )
 
-                # Sub-agent heartbeat — emit periodic updates while SDK call is pending
-                # so the UI shows the agent is alive and working
+                # Sub-agent heartbeat — emit periodic updates using REAL SDK activity
+                # The on_tool_use callback (in _query_agent) already updates
+                # agent_states[role]["current_tool"] with real tool info.
+                # This heartbeat just re-emits the latest real status periodically
+                # so the UI stays alive, and adds elapsed time.
                 async def _sub_heartbeat(role=agent_role, start=agent_start):
-                    phases = [
-                        "reading codebase...",
-                        "analyzing code...",
-                        "writing changes...",
-                        "testing & verifying...",
-                        "finalizing...",
-                    ]
-                    tick = 0
+                    _last_real_tool = ""  # Track last real tool to detect staleness
+                    _last_tool_time = time.monotonic()  # When we last saw a new tool
+                    _tool_count = 0
                     while True:
-                        await asyncio.sleep(5)
-                        tick += 1
+                        await asyncio.sleep(4)
                         elapsed = int(time.monotonic() - start)
-                        phase = phases[min(tick - 1, len(phases) - 1)]
+                        state_info = self.agent_states.get(role, {})
+                        real_tool = state_info.get("current_tool", "")
+                        tool_count = state_info.get("tool_count", 0)
+
+                        # Detect if we got a NEW real tool update from on_tool_use
+                        if real_tool and (real_tool != _last_real_tool or tool_count != _tool_count):
+                            _last_real_tool = real_tool
+                            _last_tool_time = time.monotonic()
+                            _tool_count = tool_count
+                            status = f"{real_tool} ({elapsed}s)"
+                        else:
+                            # No new tool activity — show waiting status
+                            stale_secs = int(time.monotonic() - _last_tool_time)
+                            if _last_real_tool and stale_secs < 15:
+                                # Recently had activity, show last known
+                                status = f"{_last_real_tool} ({elapsed}s)"
+                            elif _last_real_tool:
+                                # Had activity but stale — waiting for Claude
+                                status = f"waiting for response... ({elapsed}s)"
+                            elif elapsed < 10:
+                                status = f"starting up... ({elapsed}s)"
+                            else:
+                                status = f"waiting for Claude response... ({elapsed}s)"
+
                         self.agent_states[role] = {
-                            **self.agent_states.get(role, {}),
+                            **state_info,
                             "state": "working",
-                            "current_tool": f"{phase} ({elapsed}s)",
+                            "current_tool": status,
                         }
                         await self._emit_event(
                             "agent_update",
                             agent=role,
-                            text=f"{AGENT_EMOJI.get(role, '🔧')} {phase} ({elapsed}s)",
-                            summary=f"{phase} ({elapsed}s)",
+                            text=f"{AGENT_EMOJI.get(role, chr(0x1f527))} {status}",
+                            summary=f"{AGENT_EMOJI.get(role, chr(0x1f527))} {role}: {status}",
                         )
                 _hb_task = asyncio.create_task(_sub_heartbeat())
 

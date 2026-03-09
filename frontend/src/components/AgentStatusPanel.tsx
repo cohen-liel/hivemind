@@ -211,7 +211,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                               </span>
                               {(() => {
                                 const elapsed = agent.started_at ? Math.round((Date.now() - agent.started_at) / 1000) : (agent.duration > 0 ? Math.round(agent.duration) : 0);
-                                const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 60000 : false;
+                                const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 30000 : (agent.started_at ? (Date.now() - agent.started_at) > 30000 : false);
                                 return (
                                   <>
                                     {elapsed > 0 && (
@@ -443,7 +443,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                     <span className="text-[9px] font-bold tracking-[0.1em]" style={{ color: s.labelColor, fontFamily: 'var(--font-mono)' }}>{s.label}</span>
                     {agent.state === 'working' && (() => {
                       const elapsed = agent.started_at ? Math.round((Date.now() - agent.started_at) / 1000) : (agent.duration > 0 ? Math.round(agent.duration) : 0);
-                      const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 60000 : false;
+                      const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 30000 : (agent.started_at ? (Date.now() - agent.started_at) > 30000 : false);
                       return (
                         <>
                           {elapsed > 0 && (
