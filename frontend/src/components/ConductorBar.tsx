@@ -10,10 +10,12 @@ interface Props {
   progress: LoopProgress | null;
   totalCost: number;
   agentSummary?: AgentState[];
+  /** Most recent live activity text from any agent — shown when orchestrator has no specific task */
+  lastTicker?: string;
 }
 
 export default function ConductorBar({
-  projectName, status, connected, orchestrator, progress, totalCost, agentSummary,
+  projectName, status, connected, orchestrator, progress, totalCost, agentSummary, lastTicker,
 }: Props) {
   const isActive = orchestrator?.state === 'working';
   const isOrchestratorDone = orchestrator?.state === 'done';
@@ -121,17 +123,22 @@ export default function ConductorBar({
                 style={{ background: 'var(--accent-blue)' }} />
               <div className="text-[10px] truncate"
                 style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
-                {orchestrator?.task || orchestrator?.current_tool}
+                {orchestrator?.current_tool || orchestrator?.task}
               </div>
-              {orchestrator?.current_tool && orchestrator.current_tool.includes('(') && (
-                <span className="text-[9px] flex-shrink-0"
-                  style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                  {orchestrator.current_tool.match(/\((\d+s)\)/)?.[1] || ''}
-                </span>
-              )}
             </div>
           )}
-          {isActive && !orchestrator?.current_tool && !orchestrator?.task && (
+          {/* Fallback: show last live ticker when orchestrator has no specific task text */}
+          {isActive && !orchestrator?.current_tool && !orchestrator?.task && lastTicker && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-1 h-1 rounded-full animate-pulse flex-shrink-0"
+                style={{ background: 'var(--accent-blue)' }} />
+              <div className="text-[10px] truncate"
+                style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
+                {lastTicker}
+              </div>
+            </div>
+          )}
+          {isActive && !orchestrator?.current_tool && !orchestrator?.task && !lastTicker && (
             <div className="flex items-center gap-1.5">
               <div className="w-1 h-1 rounded-full animate-pulse flex-shrink-0"
                 style={{ background: 'var(--accent-blue)' }} />

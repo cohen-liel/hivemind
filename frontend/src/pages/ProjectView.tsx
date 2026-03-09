@@ -759,6 +759,7 @@ export default function ProjectView(): React.ReactElement | null {
           progress={loopProgress}
           totalCost={project.total_cost_usd}
           agentSummary={subAgentStates}
+          lastTicker={lastTicker}
         />
 
         {/* Content (middle, flex-1 takes remaining space) */}
@@ -775,7 +776,61 @@ export default function ProjectView(): React.ReactElement | null {
           )}
 
           {mobileView === 'activity' && (
-            <ActivityFeed activities={activities} hasMore={hasMoreMessages} onLoadMore={loadEarlierMessages} />
+            <div className="flex flex-col h-full">
+              {/* Live agent stream — shown at top of mobile activity view when agents are working */}
+              {(() => {
+                const activeAgents = Object.entries(agentStates)
+                  .filter(([_, a]) => a.state === 'working')
+                  .map(([name, agentState]) => ({
+                    name,
+                    entry: liveAgentStream[name] ?? { text: agentState.task || 'working...', timestamp: agentState.started_at ?? now },
+                    agentState,
+                  }));
+                if (activeAgents.length === 0) return null;
+                return (
+                  <div className="flex-shrink-0 overflow-hidden" style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-elevated)', maxHeight: '200px', overflowY: 'auto' }}>
+                    <div className="px-3 pt-2 pb-1 flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-green)' }} />
+                      <span className="text-[9px] font-bold uppercase tracking-widest" style={{ color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>
+                        ⚡ Live — {activeAgents.length} agent{activeAgents.length > 1 ? 's' : ''} working
+                      </span>
+                    </div>
+                    {activeAgents.map(({ name: agentName, entry, agentState }) => {
+                      const ac = getAgentAccent(agentName);
+                      const elapsedSec = agentState.started_at ? Math.round((now - agentState.started_at) / 1000) : 0;
+                      return (
+                        <div key={agentName} className="px-3 pb-2.5 pt-1" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <div className="flex items-center gap-2 mb-1">
+                            <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse" style={{ background: ac.color }} />
+                            <span className="text-[11px] font-semibold" style={{ color: ac.color }}>
+                              {AGENT_ICONS[agentName] || '🤖'} {AGENT_LABELS[agentName] || agentName}
+                            </span>
+                            {entry.tool && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-medium flex-shrink-0" style={{ background: `${ac.color}18`, color: ac.color, border: `1px solid ${ac.color}30` }}>
+                                {entry.tool}
+                              </span>
+                            )}
+                            {elapsedSec > 0 && (
+                              <span className="text-[10px] ml-auto font-mono flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                                {elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s` : `${elapsedSec}s`}
+                              </span>
+                            )}
+                          </div>
+                          {entry.text && (
+                            <p className="text-[11px] leading-relaxed pl-3.5" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                              {entry.text}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <ActivityFeed activities={activities} hasMore={hasMoreMessages} onLoadMore={loadEarlierMessages} />
+              </div>
+            </div>
           )}
 
           {mobileView === 'code' && (
@@ -941,6 +996,7 @@ export default function ProjectView(): React.ReactElement | null {
           progress={loopProgress}
           totalCost={project.total_cost_usd}
           agentSummary={subAgentStates}
+          lastTicker={lastTicker}
         />
 
         {/* Desktop tab bar */}

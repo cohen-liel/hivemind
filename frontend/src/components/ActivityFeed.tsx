@@ -605,16 +605,14 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
   // Track whether user has scrolled up to show "new messages" indicator
   const [hasNewBelow, setHasNewBelow] = useState<boolean>(false);
 
-  // Filter activities based on view mode
+  // Filter activities based on view mode.
+  // "Summary" hides system noise (delegation events, loop counters) but keeps
+  // tool calls and agent starts so the user can still see what's happening.
   const filtered = useMemo((): ActivityEntry[] =>
     viewMode === 'summary'
       ? activities.filter(a =>
-          a.type === 'user_message' ||
-          a.type === 'delegation' ||
-          a.type === 'agent_text' ||
-          a.type === 'agent_finished' ||
-          a.type === 'loop_progress' ||
-          a.type === 'error'
+          a.type !== 'delegation' &&
+          a.type !== 'loop_progress'
         )
       : activities,
     [activities, viewMode]
@@ -806,8 +804,19 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
         aria-label="Activity feed"
         aria-live="polite"
       >
-        {/* View mode toggle */}
-        <div className="flex justify-end mb-2 sticky top-0 z-10">
+        {/* View mode toggle + freshness badge */}
+        <div className="flex items-center justify-between mb-2 sticky top-0 z-10">
+          {/* Freshness: pulse when last activity < 30s ago */}
+          {(() => {
+            const lastTs = activities[activities.length - 1]?.timestamp;
+            const isLive = lastTs && (Date.now() - lastTs) < 30000;
+            return isLive ? (
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent-green)' }} />
+                <span className="text-[9px] font-bold tracking-widest" style={{ color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>LIVE</span>
+              </div>
+            ) : <div />;
+          })()}
           <div className="rounded-full p-0.5 flex gap-0.5"
             style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-dim)', backdropFilter: 'blur(8px)' }}>
             <button
@@ -819,8 +828,9 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
               }}
               aria-label="Summary view"
               aria-pressed={viewMode === 'summary'}
+              title="Hide delegation and loop events"
             >
-              Summary
+              Compact
             </button>
             <button
               onClick={() => setViewMode('detail')}
@@ -831,8 +841,9 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
               }}
               aria-label="Detail view"
               aria-pressed={viewMode === 'detail'}
+              title="Show all events including delegation and loop counters"
             >
-              Detail
+              Full
             </button>
           </div>
         </div>
