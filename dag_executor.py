@@ -92,6 +92,8 @@ async def execute_graph(
     on_task_start: Callable[[TaskInput], Awaitable[None]] | None = None,
     on_task_done: Callable[[TaskInput, TaskOutput], Awaitable[None]] | None = None,
     on_remediation: Callable[[TaskInput, TaskOutput, TaskInput], Awaitable[None]] | None = None,
+    on_agent_stream: Callable | None = None,
+    on_agent_tool_use: Callable | None = None,
     max_budget_usd: float = 50.0,
     session_id_store: dict[str, str] | None = None,
 ) -> ExecutionResult:
@@ -139,6 +141,8 @@ async def execute_graph(
         on_task_start=on_task_start,
         on_task_done=on_task_done,
         on_remediation=on_remediation,
+        on_agent_stream=on_agent_stream,
+        on_agent_tool_use=on_agent_tool_use,
     )
 
     logger.info(
@@ -260,6 +264,8 @@ class _ExecutionContext:
         on_task_start: Callable | None = None,
         on_task_done: Callable | None = None,
         on_remediation: Callable | None = None,
+        on_agent_stream: Callable | None = None,
+        on_agent_tool_use: Callable | None = None,
     ):
         self.graph = graph
         self.project_dir = project_dir
@@ -270,6 +276,8 @@ class _ExecutionContext:
         self.on_task_start = on_task_start
         self.on_task_done = on_task_done
         self.on_remediation = on_remediation
+        self.on_agent_stream = on_agent_stream
+        self.on_agent_tool_use = on_agent_tool_use
 
         self.completed: dict[str, TaskOutput] = {}
         self.retries: dict[str, int] = {}
@@ -383,6 +391,22 @@ async def _run_single_task(
 
     t0 = time.monotonic()
     try:
+        # Build streaming callbacks scoped to this task's agent role
+        _on_stream = None
+        _on_tool_use = None
+        if ctx.on_agent_stream:
+            async def _on_stream(text):
+                try:
+                    await ctx.on_agent_stream(task.role.value, text, task.id)
+                except Exception:
+                    pass
+        if ctx.on_agent_tool_use:
+            async def _on_tool_use(tool_name, description=""):
+                try:
+                    await ctx.on_agent_tool_use(task.role.value, tool_name, description, task.id)
+                except Exception:
+                    pass
+
         response = await asyncio.wait_for(
             ctx.sdk.query_with_retry(
                 prompt=prompt,
@@ -391,6 +415,8 @@ async def _run_single_task(
                 session_id=session_id,
                 max_turns=30,
                 max_budget_usd=15.0,
+                on_stream=_on_stream,
+                on_tool_use=_on_tool_use,
             ),
             timeout=TASK_TIMEOUT_SECONDS,
         )

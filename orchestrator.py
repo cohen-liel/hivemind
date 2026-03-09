@@ -1186,6 +1186,8 @@ class OrchestratorManager:
                 on_task_start=self._on_dag_task_start,
                 on_task_done=self._on_dag_task_done,
                 on_remediation=self._on_dag_remediation,
+                on_agent_stream=self._on_dag_agent_stream,
+                on_agent_tool_use=self._on_dag_agent_tool_use,
                 max_budget_usd=self._effective_budget,
                 session_id_store=session_id_store,
             )
@@ -1337,6 +1339,34 @@ class OrchestratorManager:
         await self._notify(
             f"🔧 **Self-healing:** Task {failed_task.id} failed ({cat_str}). "
             f"Auto-created fix task {remediation_task.id} ({remediation_task.role.value})."
+        )
+
+    async def _on_dag_agent_stream(self, agent_role: str, text: str, task_id: str = ""):
+        """Callback: fired when a DAG agent streams text — enables real-time UI updates."""
+        # Throttle: only emit if text is meaningful (>20 chars)
+        if len(text) < 20:
+            return
+        # Truncate to avoid flooding the WebSocket
+        summary = text[:200].replace('\n', ' ').strip()
+        await self._emit_event(
+            "agent_update",
+            agent=agent_role,
+            summary=summary,
+            status="working",
+            task_id=task_id,
+        )
+
+    async def _on_dag_agent_tool_use(self, agent_role: str, tool_name: str, description: str = "", task_id: str = ""):
+        """Callback: fired when a DAG agent uses a tool — shows in Activity Log."""
+        summary = f"Using tool: {tool_name}"
+        if description:
+            summary += f" — {description[:100]}"
+        await self._emit_event(
+            "tool_use",
+            agent=agent_role,
+            tool=tool_name,
+            summary=summary,
+            task_id=task_id,
         )
 
     def _record_dag_output(self, output: "TaskOutput"):
