@@ -608,15 +608,15 @@ def _plan_batches(tasks: list[TaskInput]) -> list[list[TaskInput]]:
 
     batches: list[list[TaskInput]] = []
 
-    # All readers + others can go in one parallel batch
-    parallel_batch = readers + others
-    if parallel_batch:
-        batches.append(parallel_batch)
-
-    # Writers: group by file conflicts
+    # Writers run FIRST — they produce the code that readers will verify
     if writers:
         writer_batches = _split_writers_by_conflicts(writers)
         batches.extend(writer_batches)
+
+    # All readers + others can go in one parallel batch AFTER writers
+    parallel_batch = readers + others
+    if parallel_batch:
+        batches.append(parallel_batch)
 
     return batches
 

@@ -320,7 +320,7 @@ def _enforce_artifact_requirements(graph: TaskGraph) -> TaskGraph:
     for task in graph.tasks:
         defaults = _ROLE_DEFAULT_ARTIFACTS.get(task.role, [])
         if not task.required_artifacts and defaults:
-            task.required_artifacts = defaults
+            task.required_artifacts = list(defaults)
             logger.debug(
                 f"[PM] Auto-added required_artifacts to {task.id}: "
                 f"{[a.value for a in defaults]}"

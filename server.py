@@ -177,7 +177,7 @@ async def run():
                         "pending_messages": manager._message_queue.qsize(),
                         "agent_states": {},
                     }
-                    for agent_name, agent_st in manager.agent_states.items():
+                    for agent_name, agent_st in dict(manager.agent_states).items():
                         proj_state["agent_states"][agent_name] = {
                             "state": agent_st.get("state", "idle"),
                             "task": agent_st.get("task", ""),
@@ -194,7 +194,7 @@ async def run():
                                 "status": "idle",
                                 "name": p.get("name", pid),
                             }
-                state_file.write_text(_json.dumps(snapshot, indent=2, default=str))
+                await asyncio.to_thread(state_file.write_text, _json.dumps(snapshot, indent=2, default=str))
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -221,7 +221,7 @@ async def run():
 
     # Start FastAPI dashboard
     dash = create_app()
-    dashboard_host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+    dashboard_host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
     config = uvicorn.Config(
         dash, host=dashboard_host, port=DASHBOARD_PORT, log_level="info",
     )

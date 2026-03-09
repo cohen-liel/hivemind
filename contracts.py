@@ -554,8 +554,9 @@ def create_remediation_task(
     if strategy is None:
         return None  # No auto-remediation for this category
 
-    # Determine the right role for the fix
-    role = strategy["role"]
+    # Determine the right role for the fix — start with the original task's role
+    # so remediation stays in the same domain, then override for specific cases
+    role = failed_task.role
     # If the original task was frontend and the error is build-related, keep frontend
     if failed_task.role in (AgentRole.FRONTEND_DEVELOPER, AgentRole.TYPESCRIPT_ARCHITECT):
         if category in (FailureCategory.BUILD_ERROR, FailureCategory.TEST_FAILURE):

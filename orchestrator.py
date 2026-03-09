@@ -603,12 +603,17 @@ class OrchestratorManager:
             except Exception:
                 pass  # Don't block completion on detection failure
 
-        # For any non-trivial task, require at least developer + reviewer to have run
+        # For any non-trivial task, require at least one writer + one reviewer to have run
+        _writer_roles = {
+            "developer", "backend_developer", "frontend_developer",
+            "database_expert", "devops", "typescript_architect", "python_backend",
+        }
+        _reviewer_roles = {"reviewer", "security_auditor", "ux_critic"}
         if complexity != "SIMPLE":
-            if "developer" not in self._agents_used:
-                return "Developer agent has not been used yet. Delegate implementation work."
-            if "reviewer" not in self._agents_used:
-                return "Reviewer agent has not been used yet. Delegate a code review before completing."
+            if not self._agents_used & _writer_roles:
+                return "No code-writing agent has been used yet. Delegate implementation work."
+            if not self._agents_used & _reviewer_roles:
+                return "No review agent has been used yet. Delegate a code review before completing."
 
         # For all tasks: require at least 2 different agents to have been used
         if len(self._agents_used) < 2:
@@ -969,9 +974,26 @@ class OrchestratorManager:
             await self._notify("🧠 **Loading project memory...**")
 
             # Step 0: Load project memory for context continuity
-            manifest = await self._load_manifest()
-            memory_snapshot = await self._load_memory_snapshot()
-            file_tree = self._list_workspace_files()
+            # Each loader is individually guarded so a single failure
+            # (e.g. corrupt JSON, permission error, blocking I/O timeout)
+            # does not crash the entire DAG session.
+            try:
+                manifest = await self._load_manifest()
+            except Exception as _mf_err:
+                logger.warning(f"[{self.project_id}] _load_manifest failed (non-fatal): {_mf_err}")
+                manifest = ""
+
+            try:
+                memory_snapshot = await self._load_memory_snapshot()
+            except Exception as _ms_err:
+                logger.warning(f"[{self.project_id}] _load_memory_snapshot failed (non-fatal): {_ms_err}")
+                memory_snapshot = ""
+
+            try:
+                file_tree = await asyncio.to_thread(self._list_workspace_files)
+            except Exception as _ft_err:
+                logger.warning(f"[{self.project_id}] _list_workspace_files failed (non-fatal): {_ft_err}")
+                file_tree = ""
 
             if memory_snapshot:
                 await self._notify("📚 Found existing project memory — PM will use it for context.")
@@ -2303,7 +2325,11 @@ class OrchestratorManager:
         # Code-modifying agents (developer, devops) run FIRST and SEQUENTIALLY
         # to avoid conflicting file changes. Read-only agents (reviewer, tester,
         # researcher) run AFTER in PARALLEL.
-        _WRITER_ROLES = {"developer", "devops"}  # Agents that modify files
+        _WRITER_ROLES = {  # Agents that modify files
+            "developer", "devops", "backend_developer",
+            "frontend_developer", "database_expert",
+            "typescript_architect", "python_backend",
+        }
         _READER_ROLES = {"reviewer", "tester", "researcher"}  # Agents that read/verify
 
         writer_roles = {r: d for r, d in by_role.items() if r in _WRITER_ROLES}
