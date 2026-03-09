@@ -401,10 +401,14 @@ const AgentFinishedBubble = memo(function AgentFinishedBubble({ entry, showAvata
           <div className="text-[11px] font-medium mb-0.5 ml-1" style={{ color: 'var(--text-muted)' }}>{entry.agent}</div>
         )}
         <div className="rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm"
-          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)', color: 'var(--text-primary)' }}>
+          style={{
+            background: isError ? 'rgba(245,71,91,0.06)' : 'var(--bg-card)',
+            border: isError ? '1px solid rgba(245,71,91,0.2)' : '1px solid var(--border-dim)',
+            color: 'var(--text-primary)',
+          }}>
           <div className="flex items-center gap-2">
             <span className="text-xs" style={{ color: isError ? 'var(--accent-red)' : 'var(--accent-green)' }}>
-              {isError ? '✘' : '✔'}
+              {isError ? '\u2718' : '\u2714'}
             </span>
             <span>
               <span className="font-medium" style={{ color: isError ? 'var(--accent-red)' : 'var(--accent-green)' }}>
@@ -415,6 +419,14 @@ const AgentFinishedBubble = memo(function AgentFinishedBubble({ entry, showAvata
               )}
             </span>
           </div>
+          {/* Show failure reason when agent failed */}
+          {isError && entry.failure_reason && (
+            <div className="mt-2 pt-2 text-xs leading-relaxed"
+              style={{ borderTop: '1px solid rgba(245,71,91,0.15)', color: 'var(--text-secondary)' }}>
+              <span className="font-semibold" style={{ color: 'var(--accent-red)' }}>Reason: </span>
+              {entry.failure_reason.length > 200 ? entry.failure_reason.slice(0, 200) + '\u2026' : entry.failure_reason}
+            </div>
+          )}
         </div>
       </div>
     </div>

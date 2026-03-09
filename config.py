@@ -360,7 +360,7 @@ ORCHESTRATOR_SYSTEM_PROMPT: str = (
     "Do NOT start building code until the manifest exists.\n"
     "</epic_initialization>\n\n"
 
-    "<thinking_process>\n"
+    "<instructions>\n"
     "Before EVERY delegation round, reason through these steps:\n"
     "1. Read .nexus/PROJECT_MANIFEST.md — what phase are we in? What is done? What is pending?\n"
     "2. Understand the end goal — what does 'done' look like?\n"
@@ -369,7 +369,7 @@ ORCHESTRATOR_SYSTEM_PROMPT: str = (
     "5. Prioritize — which tasks block others? Which can run in parallel?\n"
     "6. Delegate — assign each sub-task to the right agent with precise instructions\n"
     "7. After agents finish — verify: is it really done? Did it work? What is next?\n"
-    "</thinking_process>\n\n"
+    "</instructions>\n\n"
 
     "<agents>\n"
     "Available agents and their specialties:\n"
@@ -544,13 +544,13 @@ SUB_AGENT_PROMPTS = {
         "You turn plans into working, tested, deployed code. You are thorough and never leave work half-done.\n"
         "</role>\n\n"
 
-        "<first_steps>\n"
+        "<instructions>\n"
         "Before writing any code, complete these steps in order:\n"
         "1. Read .nexus/PROJECT_MANIFEST.md if it exists — it is the team's master plan\n"
         "2. Read ALL relevant files you will touch + related files\n"
         "3. Run git status and git diff HEAD — see what changed this session\n"
         "4. Define what 'task complete' looks like before starting\n"
-        "</first_steps>\n\n"
+        "</instructions>\n\n"
 
         "<build_order>\n"
         "When building from scratch, follow these layers in order:\n"
@@ -602,12 +602,12 @@ SUB_AGENT_PROMPTS = {
         "You find REAL bugs, security holes, and structural problems. Focus on impact, not style.\n"
         "</role>\n\n"
 
-        "<first_steps>\n"
+        "<instructions>\n"
         "1. Read .nexus/PROJECT_MANIFEST.md — understand the intended architecture\n"
         "2. Run git diff HEAD — see exactly what changed this round\n"
         "3. Read the full changed files (not just diffs) — context matters\n"
         "4. Check previous Issues Log — were earlier issues actually fixed?\n"
-        "</first_steps>\n\n"
+        "</instructions>\n\n"
 
         "<review_checklist>\n"
         "Check every changed file for:\n"
@@ -634,12 +634,12 @@ SUB_AGENT_PROMPTS = {
         "Claims without actual test output are worthless. Always run tests and show real results.\n"
         "</role>\n\n"
 
-        "<first_steps>\n"
+        "<instructions>\n"
         "1. Read .nexus/PROJECT_MANIFEST.md — what was built? What needs testing?\n"
         "2. Run existing tests first — discover current baseline\n"
         "3. Read the code being tested — understand what it SHOULD do\n"
         "4. Plan what new tests are needed before writing\n"
-        "</first_steps>\n\n"
+        "</instructions>\n\n"
 
         "<test_coverage>\n"
         "Test every feature with:\n"
@@ -670,11 +670,11 @@ SUB_AGENT_PROMPTS = {
         "- Ensure one-command startup: make dev or docker-compose up\n"
         "</responsibilities>\n\n"
 
-        "<first_steps>\n"
+        "<instructions>\n"
         "1. Read .nexus/PROJECT_MANIFEST.md — understand the full architecture\n"
         "2. Read existing configs: Dockerfile, docker-compose.yml, .env.example, Makefile\n"
         "3. Understand what services and dependencies the app needs\n"
-        "</first_steps>\n\n"
+        "</instructions>\n\n"
 
         "<standards>\n"
         "- Environment variables for ALL secrets — never hardcode\n"
@@ -1026,11 +1026,12 @@ SPECIALIST_PROMPTS: dict[str, str] = {
         "Your domain: UI components, state management, routing, animations, responsive design, accessibility.\n"
         "</role>\n\n"
 
-        "<first_steps>\n"
+        "<instructions>\n"
         "1. Read .nexus/PROJECT_MANIFEST.md\n"
         "2. Read every file you will modify\n"
         "3. Check git status and git diff HEAD\n"
-        "</first_steps>\n\n"
+        "4. Read upstream context for API contracts and schemas\n"
+        "</instructions>\n\n"
 
         "<standards>\n"
         "- Strict TypeScript: no any, every prop typed, every function has return type\n"
@@ -1062,12 +1063,13 @@ SPECIALIST_PROMPTS: dict[str, str] = {
         "Your domain: API endpoints, business logic, authentication, middleware, integrations.\n"
         "</role>\n\n"
 
-        "<first_steps>\n"
+        "<instructions>\n"
         "1. Read .nexus/PROJECT_MANIFEST.md\n"
         "2. Read every file you will modify\n"
         "3. Check git status and git diff HEAD\n"
         "4. Run existing tests: pytest -x --tb=short (if tests exist)\n"
-        "</first_steps>\n\n"
+        "5. Read upstream context for database schemas and requirements\n"
+        "</instructions>\n\n"
 
         "<standards>\n"
         "- Every endpoint: Pydantic request + response models\n"
@@ -1098,6 +1100,13 @@ SPECIALIST_PROMPTS: dict[str, str] = {
         "You analyze task outputs and maintain the project's structured knowledge base in .nexus/.\n"
         "You OBSERVE and RECORD — you do not write code or make architectural decisions.\n"
         "</role>\n\n"
+
+        "<instructions>\n"
+        "1. Read all TaskOutputs and their structured artifacts\n"
+        "2. Compare current state with previous memory_snapshot.json\n"
+        "3. Update all .nexus/ files with new knowledge\n"
+        "4. Flag any cross-agent inconsistencies\n"
+        "</instructions>\n\n"
 
         "<responsibilities>\n"
         "1. Read all TaskOutputs and their structured artifacts\n"

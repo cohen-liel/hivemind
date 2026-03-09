@@ -1426,6 +1426,8 @@ class OrchestratorManager:
             "tool_use",
             agent=agent_role,
             tool=tool_name,
+            tool_name=tool_name,
+            description=description[:100] if description else tool_name,
             summary=summary,
             task_id=task_id,
         )
@@ -1772,6 +1774,7 @@ class OrchestratorManager:
                             "agent_update",
                             agent="orchestrator",
                             text=f"🎯 {phase} ({elapsed}s)",
+                            summary=f"🎯 Orchestrator: {phase} ({elapsed}s)",
                             timestamp=time.time(),
                         )
 
@@ -2006,6 +2009,19 @@ class OrchestratorManager:
                         to_agent=d.agent,
                         task=d.task[:300],
                     )
+
+                # Emit orchestrator's plan summary to chat so users see what was decided
+                if delegations:
+                    plan_lines = [f"\ud83d\udcdd **Orchestrator Plan** (Round {loop_count}):"]
+                    for i, d in enumerate(delegations, 1):
+                        plan_lines.append(f"{i}. **{d.agent}**: {d.task[:120]}")
+                    plan_summary = "\n".join(plan_lines)
+                    await self._emit_event(
+                        "agent_result",
+                        agent="orchestrator",
+                        text=plan_summary,
+                    )
+                    await self._send_result(plan_summary)
 
                 if not delegations:
                     if self.multi_agent:
@@ -2567,6 +2583,10 @@ class OrchestratorManager:
                     "turns": response.num_turns,
                     "duration": agent_duration,
                 }
+                # Build failure reason for UI display
+                _failure_reason = ""
+                if response.is_error:
+                    _failure_reason = (response.error_message or response.text[:200] or "Unknown error").strip()
                 await self._emit_event(
                     "agent_finished",
                     agent=agent_role,
@@ -2574,6 +2594,7 @@ class OrchestratorManager:
                     turns=response.num_turns,
                     duration=round(agent_duration, 1),
                     is_error=response.is_error,
+                    failure_reason=_failure_reason,
                 )
 
                 # Show sub-agent response
@@ -2659,6 +2680,7 @@ class OrchestratorManager:
                                 "agent_update",
                                 agent=name,
                                 text=status_text,
+                                summary=f"{AGENT_EMOJI.get(name, chr(0x1f527))} {name}: {status_text}",
                                 timestamp=time.time(),
                             )
 

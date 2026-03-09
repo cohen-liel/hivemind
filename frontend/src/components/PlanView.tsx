@@ -76,9 +76,9 @@ function extractPlan(activities: ActivityEntry[]): PlanStep[] {
     }
   }
 
-  // Find agent_text from orchestrator that looks like a plan
+  // Find plan from orchestrator — check agent_text AND agent_result (plan summary)
   for (const a of activities) {
-    if (a.type === 'agent_text' && a.agent === 'orchestrator' && a.content) {
+    if ((a.type === 'agent_text' || a.type === 'agent_result') && a.agent === 'orchestrator' && a.content) {
       const lines = a.content.split('\n');
       for (const line of lines) {
         const match = line.match(/^\s*(?:(\d+)[.)]\s+|[-*]\s+)(.+)/);
@@ -88,7 +88,11 @@ function extractPlan(activities: ActivityEntry[]): PlanStep[] {
 
           let agent: string | undefined;
           const lowerText = text.toLowerCase();
-          if (lowerText.includes('develop') || lowerText.includes('implement') || lowerText.includes('code') || lowerText.includes('write')) {
+          // Try to extract agent from **agent_name**: pattern (from plan summary)
+          const boldAgentMatch = text.match(/\*\*([a-z_]+)\*\*\s*:/);
+          if (boldAgentMatch) {
+            agent = boldAgentMatch[1];
+          } else if (lowerText.includes('develop') || lowerText.includes('implement') || lowerText.includes('code') || lowerText.includes('write')) {
             agent = 'developer';
           } else if (lowerText.includes('review') || lowerText.includes('check')) {
             agent = 'reviewer';
@@ -96,6 +100,8 @@ function extractPlan(activities: ActivityEntry[]): PlanStep[] {
             agent = 'tester';
           } else if (lowerText.includes('deploy') || lowerText.includes('docker') || lowerText.includes('ci/cd')) {
             agent = 'devops';
+          } else if (lowerText.includes('research')) {
+            agent = 'researcher';
           }
 
           let status: PlanStep['status'] = 'pending';

@@ -85,7 +85,7 @@ PM_SYSTEM_PROMPT = (
     "  4. Database tasks MUST have required_artifacts: ['schema', 'file_manifest']\n"
     "</artifact_system>\n\n"
 
-    "<planning_process>\n"
+    "<instructions>\n"
     "Think step-by-step before producing JSON:\n"
     "1. VISION — One sentence: 'We will [outcome] by [method].'\n"
     "2. EPICS — 3-7 high-level epics (what, not how)\n"
@@ -98,7 +98,7 @@ PM_SYSTEM_PROMPT = (
     "   - context_from: task IDs whose output this task needs as context\n"
     "   - files_scope: files this task will touch (for conflict detection)\n"
     "   - required_artifacts: artifact types this task MUST produce\n"
-    "</planning_process>\n\n"
+    "</instructions>\n\n"
 
     "<parallelism_rules>\n"
     "- Tasks with NO shared files_scope CAN run in parallel\n"
@@ -188,7 +188,14 @@ PM_SYSTEM_PROMPT = (
     "</example>\n\n"
 
     "<output_format>\n"
-    "OUTPUT ONLY THE JSON. No markdown, no explanation. Start with { and end with }.\n\n"
+    "Before producing JSON, think in <self_review> tags:\n"
+    "<self_review>\n"
+    "1. Does every frontend task have context_from pointing to its backend dependency?\n"
+    "2. Do all code-writing tasks have required_artifacts: ['file_manifest']?\n"
+    "3. Are there tasks that could run in parallel (no shared files_scope)?\n"
+    "4. Does the reviewer task depend on ALL code tasks?\n"
+    "</self_review>\n\n"
+    "Then OUTPUT ONLY THE JSON. No markdown, no explanation. Start with { and end with }.\n\n"
     "JSON Schema:\n"
     "```json\n"
     + json.dumps(task_graph_schema(), indent=2) +

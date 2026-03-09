@@ -139,7 +139,7 @@ export interface WSEvent {
 }
 
 export type ActivityType = 'tool_use' | 'agent_started' | 'agent_finished'
-  | 'delegation' | 'agent_text' | 'user_message' | 'loop_progress' | 'error';
+  | 'delegation' | 'agent_text' | 'agent_result' | 'user_message' | 'loop_progress' | 'error';
 
 export interface ActivityEntry {
   id: string;

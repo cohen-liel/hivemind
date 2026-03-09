@@ -1093,11 +1093,17 @@ def task_input_to_prompt(
             parts.append("  </task_result>")
         parts.append("</upstream_context>\n")
 
-    # ── Required output format (kept as-is for JSON parsing compatibility) ──
+    # ── Required output format with self-review thinking block ──
     parts.append(
         "---\n"
-        "REQUIRED: After completing your work, think step-by-step in <agent_thinking> tags, "
-        "then end your response with ONLY this JSON block (no text after it):\n\n"
+        "REQUIRED: After completing your work, perform a self-review in <self_review> tags:\n"
+        "<self_review>\n"
+        "1. Did I fully address the goal?\n"
+        "2. Did I follow all constraints?\n"
+        "3. Are there any issues or edge cases I missed?\n"
+        "4. What is my confidence level (0.0-1.0)?\n"
+        "</self_review>\n\n"
+        "Then end your response with ONLY this JSON block (no text after it):\n\n"
         '```json\n'
         '{\n'
         f'  "task_id": "{task.id}",\n'
