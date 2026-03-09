@@ -180,6 +180,17 @@ Full report: `.nexus/CODE_REVIEW.md`
 | MEDIUM | 5 | Lock contention in orchestrator, unvalidated persist values, scheduler edge cases |
 | LOW | 10+ | f-string logging, missing type hints, naming, unbounded lists |
 
+### Code Review Fixes Applied (2026-03-09):
+| ID | Fix | File |
+|----|-----|------|
+| CR-H1 | Expand `_WRITER_ROLES` to all code-writing specialist roles | orchestrator.py |
+| CR-H2 | `_check_premature_completion` checks ANY writer/reviewer role | orchestrator.py |
+| CR-M1 | `list(defaults)` prevents mutating shared `_ROLE_DEFAULT_ARTIFACTS` | pm_agent.py |
+| CR-M2 | Remediation tasks inherit original task's role, not always BACKEND_DEVELOPER | contracts.py |
+| CR-M3 | Batch order: writers BEFORE readers in `_plan_batches` | dag_executor.py |
+| CR-M4 | `dict(manager.agent_states)` snapshot before iterating | server.py |
+| CR-M5 | `asyncio.to_thread()` for blocking `write_text()` | server.py |
+
 ### Top Quick Wins:
 1. Add Pydantic validators to `UpdateSettingsRequest` and `SetBudgetRequest` — prevent invalid config values
 2. Add field name whitelist to `session_manager.update_project_fields()` — prevent SQL column injection ✅ Done
