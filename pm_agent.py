@@ -188,7 +188,7 @@ PM_SYSTEM_PROMPT = (
     "</example>\n\n"
 
     "<output_format>\n"
-    "OUTPUT ONLY THE JSON. No markdown, no explanation. Start with {{ and end with }}.\n\n"
+    "OUTPUT ONLY THE JSON. No markdown, no explanation. Start with { and end with }.\n\n"
     "JSON Schema:\n"
     "```json\n"
     + json.dumps(task_graph_schema(), indent=2) +

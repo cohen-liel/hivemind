@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT DEFAULT 'active',
     away_mode INTEGER DEFAULT 0,
     budget_usd REAL DEFAULT 0,
+    message_count INTEGER DEFAULT 0,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -358,6 +359,11 @@ class ConnectionPool:
         """Return the configured maximum pool size."""
         return self._max_connections
 
+    @property
+    def is_closed(self) -> bool:
+        """Return whether the pool has been closed."""
+        return self._closed
+
     async def close(self) -> None:
         """Close all pooled connections."""
         self._closed = True
@@ -500,7 +506,7 @@ class SessionManager:
         Uses the connection pool for concurrent-safe access.
         Falls back to the primary connection if the pool is unavailable.
         """
-        if self._pool and not self._pool._closed:
+        if self._pool and not self._pool.is_closed:
             async with self._pool.acquire() as db:
                 yield db
         else:

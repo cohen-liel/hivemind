@@ -1118,7 +1118,7 @@ class OrchestratorManager:
         if output.structured_artifacts:
             art_names = [a.title for a in output.structured_artifacts[:3]]
             artifact_info = f" | Artifacts: {', '.join(art_names)}"
-        progress = getattr(output, '_progress', '')
+        progress = getattr(output, 'progress', '')
         progress_str = f" ({progress})" if progress else ""
         self.agent_states[task.role.value] = {
             "state": "done" if output.is_successful() else "error",

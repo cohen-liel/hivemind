@@ -200,7 +200,7 @@ async def execute_graph(
                         # Add progress info to output for frontend
                         total_tasks = len(ctx.graph.tasks)
                         done_tasks = sum(1 for t in ctx.graph.tasks if t.id in ctx.completed)
-                        output._progress = f"{done_tasks}/{total_tasks}"
+                        output.progress = f"{done_tasks}/{total_tasks}"
                         await ctx.on_task_done(task, output)
                     except Exception as exc:
                         logger.warning(f"[DAG] on_task_done callback failed: {exc}")

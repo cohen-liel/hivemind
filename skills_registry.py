@@ -257,12 +257,8 @@ def select_skills_for_task(agent_role: str, task: str, max_skills: int = 2) -> l
     # Sort by score descending; tie-break alphabetically for determinism
     ranked = sorted(all_skills, key=lambda s: (-scores[s], s))
 
-    # Always include skills with a positive score; fill up to max_skills with top-ranked
+    # Only include skills with a positive relevance score — never inject irrelevant fillers
     relevant = [s for s in ranked if scores[s] > 0]
-    if len(relevant) < max_skills:
-        # Add highest-ranked skills to fill the quota even if score==0
-        extras = [s for s in ranked if s not in relevant]
-        relevant.extend(extras[: max_skills - len(relevant)])
 
     result = relevant[:max_skills]
     logger.debug(

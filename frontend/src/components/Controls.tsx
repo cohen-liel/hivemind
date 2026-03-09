@@ -2,13 +2,11 @@ import { useState, useRef, useEffect } from 'react';
 import { AGENT_ICONS } from '../constants';
 
 interface Props {
-  projectId: string;
   status: string;
-  agents: string[];
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
-  onSend: (message: string, agent?: string) => void;
+  onSend: (message: string) => void;
 }
 
 export default function Controls({ status, onPause, onResume, onStop, onSend }: Props) {

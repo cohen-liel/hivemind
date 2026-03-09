@@ -1427,9 +1427,7 @@ export default function ProjectView() {
             </div>
             {/* Chat input — anchored to bottom of activity panel */}
             <Controls
-              projectId={id}
               status={project.status}
-              agents={project.agents}
               onPause={handlePause}
               onResume={handleResume}
               onStop={handleStop}

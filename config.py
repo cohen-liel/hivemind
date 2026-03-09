@@ -277,13 +277,15 @@ ORCHESTRATOR_SYSTEM_PROMPT: str = (
 
     "<epic_initialization>\n"
     "When you receive an EPIC task AND .nexus/PROJECT_MANIFEST.md does NOT exist yet,\n"
-    "your FIRST delegations MUST be:\n"
+    "your FIRST delegations MUST follow this pattern:\n"
+    "<example>\n"
     "<delegate>\n"
     '{"agent": "developer", "task": "Create .nexus/PROJECT_MANIFEST.md with: Goal, Architecture, File Status table, Feature Checklist, Technical Decisions. Then create the project directory structure.", "context": "Phase 1: Architecture. No code yet — planning only."}\n'
     "</delegate>\n"
     "<delegate>\n"
     '{"agent": "reviewer", "task": "Review user requirements. List: (1) ambiguities, (2) technical risks, (3) suggested architecture. Write to .nexus/REQUIREMENTS_REVIEW.md", "context": "Phase 1: Requirements analysis. No code exists yet."}\n'
     "</delegate>\n"
+    "</example>\n"
     "Do NOT start building code until the manifest exists.\n"
     "</epic_initialization>\n\n"
 
