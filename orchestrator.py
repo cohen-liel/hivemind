@@ -43,13 +43,24 @@ logger = logging.getLogger(__name__)
 
 # Agent emoji map for clear visual identification
 AGENT_EMOJI = {
-    "orchestrator": "🎯",
-    "developer": "💻",
-    "reviewer": "🔍",
-    "tester": "🧪",
-    "devops": "⚙️",
-    "researcher": "🔎",
-    "user": "👤",
+    # Layer 1: Brain
+    "pm":                 "🧠",
+    "orchestrator":       "🎯",
+    "memory":             "📚",
+    # Layer 2: Execution
+    "frontend_developer": "🎨",
+    "backend_developer":  "⚡",
+    "database_expert":    "🗄️",
+    "devops":             "🚀",
+    # Layer 3: Quality
+    "security_auditor":   "🔐",
+    "test_engineer":      "🧪",
+    "reviewer":           "🔍",
+    "researcher":         "🔎",
+    # Legacy aliases
+    "developer":          "💻",
+    "tester":             "🧪",
+    "user":               "👤",
 }
 
 # Regex to parse <delegate> blocks from orchestrator output
@@ -2725,7 +2736,7 @@ class OrchestratorManager:
                 skill_content = build_skill_prompt(orch_skills)
                 if skill_content:
                     system_prompt += skill_content
-            max_turns = 3  # Allow orchestrator to think, read files, and then respond
+            max_turns = 10  # Orchestrator needs turns to: read files, analyze, then produce delegate blocks
             max_budget = 5.0  # Orchestrator processes large context across many rounds — needs headroom
             permission_mode = "bypassPermissions"
             # Read-only tools: orchestrator can inspect the project but NOT modify it
@@ -2748,7 +2759,7 @@ class OrchestratorManager:
                 "Bash(npx jest*)",   # Run Jest tests
             ]
             tools = None  # Use default tool set (filtered by allowed_tools)
-            logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, read-only tools, max_turns=3)")
+            logger.info(f"[{self.project_id}] Querying orchestrator (coordinator mode, read-only tools, max_turns=10)")
         elif agent_role == "orchestrator" and not self.multi_agent:
             system_prompt = SOLO_AGENT_PROMPT
             max_turns = SDK_MAX_TURNS_PER_QUERY
