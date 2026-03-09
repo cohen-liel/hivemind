@@ -39,14 +39,13 @@ export interface ProjectActions {
 }
 
 export function useProjectActions(
-  projectId: string | undefined,
+  projectId: string,
   dispatch: Dispatch<ProjectAction>,
   toast: Toast,
   loadProject: () => Promise<void>,
 ): ProjectActions {
   const handleSend = useCallback(
     async (msg: string): Promise<void> => {
-      if (!projectId) return;
       dispatch({
         type: 'ADD_ACTIVITY',
         activity: {

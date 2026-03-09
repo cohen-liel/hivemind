@@ -119,6 +119,26 @@ export function useProjectWebSocket({
         case 'live_state_sync':
           dispatch({ type: 'WS_LIVE_STATE_SYNC', event });
           break;
+        case 'turn_progress' as WSEvent['type']: {
+          // Update the live agent stream progress field with turn consumption.
+          // The event carries turns_used, max_turns, remaining, pct.
+          if (event.agent) {
+            const raw = event as unknown as Record<string, number>;
+            const turnsUsed = raw['turns_used'];
+            const maxTurns = raw['max_turns'];
+            const remaining = raw['remaining'];
+            if (turnsUsed !== undefined && maxTurns !== undefined) {
+              dispatch({
+                type: 'WS_TURN_PROGRESS',
+                agent: event.agent,
+                turnsUsed,
+                maxTurns,
+                remaining: remaining ?? Math.max(0, maxTurns - turnsUsed),
+              });
+            }
+          }
+          break;
+        }
         default:
           break;
       }

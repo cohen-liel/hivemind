@@ -175,6 +175,7 @@ export type ProjectAction =
   | { type: 'WS_APPROVAL_REQUEST'; event: WSEvent }
   | { type: 'WS_HISTORY_CLEARED' }
   | { type: 'WS_LIVE_STATE_SYNC'; event: WSEvent }
+  | { type: 'WS_TURN_PROGRESS'; agent: string; turnsUsed: number; maxTurns: number; remaining: number }
 
   // ── UI actions ──
   | { type: 'SET_MOBILE_VIEW'; view: MobileView }
@@ -855,6 +856,23 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         lastTicker: newLastTicker,
         dagGraph: newDagGraph,
         dagTaskStatus: newDagTaskStatus,
+      };
+    }
+
+    case 'WS_TURN_PROGRESS': {
+      // Update the live agent stream progress field with turn consumption info.
+      // Shows e.g. "47/195 turns (24%)" in the live status panel.
+      const { agent, turnsUsed, maxTurns, remaining } = action;
+      const pct = Math.round((turnsUsed / Math.max(maxTurns, 1)) * 100);
+      const progressStr = `${turnsUsed}/${maxTurns} turns · ${remaining} left (${pct}%)`;
+      const existing = state.liveAgentStream[agent];
+      if (!existing) return state; // Agent not currently tracked — ignore
+      return {
+        ...state,
+        liveAgentStream: {
+          ...state.liveAgentStream,
+          [agent]: { ...existing, progress: progressStr },
+        },
       };
     }
 

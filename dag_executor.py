@@ -524,6 +524,18 @@ async def _run_single_task(
     # Time budget: leave 90 seconds for the summary phase
     work_timeout = max(task_timeout - 90, task_timeout // 2)
 
+    # Inject turn budget into the prompt so the agent can make smarter
+    # prioritisation decisions (e.g. stop starting new files when close to limit).
+    prompt += (
+        f"\n\n⚠️ TURN BUDGET (Phase 1): You have {work_turns} turns for this work phase. "
+        f"Every tool call (read_file, write_file, bash, grep …) consumes 1 turn. "
+        f"When you have ~10 turns remaining, stop starting new work and focus on "
+        f"finishing what you already began. "
+        f"A mandatory Phase 2 will immediately follow — it gives you "
+        f"{_SUMMARY_PHASE_TURNS} tool-free turns to produce your JSON summary, "
+        f"so you do NOT need to squeeze the JSON into your last work turn."
+    )
+
     logger.info(
         f"[DAG] Task {task.id}: PHASE 1 (WORK) — "
         f"max_turns={work_turns}/{max_turns}, timeout={work_timeout}s/{task_timeout}s"
