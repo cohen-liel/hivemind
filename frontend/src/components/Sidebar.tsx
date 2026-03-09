@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { getProjects } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
+import { useTheme } from '../ThemeContext';
 import { formatCost } from '../hooks/useAnimatedNumber';
 import type { Project, WSEvent } from '../types';
 
@@ -21,6 +22,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { theme, toggleTheme } = useTheme();
 
   const loadProjects = useCallback(async () => {
     try {
@@ -288,8 +290,40 @@ export default function Sidebar({ onProjectsChange }: Props) {
         )}
       </div>
 
-      {/* Settings */}
-      <div className="px-2 py-3 flex-shrink-0" style={{ borderTop: '1px solid var(--border-dim)' }}>
+      {/* Theme toggle + Settings */}
+      <div className="px-2 py-3 flex-shrink-0 space-y-0.5" style={{ borderTop: '1px solid var(--border-dim)' }}>
+        {/* Theme toggle */}
+        <button
+          onClick={toggleTheme}
+          className={`theme-toggle w-full flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium rounded-xl transition-all duration-200 active:scale-[0.98]
+            ${collapsed ? 'justify-center' : ''}`}
+          style={{
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+          aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+        >
+          {theme === 'dark' ? (
+            /* Sun icon — shown in dark mode, click to go light */
+            <svg className="theme-toggle-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"
+                stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+          ) : (
+            /* Moon icon — shown in light mode, click to go dark */
+            <svg className="theme-toggle-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M13.5 9.5a5.5 5.5 0 01-7-7 5.5 5.5 0 107 7z"
+                stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
+          {!collapsed && <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>}
+        </button>
+
+        {/* Settings */}
         <button
           onClick={() => navigate('/settings')}
           className={`w-full flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium rounded-xl transition-all duration-200 active:scale-[0.98]

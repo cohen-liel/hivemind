@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -32,14 +33,59 @@ def _valid_project_id(project_id: str) -> bool:
     return bool(_PROJECT_ID_RE.match(project_id))
 
 
+def _sanitize_client_ip(raw_ip: str) -> str:
+    """Validate and sanitize an IP address string.
+
+    Returns the normalized IP if valid, or 'invalid' if the format is bad.
+    Prevents attackers from using arbitrary strings in X-Forwarded-For
+    to bypass rate limiting or pollute logs.
+    """
+    raw_ip = raw_ip.strip()
+    if not raw_ip:
+        return "unknown"
+    try:
+        # ipaddress.ip_address() validates both IPv4 and IPv6
+        return str(ipaddress.ip_address(raw_ip))
+    except ValueError:
+        return "invalid"
+
+
 # --- Request / response models ---
+
+def _max_msg_len() -> int:
+    """Lazy import to avoid circular import at module load time."""
+    from config import MAX_USER_MESSAGE_LENGTH
+    return MAX_USER_MESSAGE_LENGTH
+
 
 class SendMessageRequest(BaseModel):
     message: str
 
+    @field_validator('message')
+    @classmethod
+    def validate_message_length(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError('message cannot be empty')
+        limit = _max_msg_len()
+        if len(v) > limit:
+            raise ValueError(f'message too long ({len(v)} chars). Maximum is {limit}.')
+        return v
+
 
 class TalkAgentRequest(BaseModel):
     message: str
+
+    @field_validator('message')
+    @classmethod
+    def validate_message_length(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError('message cannot be empty')
+        limit = _max_msg_len()
+        if len(v) > limit:
+            raise ValueError(f'message too long ({len(v)} chars). Maximum is {limit}.')
+        return v
 
 
 class CreateProjectRequest(BaseModel):
@@ -257,6 +303,7 @@ def create_app() -> FastAPI:
 
     # --- Optional API key middleware ---
     DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
+    from config import AUTH_ENABLED
     if DASHBOARD_API_KEY:
         @app.middleware("http")
         async def check_api_key(request: Request, call_next):
@@ -267,17 +314,26 @@ def create_app() -> FastAPI:
             return await call_next(request)
 
     # --- Request body size limit ---
-    _MAX_BODY_SIZE = int(os.getenv("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024)))  # 1MB default
+    from config import MAX_REQUEST_BODY_SIZE
+    _MAX_BODY_SIZE = MAX_REQUEST_BODY_SIZE
 
     @app.middleware("http")
     async def body_size_limit(request: Request, call_next):
         """Reject requests with oversized bodies to prevent memory exhaustion."""
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > _MAX_BODY_SIZE:
-            return JSONResponse(
-                {"error": f"Request body too large. Maximum is {_MAX_BODY_SIZE // 1024}KB."},
-                status_code=413,
-            )
+        if content_length:
+            try:
+                cl = int(content_length)
+            except (ValueError, TypeError):
+                return JSONResponse(
+                    {"error": "Invalid Content-Length header."},
+                    status_code=400,
+                )
+            if cl > _MAX_BODY_SIZE:
+                return JSONResponse(
+                    {"error": f"Request body too large. Maximum is {_MAX_BODY_SIZE // 1024}KB."},
+                    status_code=413,
+                )
         return await call_next(request)
 
     # --- Rate limiting middleware ---
@@ -296,8 +352,12 @@ def create_app() -> FastAPI:
             return await call_next(request)
 
         # Get client IP (support X-Forwarded-For for reverse proxy)
-        client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        if not client_ip:
+        forwarded_for = request.headers.get("X-Forwarded-For", "")
+        if forwarded_for:
+            # Take the first (client) IP, validate its format
+            raw_ip = forwarded_for.split(",")[0].strip()
+            client_ip = _sanitize_client_ip(raw_ip)
+        else:
             client_ip = request.client.host if request.client else "unknown"
 
         now = time.time()
@@ -1105,17 +1165,17 @@ def create_app() -> FastAPI:
             "entries": entries,
         }
 
-    # --- Maximum allowed message length (security: prevent oversized payloads) ---
-    _MAX_MESSAGE_LENGTH = 50_000
+    # --- Send Message + Talk Agent endpoints ---
+    # Message length validation is handled at Pydantic model level
+    # using config.MAX_USER_MESSAGE_LENGTH (default: 4000 chars)
 
     @app.post("/api/projects/{project_id}/message")
     async def send_message(project_id: str, req: SendMessageRequest):
-        """Send message to orchestrator."""
-        if len(req.message) > _MAX_MESSAGE_LENGTH:
-            return JSONResponse(
-                {"error": f"Message too long ({len(req.message)} chars). Maximum is {_MAX_MESSAGE_LENGTH}."},
-                status_code=400,
-            )
+        """Send message to orchestrator.
+
+        Message length is validated at the Pydantic model level using
+        config.MAX_USER_MESSAGE_LENGTH.
+        """
         logger.info(f"[{project_id}] Received message: {req.message[:100]}")
         manager, _ = _find_manager(project_id)
 
@@ -1152,12 +1212,11 @@ def create_app() -> FastAPI:
 
     @app.post("/api/projects/{project_id}/talk/{agent}")
     async def talk_agent(project_id: str, agent: str, req: TalkAgentRequest):
-        """Send message to specific agent."""
-        if len(req.message) > _MAX_MESSAGE_LENGTH:
-            return JSONResponse(
-                {"error": f"Message too long ({len(req.message)} chars). Maximum is {_MAX_MESSAGE_LENGTH}."},
-                status_code=400,
-            )
+        """Send message to specific agent.
+
+        Message length is validated at the Pydantic model level using
+        config.MAX_USER_MESSAGE_LENGTH.
+        """
         manager, _ = _find_manager(project_id)
         if not manager:
             return JSONResponse({"error": "Project not active."}, status_code=404)
@@ -1316,14 +1375,20 @@ def create_app() -> FastAPI:
 
     @app.get("/api/projects/{project_id}/tree")
     async def get_file_tree(project_id: str):
-        """List files in project directory (2 levels deep)."""
+        """List files in project directory (2 levels deep).
+
+        Security: resolves project dir and validates that all entries
+        remain within it (prevents symlink escapes).
+        """
         project_dir = await _resolve_project_dir(project_id)
         if not project_dir:
             return {"error": "Project not found"}
 
         tree = []
         try:
-            root = Path(project_dir)
+            root = Path(project_dir).resolve()
+            if not root.exists() or not root.is_dir():
+                return {"error": "Project directory not found"}
             skip = {'.git', '__pycache__', 'node_modules', 'venv', '.venv', '.mypy_cache', '.pytest_cache', 'dist', 'build'}
             for item in sorted(root.iterdir()):
                 if item.name.startswith('.') and item.name != '.env.example':
@@ -1331,12 +1396,20 @@ def create_app() -> FastAPI:
                         continue
                 if item.name in skip:
                     continue
+                # Resolve to prevent symlink escapes
+                resolved_item = item.resolve()
+                if not resolved_item.is_relative_to(root):
+                    continue  # Skip symlinks that escape project dir
                 entry = {"name": item.name, "type": "dir" if item.is_dir() else "file", "path": item.name}
                 if item.is_dir():
                     children = []
                     try:
                         for sub in sorted(item.iterdir()):
                             if sub.name.startswith('.') or sub.name in skip:
+                                continue
+                            # Resolve sub-entries too
+                            resolved_sub = sub.resolve()
+                            if not resolved_sub.is_relative_to(root):
                                 continue
                             children.append({
                                 "name": sub.name,
@@ -1352,6 +1425,7 @@ def create_app() -> FastAPI:
                 if len(tree) >= 100:
                     break
         except Exception as e:
+            logger.error("File tree error for %s: %s", project_id, e, exc_info=True)
             return {"error": str(e)}
 
         return {"tree": tree, "project_dir": project_dir}
@@ -1374,6 +1448,10 @@ def create_app() -> FastAPI:
             proj_resolved = Path(project_dir).resolve()
             # Use is_relative_to for safe containment check (no prefix collisions)
             if not file_path.is_relative_to(proj_resolved):
+                logger.warning(
+                    "Path traversal blocked: %s tried to access %s (outside %s)",
+                    project_id, file_path, proj_resolved,
+                )
                 return JSONResponse({"error": "Path traversal not allowed"}, status_code=403)
         except Exception:
             return JSONResponse({"error": "Invalid path"}, status_code=400)
@@ -1616,14 +1694,19 @@ def create_app() -> FastAPI:
         {"type": "replay", "project_id": "...", "since_sequence": N}
         and receives all missed events before switching to live mode.
 
-        When DASHBOARD_API_KEY is set, the client must provide the key via
-        query parameter ``?api_key=...`` to connect.
+        When DASHBOARD_API_KEY is set (AUTH_ENABLED is True), the client must
+        provide the key via query parameter ``?api_key=...`` to connect.
         """
-        # Security: enforce API key on WebSocket if configured
-        if DASHBOARD_API_KEY:
+        # Security: enforce API key on WebSocket when authentication is enabled
+        if AUTH_ENABLED and DASHBOARD_API_KEY:
             client_key = ws.query_params.get("api_key", "")
+            if not client_key:
+                logger.warning("WebSocket connection rejected: no API key provided")
+                await ws.close(code=4003, reason="Unauthorized: API key required")
+                return
             if not hmac.compare_digest(client_key, DASHBOARD_API_KEY):
-                await ws.close(code=4003, reason="Unauthorized")
+                logger.warning("WebSocket connection rejected: invalid API key")
+                await ws.close(code=4003, reason="Unauthorized: invalid API key")
                 return
 
         await ws.accept()

@@ -15,7 +15,7 @@ from pathlib import Path
 import uvicorn
 
 import state
-from config import PREDEFINED_PROJECTS, validate_config, ConfigError
+from config import PREDEFINED_PROJECTS, validate_config, ConfigError, DB_VACUUM_INTERVAL_HOURS
 from dashboard.api import create_app, _create_web_manager
 
 logging.basicConfig(
@@ -219,6 +219,33 @@ async def run():
 
     scheduler_task = asyncio.create_task(_resilient_scheduler())
 
+    # Start periodic VACUUM task (runs weekly by default)
+    async def _vacuum_loop():
+        """Run VACUUM periodically to reclaim space and defragment the database.
+
+        Checks whether enough time has elapsed since the last VACUUM before
+        running (based on DB_VACUUM_INTERVAL_HOURS).
+        """
+        interval_seconds = DB_VACUUM_INTERVAL_HOURS * 3600
+        # Wait one interval before the first check
+        await asyncio.sleep(min(interval_seconds, 3600))  # At most 1h before first check
+        while True:
+            try:
+                if state.session_mgr:
+                    last = await state.session_mgr.get_last_vacuum()
+                    cutoff = time.time() - interval_seconds
+                    if last is None or last < cutoff:
+                        logger.info("Running scheduled VACUUM…")
+                        await state.session_mgr.vacuum()
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                raise  # Let cancellation propagate for graceful shutdown
+            except Exception as e:
+                logger.warning(f"VACUUM error (will retry next cycle): {e}")
+                await asyncio.sleep(3600)  # Retry in 1h on error
+
+    vacuum_task = asyncio.create_task(_vacuum_loop())
+
     # Start FastAPI dashboard
     dash = create_app()
     dashboard_host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
@@ -239,7 +266,8 @@ async def run():
         cleanup_task.cancel()
         scheduler_task.cancel()
         state_writer_task.cancel()
-        for bg_task in (cleanup_task, scheduler_task, state_writer_task):
+        vacuum_task.cancel()
+        for bg_task in (cleanup_task, scheduler_task, state_writer_task, vacuum_task):
             try:
                 await bg_task
             except asyncio.CancelledError:
@@ -271,7 +299,15 @@ async def run():
         logger.info("Graceful shutdown: flushing EventBus...")
         await event_bus.stop_writer()
 
-        # 4. Close DB connection last (everything above needs it)
+        # 4. Create database backup before closing connection
+        if state.session_mgr:
+            try:
+                backup_path = await state.session_mgr.create_backup()
+                logger.info(f"  Shutdown backup saved: {backup_path}")
+            except Exception as e:
+                logger.error(f"  Shutdown backup failed: {e}")
+
+        # 5. Close DB connection last (everything above needs it)
         if state.session_mgr:
             await state.session_mgr.close()
         logger.info("Shutdown complete")

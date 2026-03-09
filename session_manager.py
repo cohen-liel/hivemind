@@ -12,13 +12,15 @@ import functools
 import json
 import logging
 import os
+import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-from config import SESSION_DB_PATH, SESSION_EXPIRY_HOURS, STORE_DIR
+from config import SESSION_DB_PATH, SESSION_EXPIRY_HOURS, STORE_DIR, DB_MAX_CONNECTIONS, DB_BACKUP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +197,17 @@ CREATE TABLE IF NOT EXISTS orchestrator_state (
     updated_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS _schema_versions (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS _db_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- Trigger: auto-increment message_count on projects when a message is inserted
 CREATE TRIGGER IF NOT EXISTS trg_messages_insert_count
     AFTER INSERT ON messages
@@ -215,6 +228,146 @@ CREATE TRIGGER IF NOT EXISTS trg_messages_delete_count
 
 class DatabaseError(Exception):
     """Raised when a database operation fails after retries."""
+
+
+# ── Schema Migrations ────────────────────────────────────────────────────────
+# Each migration is (version, name, list_of_sql_statements).
+# Migrations are applied in order and tracked in _schema_versions.
+# All statements should be idempotent where possible.
+
+_MIGRATIONS: list[tuple[int, str, list[str]]] = [
+    (
+        1,
+        "add_session_id_to_messages",
+        [
+            "ALTER TABLE messages ADD COLUMN session_id TEXT DEFAULT NULL",
+        ],
+    ),
+    (
+        2,
+        "add_next_run_to_schedules",
+        [
+            "ALTER TABLE schedules ADD COLUMN next_run REAL DEFAULT NULL",
+        ],
+    ),
+    (
+        3,
+        "add_performance_indexes",
+        [
+            "CREATE INDEX IF NOT EXISTS idx_messages_session_ts ON messages(session_id, timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_schedules_next_run ON schedules(next_run)",
+            "CREATE INDEX IF NOT EXISTS idx_messages_agent_ts ON messages(project_id, agent_name, timestamp)",
+        ],
+    ),
+]
+
+
+# ── Connection Pool ──────────────────────────────────────────────────────────
+
+class ConnectionPool:
+    """Lightweight async connection pool for aiosqlite.
+
+    Manages reusable connections with health checks and lazy creation.
+    SQLite WAL mode enables concurrent reads; writes are serialized by SQLite.
+
+    Usage::
+
+        pool = ConnectionPool("data/sessions.db", max_connections=5)
+        await pool.initialize()
+
+        async with pool.acquire() as db:
+            cursor = await db.execute("SELECT ...")
+            ...
+
+        await pool.close()
+    """
+
+    def __init__(self, db_path: str, max_connections: int = 5) -> None:
+        self._db_path: str = db_path
+        self._max_connections: int = max(1, max_connections)
+        self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue()
+        self._size: int = 0
+        self._lock: asyncio.Lock = asyncio.Lock()
+        self._closed: bool = False
+
+    async def _create_connection(self) -> aiosqlite.Connection:
+        """Create and configure a new aiosqlite connection."""
+        conn = await aiosqlite.connect(self._db_path)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    async def initialize(self) -> None:
+        """Bootstrap the pool (connections are created lazily on acquire)."""
+        self._closed = False
+
+    @contextlib.asynccontextmanager
+    async def acquire(self):
+        """Acquire a connection from the pool (creates on demand up to max).
+
+        Yields:
+            An aiosqlite.Connection ready for use.
+        """
+        if self._closed:
+            raise RuntimeError("Connection pool is closed")
+
+        conn: aiosqlite.Connection | None = None
+
+        # Try to reuse an idle connection from the queue
+        try:
+            conn = self._pool.get_nowait()
+        except asyncio.QueueEmpty:
+            # Create a new one if under the limit
+            async with self._lock:
+                if self._size < self._max_connections:
+                    conn = await self._create_connection()
+                    self._size += 1
+
+            if conn is None:
+                # At capacity — block until one is released
+                conn = await self._pool.get()
+
+        try:
+            # Health check — recreate if broken
+            try:
+                await conn.execute("SELECT 1")
+            except Exception:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+                async with self._lock:
+                    conn = await self._create_connection()
+            yield conn
+        finally:
+            if not self._closed:
+                try:
+                    await self._pool.put(conn)
+                except Exception:
+                    pass
+
+    @property
+    def size(self) -> int:
+        """Return the current number of connections in the pool."""
+        return self._size
+
+    @property
+    def max_connections(self) -> int:
+        """Return the configured maximum pool size."""
+        return self._max_connections
+
+    async def close(self) -> None:
+        """Close all pooled connections."""
+        self._closed = True
+        while not self._pool.empty():
+            try:
+                conn = self._pool.get_nowait()
+                await conn.close()
+            except Exception:
+                pass
+        self._size = 0
 
 
 def _retry_on_db_error(max_retries: int = 2, delay: float = 0.1):
@@ -265,12 +418,14 @@ class SessionManager:
             await mgr.save_project(…)
     """
 
-    def __init__(self, db_path: str = SESSION_DB_PATH) -> None:
+    def __init__(self, db_path: str = SESSION_DB_PATH, max_connections: int = DB_MAX_CONNECTIONS) -> None:
         self.db_path: str = db_path
         self._db: aiosqlite.Connection | None = None
+        self._pool: ConnectionPool = ConnectionPool(db_path, max_connections)
+        self._max_connections: int = max_connections
 
     async def initialize(self) -> None:
-        """Create tables and migrate old JSON data if present.
+        """Create tables, run migrations, and initialize connection pool.
 
         Raises:
             aiosqlite.Error: If the database cannot be opened or schema creation fails.
@@ -280,15 +435,31 @@ class SessionManager:
         self._db.row_factory = aiosqlite.Row
         # Enable WAL mode for better concurrent read/write performance
         await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=5000")
+        await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
-        # Add away_mode column to existing projects table if missing
+        # Initialize connection pool for concurrent operations
+        await self._pool.initialize()
+        # Run versioned schema migrations
+        await self._run_migrations()
+        # Legacy column migrations (for pre-migration-system DBs)
         await self._migrate_add_columns()
         await self._migrate_json()
-        logger.info("SessionManager initialized: %s", self.db_path)
+        logger.info(
+            "SessionManager initialized: %s (pool_max=%d)",
+            self.db_path, self._max_connections,
+        )
 
     async def close(self) -> None:
-        """Close the database connection gracefully."""
+        """Close the connection pool and primary database connection."""
+        # Close pool connections first
+        if self._pool:
+            try:
+                await self._pool.close()
+            except Exception as exc:
+                logger.warning("Error closing connection pool: %s", exc)
+        # Close primary connection
         if self._db:
             try:
                 await self._db.close()
@@ -324,13 +495,17 @@ class SessionManager:
 
     @contextlib.asynccontextmanager
     async def _connect(self):
-        """Async context manager that yields the persistent DB connection.
+        """Async context manager that yields a pooled DB connection.
 
-        Provides a uniform ``async with self._connect() as db:`` interface
-        for all methods that need the connection.
+        Uses the connection pool for concurrent-safe access.
+        Falls back to the primary connection if the pool is unavailable.
         """
-        db = await self._get_db()
-        yield db
+        if self._pool and not self._pool._closed:
+            async with self._pool.acquire() as db:
+                yield db
+        else:
+            db = await self._get_db()
+            yield db
 
     # --- Session CRUD ---
 
@@ -885,6 +1060,151 @@ class SessionManager:
 
             except Exception as e:
                 logger.warning(f"Failed to migrate {json_path}: {e}")
+
+    # ── Versioned Schema Migrations ─────────────────────────────────────
+
+    async def _run_migrations(self) -> None:
+        """Run pending schema migrations with version tracking.
+
+        Reads the ``_schema_versions`` table to determine which migrations
+        have already been applied, then executes any new ones in order.
+        Each migration is recorded in ``_schema_versions`` after success.
+        """
+        db = await self._get_db()
+
+        # Ensure the tracking table exists (idempotent)
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS _schema_versions (
+                   version INTEGER PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   applied_at REAL NOT NULL
+               )"""
+        )
+        await db.commit()
+
+        # Determine already-applied versions
+        cursor = await db.execute("SELECT version FROM _schema_versions ORDER BY version")
+        applied = {row[0] for row in await cursor.fetchall()}
+
+        for version, name, statements in _MIGRATIONS:
+            if version in applied:
+                continue
+
+            logger.info("Applying migration %d: %s", version, name)
+            try:
+                for stmt in statements:
+                    try:
+                        await db.execute(stmt)
+                    except Exception as e:
+                        err_msg = str(e).lower()
+                        # ALTER TABLE ADD COLUMN fails if column already exists — skip
+                        if "duplicate column" in err_msg or "already exists" in err_msg:
+                            logger.debug("Already applied, skipping: %s", e)
+                        else:
+                            raise
+
+                await db.execute(
+                    "INSERT INTO _schema_versions (version, name, applied_at) VALUES (?, ?, ?)",
+                    (version, name, time.time()),
+                )
+                await db.commit()
+                logger.info("Migration %d applied successfully: %s", version, name)
+            except Exception as e:
+                logger.error("Migration %d (%s) failed: %s", version, name, e)
+                # Don't halt — log and continue so the app can still start
+                # The migration will be retried on next startup
+
+    # ── Database Backup ─────────────────────────────────────────────────
+
+    async def create_backup(self, backup_dir: str | None = None) -> str:
+        """Create a timestamped backup of the database file.
+
+        Checkpoints the WAL first to ensure the backup is self-contained,
+        then copies the database file to the backup directory.
+
+        Args:
+            backup_dir: Target directory for the backup.  Defaults to
+                ``DB_BACKUP_DIR`` (``data/backups/``).
+
+        Returns:
+            The absolute path to the created backup file.
+        """
+        target_dir = backup_dir or DB_BACKUP_DIR
+        os.makedirs(target_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"sessions_{timestamp}.db"
+        backup_path = os.path.join(target_dir, backup_name)
+
+        # Checkpoint WAL so the .db file is self-contained
+        db = await self._get_db()
+        try:
+            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as exc:
+            logger.warning("WAL checkpoint before backup failed: %s", exc)
+
+        # Copy the database file (thread-safe via asyncio.to_thread)
+        await asyncio.to_thread(shutil.copy2, self.db_path, backup_path)
+
+        logger.info("Database backup created: %s", backup_path)
+
+        # Housekeeping — remove old backups, keep last 10
+        await self._cleanup_old_backups(target_dir, keep=10)
+
+        return backup_path
+
+    async def _cleanup_old_backups(self, backup_dir: str, keep: int = 10) -> None:
+        """Remove old backup files, retaining the *keep* most recent."""
+        backup_path = Path(backup_dir)
+        backups = sorted(
+            backup_path.glob("sessions_*.db"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for old_backup in backups[keep:]:
+            try:
+                old_backup.unlink()
+                logger.debug("Removed old backup: %s", old_backup)
+            except Exception as e:
+                logger.warning("Failed to remove old backup %s: %s", old_backup, e)
+
+    # ── VACUUM & Maintenance ────────────────────────────────────────────
+
+    async def vacuum(self) -> None:
+        """Run VACUUM to reclaim space and defragment the database.
+
+        Also runs ``PRAGMA optimize`` to update query-planner statistics.
+        The last-vacuum timestamp is stored in ``_db_metadata`` for scheduling.
+
+        Note:
+            VACUUM requires exclusive access — avoid calling while heavy
+            writes are in progress.
+        """
+        db = await self._get_db()
+        logger.info("Starting VACUUM…")
+        await db.execute("VACUUM")
+        await db.execute("PRAGMA optimize")
+
+        # Record vacuum timestamp
+        await db.execute(
+            """INSERT INTO _db_metadata (key, value) VALUES ('last_vacuum', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (str(time.time()),),
+        )
+        await db.commit()
+        logger.info("VACUUM completed successfully")
+
+    async def get_last_vacuum(self) -> float | None:
+        """Return the Unix timestamp of the last VACUUM, or None."""
+        db = await self._get_db()
+        try:
+            cursor = await db.execute(
+                "SELECT value FROM _db_metadata WHERE key = 'last_vacuum'"
+            )
+            row = await cursor.fetchone()
+            return float(row[0]) if row else None
+        except Exception:
+            return None
 
     # ── Lessons / Experience Memory ──────────────────────────────────────
 

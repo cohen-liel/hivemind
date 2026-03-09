@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, useLocation, useNavigate, Link } from 'react-router-dom';
 import { WebSocketProvider } from './WebSocketContext';
+import { ThemeProvider } from './ThemeContext';
 import { ToastProvider } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import KeyboardShortcutsModal from './components/KeyboardShortcutsModal';
@@ -170,26 +171,28 @@ function AnimatedRoutes() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <BrowserRouter>
-        <WebSocketProvider>
-          <ToastProvider>
-            <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-void)' }}>
-              {/* Sidebar: hidden on mobile, visible on desktop */}
-              <div className="hidden lg:flex">
-                <Sidebar />
+      <ThemeProvider>
+        <BrowserRouter>
+          <WebSocketProvider>
+            <ToastProvider>
+              <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-void)' }}>
+                {/* Sidebar: hidden on mobile, visible on desktop */}
+                <div className="hidden lg:flex">
+                  <Sidebar />
+                </div>
+                <main className="flex-1 overflow-y-auto min-w-0 pb-14 lg:pb-0">
+                  <KeyboardShortcuts />
+                  <ErrorBoundary>
+                    <AnimatedRoutes />
+                  </ErrorBoundary>
+                </main>
+                {/* Mobile bottom nav */}
+                <MobileBottomNav />
               </div>
-              <main className="flex-1 overflow-y-auto min-w-0 pb-14 lg:pb-0">
-                <KeyboardShortcuts />
-                <ErrorBoundary>
-                  <AnimatedRoutes />
-                </ErrorBoundary>
-              </main>
-              {/* Mobile bottom nav */}
-              <MobileBottomNav />
-            </div>
-          </ToastProvider>
-        </WebSocketProvider>
-      </BrowserRouter>
+            </ToastProvider>
+          </WebSocketProvider>
+        </BrowserRouter>
+      </ThemeProvider>
     </ErrorBoundary>
   );
 }

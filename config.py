@@ -116,8 +116,19 @@ except OSError:
     pass
 SESSION_DB_PATH: str = str(STORE_DIR / "sessions.db")
 
+# Database connection pool & maintenance
+DB_MAX_CONNECTIONS: int = _get("DB_MAX_CONNECTIONS", "5", int)
+DB_BACKUP_DIR: str = str(STORE_DIR / "backups")
+DB_VACUUM_INTERVAL_HOURS: int = _get("DB_VACUUM_INTERVAL_HOURS", "168", int)  # Weekly
+
 # User input validation
 MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "4000", int)
+
+# Request body size limit (bytes)
+MAX_REQUEST_BODY_SIZE: int = _get("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024), int)  # 1MB default
+
+# Authentication — auth is enabled when DASHBOARD_API_KEY is set
+AUTH_ENABLED: bool = bool(os.getenv("DASHBOARD_API_KEY", ""))
 
 
 # ── Validation ───────────────────────────────────────────────────────
@@ -151,6 +162,8 @@ def validate_config() -> list[str]:
         "PIPELINE_MAX_STEPS": PIPELINE_MAX_STEPS,
         "SCHEDULER_CHECK_INTERVAL": SCHEDULER_CHECK_INTERVAL,
         "MAX_USER_MESSAGE_LENGTH": MAX_USER_MESSAGE_LENGTH,
+        "DB_MAX_CONNECTIONS": DB_MAX_CONNECTIONS,
+        "DB_VACUUM_INTERVAL_HOURS": DB_VACUUM_INTERVAL_HOURS,
     }
     for name, val in _positive_ints.items():
         if not isinstance(val, int) or val <= 0:
