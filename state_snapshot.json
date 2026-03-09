@@ -1,0 +1,26 @@
+{
+  "timestamp": 1773057501.129884,
+  "timestamp_human": "2026-03-09 13:58:21",
+  "projects": {
+    "web-claude-bot": {
+      "status": "idle",
+      "turn_count": 0,
+      "total_cost_usd": 0.0,
+      "current_agent": null,
+      "pending_messages": 0,
+      "agent_states": {}
+    },
+    "family-finance": {
+      "status": "idle",
+      "turn_count": 0,
+      "total_cost_usd": 0.0,
+      "current_agent": null,
+      "pending_messages": 0,
+      "agent_states": {}
+    },
+    "telegram-claude-bot": {
+      "status": "idle",
+      "name": "telegram-claude-bot"
+    }
+  }
+}
