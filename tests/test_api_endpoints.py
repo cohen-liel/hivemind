@@ -77,8 +77,8 @@ def _make_mock_manager(
     mgr.current_tool = None
     mgr.shared_context = []
     mgr.pending_approval = None
-    mgr._message_queue = MagicMock()
-    mgr._message_queue.qsize.return_value = 0
+    mgr.pending_message_count = 0
+    mgr.drain_message_queue = MagicMock(return_value=0)
     mgr._background_tasks = []
     mgr.start_session = AsyncMock()
     mgr.inject_user_message = AsyncMock()

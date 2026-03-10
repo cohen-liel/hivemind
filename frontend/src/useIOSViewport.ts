@@ -16,19 +16,26 @@ export function useIOSViewport() {
     let prevHeight = vv.height;
     const fullHeight = window.innerHeight;
 
+    let rafId: number | null = null;
+
     const update = () => {
-      const h = vv.height;
-      document.documentElement.style.setProperty('--app-height', `${h}px`);
-      document.documentElement.style.setProperty('--app-offset', `${vv.offsetTop}px`);
+      // Debounce via rAF to prevent layout thrashing from rapid resize events (UI-04)
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const h = vv.height;
+        document.documentElement.style.setProperty('--app-height', `${h}px`);
+        document.documentElement.style.setProperty('--app-offset', `${vv.offsetTop}px`);
 
-      // Keyboard closed: height grew back toward full screen
-      if (h > prevHeight && h >= fullHeight - 50) {
-        // Reset any iOS scroll offset so page snaps back
-        window.scrollTo(0, 0);
-        document.documentElement.style.setProperty('--app-offset', '0px');
-      }
+        // Keyboard closed: height grew back toward full screen
+        if (h > prevHeight && h >= fullHeight - 50) {
+          // Reset any iOS scroll offset so page snaps back
+          window.scrollTo(0, 0);
+          document.documentElement.style.setProperty('--app-offset', '0px');
+        }
 
-      prevHeight = h;
+        prevHeight = h;
+      });
     };
 
     update();
@@ -53,6 +60,7 @@ export function useIOSViewport() {
       vv.removeEventListener('resize', update);
       vv.removeEventListener('scroll', update);
       document.removeEventListener('focusout', onBlur);
+      if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, []);
 }

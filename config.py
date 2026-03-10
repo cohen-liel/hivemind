@@ -268,6 +268,7 @@ def validate_config() -> list[str]:
     if RATE_LIMIT_SECONDS < 0:
         errors.append(f"RATE_LIMIT_SECONDS must be >= 0, got {RATE_LIMIT_SECONDS}")
 
+
     # --- Paths ------------------------------------------------------------
     if not PROJECTS_BASE_DIR.is_absolute():
         warnings.append(f"PROJECTS_BASE_DIR is relative: {PROJECTS_BASE_DIR}")

@@ -604,6 +604,13 @@ class EventBus:
         event_type = event.get("type", "")
         if project_id and event_type in _PERSIST_EVENT_TYPES:
             if self._write_queue is not None:
+                qsize = self._write_queue.qsize()
+                # Warn when queue is >80% full (approaching capacity)
+                if qsize > 4000:
+                    logger.warning(
+                        "EventBus: write queue at %d/5000 — DB writes may be falling behind",
+                        qsize,
+                    )
                 try:
                     self._write_queue.put_nowait(event)
                 except asyncio.QueueFull:

@@ -205,7 +205,7 @@ async def run():
             except asyncio.CancelledError:
                 raise  # Let cancellation propagate for graceful shutdown
             except Exception as e:
-                logger.warning(f"Periodic cleanup error (will retry in 60s): {e}")
+                logger.warning(f"Periodic cleanup error (will retry in 60s): {e}", exc_info=True)
                 await asyncio.sleep(60)  # Wait a bit before retrying
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
@@ -213,9 +213,13 @@ async def run():
     # Start periodic state file writer — writes a JSON snapshot of all projects
     # so the user can always see what's happening (even without the UI)
     state_file = Path("state_snapshot.json")
+    _last_snapshot_hash: str = ""  # track changes to avoid redundant writes
+
     async def _state_writer():
-        """Write a JSON state snapshot every 10 seconds."""
+        """Write a JSON state snapshot every 10 seconds, but only if state changed."""
+        nonlocal _last_snapshot_hash
         import json as _json
+        import hashlib
         while True:
             try:
                 await asyncio.sleep(10)
@@ -224,13 +228,14 @@ async def run():
                     "timestamp_human": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "projects": {},
                 }
-                for user_id, project_id, manager in state.get_all_managers():
+                managers = state.get_all_managers()
+                for user_id, project_id, manager in managers:
                     proj_state = {
                         "status": "running" if manager.is_running else ("paused" if manager.is_paused else "idle"),
                         "turn_count": manager.turn_count,
                         "total_cost_usd": round(manager.total_cost_usd, 4),
                         "current_agent": manager.current_agent,
-                        "pending_messages": manager._message_queue.qsize(),
+                        "pending_messages": manager.pending_message_count,
                         "agent_states": {},
                     }
                     for agent_name, agent_st in dict(manager.agent_states).items():
@@ -240,8 +245,10 @@ async def run():
                             "current_tool": agent_st.get("current_tool", ""),
                         }
                     snapshot["projects"][project_id] = proj_state
-                # Also include idle projects from DB
-                if state.session_mgr:
+
+                # Only query DB for idle projects if there are active managers
+                # (avoids unnecessary DB hit when nothing is running)
+                if state.session_mgr and managers:
                     all_projects = await state.session_mgr.list_projects()
                     for p in all_projects:
                         pid = p["project_id"]
@@ -250,6 +257,14 @@ async def run():
                                 "status": "idle",
                                 "name": p.get("name", pid),
                             }
+
+                # Skip write if nothing changed (compare hash excluding timestamp)
+                content_for_hash = {k: v for k, v in snapshot.items() if k != "timestamp" and k != "timestamp_human"}
+                current_hash = hashlib.md5(_json.dumps(content_for_hash, sort_keys=True, default=str).encode()).hexdigest()
+                if current_hash == _last_snapshot_hash:
+                    continue
+                _last_snapshot_hash = current_hash
+
                 await asyncio.to_thread(state_file.write_text, _json.dumps(snapshot, indent=2, default=str))
             except asyncio.CancelledError:
                 raise
@@ -329,7 +344,23 @@ async def run():
             except asyncio.CancelledError:
                 pass
 
-        # 2. Save orchestrator states BEFORE stopping EventBus
+        # 2. Stop all EventBus heartbeats (they publish events we no longer need)
+        logger.info("Graceful shutdown: stopping heartbeats...")
+        await event_bus.stop_all_heartbeats()
+
+        # 3. Stop running orchestrators gracefully
+        logger.info("Graceful shutdown: stopping active orchestrators...")
+        for user_id, project_id, manager in state.get_all_managers():
+            if manager.is_running:
+                try:
+                    await asyncio.wait_for(manager.stop(), timeout=10.0)
+                    logger.info(f"  Stopped orchestrator for {project_id}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"  Timeout stopping orchestrator for {project_id}")
+                except Exception as e:
+                    logger.error(f"  Error stopping orchestrator for {project_id}: {e}")
+
+        # 4. Save orchestrator states BEFORE stopping EventBus
         #    (save_orchestrator_state writes to DB, not EventBus)
         logger.info("Graceful shutdown: saving orchestrator states...")
         for user_id, project_id, manager in state.get_all_managers():
@@ -350,12 +381,12 @@ async def run():
                 except Exception as e:
                     logger.error(f"  Failed to save state for {project_id}: {e}")
 
-        # 3. Stop EventBus writer AFTER state is saved
+        # 5. Stop EventBus writer AFTER state is saved
         #    (flushes any pending activity events to DB)
         logger.info("Graceful shutdown: flushing EventBus...")
         await event_bus.stop_writer()
 
-        # 4. Create database backup before closing connection
+        # 6. Create database backup before closing connection
         if state.session_mgr:
             try:
                 backup_path = await state.session_mgr.create_backup()
@@ -363,7 +394,7 @@ async def run():
             except Exception as e:
                 logger.error(f"  Shutdown backup failed: {e}")
 
-        # 5. Close DB connection last (everything above needs it)
+        # 7. Close DB connection last (everything above needs it)
         if state.session_mgr:
             await state.session_mgr.close()
         logger.info("Shutdown complete")

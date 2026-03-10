@@ -127,7 +127,7 @@ const GroupTimestamp = memo(function GroupTimestamp({ ts, align }: { ts: number;
 });
 
 // ---------- Agent text bubble ----------
-function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
+const AgentTextBubble = memo(function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
   const content = entry.content || '';
   const isLong = content.length > 300;
@@ -162,7 +162,7 @@ function AgentTextBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvat
       </div>
     </div>
   );
-}
+});
 
 // ---------- User message bubble ----------
 const UserMessageBubble = memo(function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {

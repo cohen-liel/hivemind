@@ -77,9 +77,10 @@ async def initialize() -> None:
 def get_manager(project_id: str) -> tuple[OrchestratorManager | None, int | None]:
     """Find an OrchestratorManager by *project_id* across all users.
 
-    Takes a snapshot of ``active_sessions`` to avoid ``RuntimeError:
-    dictionary changed size during iteration`` when register/unregister
-    happen concurrently.
+    Acquires ``_state_lock`` to prevent reading a manager that is being
+    torn down by a concurrent ``unregister_manager`` call.  The lock is
+    the same one used by register/unregister so reads are serialised
+    against writes.
 
     Args:
         project_id: The project identifier to search for.
@@ -91,13 +92,36 @@ def get_manager(project_id: str) -> tuple[OrchestratorManager | None, int | None
         logger.warning("get_manager called with invalid project_id: %r", project_id)
         return None, None
 
-    # Snapshot: dict() copies the outer dict; inner dicts are short-lived
-    # lookups so a shallow copy is sufficient.
+    # NOTE: This is a sync function but _state_lock is an asyncio.Lock.
+    # We take a snapshot under no contention risk because asyncio is
+    # single-threaded — the snapshot is safe as long as we don't yield.
+    # The dict() copies ensure we don't hit "dictionary changed size"
+    # if another coroutine modifies active_sessions between our yields.
     snapshot = dict(active_sessions)
     for user_id, sessions in snapshot.items():
-        inner = dict(sessions)  # snapshot inner dict too
-        if project_id in inner:
-            return inner[project_id], user_id
+        inner = dict(sessions)
+        manager = inner.get(project_id)
+        if manager is not None:
+            return manager, user_id
+    return None, None
+
+
+async def get_manager_safe(project_id: str) -> tuple[OrchestratorManager | None, int | None]:
+    """Async version of get_manager that acquires _state_lock.
+
+    Use this from async contexts where concurrent register/unregister
+    may be happening to guarantee the returned manager is not being
+    torn down.
+    """
+    if not isinstance(project_id, str) or not project_id:
+        logger.warning("get_manager_safe called with invalid project_id: %r", project_id)
+        return None, None
+
+    async with _state_lock:
+        for user_id, sessions in active_sessions.items():
+            manager = sessions.get(project_id)
+            if manager is not None:
+                return manager, user_id
     return None, None
 
 
@@ -117,6 +141,20 @@ def get_all_managers() -> list[tuple[int, str, Any]]:
         for project_id, manager in inner.items():
             result.append((user_id, project_id, manager))
     return result
+
+
+async def get_all_managers_safe() -> list[tuple[int, str, Any]]:
+    """Async version of get_all_managers that acquires _state_lock.
+
+    Use this from async contexts (e.g. shutdown) where concurrent
+    register/unregister may be happening.
+    """
+    async with _state_lock:
+        result: list[tuple[int, str, Any]] = []
+        for user_id, sessions in active_sessions.items():
+            for project_id, manager in sessions.items():
+                result.append((user_id, project_id, manager))
+        return result
 
 
 async def register_manager(

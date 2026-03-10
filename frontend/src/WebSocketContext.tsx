@@ -160,10 +160,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     ws.onclose = () => {
       setConnected(false);
       if (!mountedRef.current) return;
-      // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 30s cap
-      const delay = retryDelayRef.current;
-      retryDelayRef.current = Math.min(delay * 2, 30000);
-      setTimeout(connect, delay);
+      // Exponential backoff with jitter: 1s → 2s → 4s → 8s → 16s → 30s cap
+      // Jitter prevents thundering herd when server restarts (STAB-02)
+      const baseDelay = retryDelayRef.current;
+      const jitter = baseDelay * (0.5 + Math.random() * 0.5); // 50-100% of base
+      retryDelayRef.current = Math.min(baseDelay * 2, 30000);
+      setTimeout(connect, jitter);
     };
 
     ws.onerror = () => {

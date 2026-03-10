@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getProjects } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
@@ -53,19 +53,25 @@ export default function Dashboard() {
   // Dynamic page title
   usePageTitle('Dashboard');
 
+  // Use a ref to track whether we have data, avoiding the dependency on
+  // projects.length which would cause loadData to change on every fetch
+  // and create an infinite polling loop.
+  const hasDataRef = useRef(false);
+
   const loadData = useCallback(async () => {
     try {
       const p = await getProjects();
       setProjects(p);
       setError(null);
+      hasDataRef.current = p.length > 0;
     } catch (e: unknown) {
-      if (projects.length === 0) {
+      if (!hasDataRef.current) {
         setError(e instanceof Error ? e.message : 'Failed to load');
       }
     } finally {
       setLoading(false);
     }
-  }, [projects.length]);
+  }, []);
 
   useEffect(() => {
     loadData();

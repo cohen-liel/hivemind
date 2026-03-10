@@ -96,19 +96,19 @@ class CreateProjectRequest(BaseModel):
 
 
 class UpdateProjectRequest(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    agents_count: int | None = None
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    agents_count: int | None = Field(default=None, ge=1, le=20)
 
 
 class UpdateSettingsRequest(BaseModel):
-    max_turns_per_cycle: int | None = None
-    max_budget_usd: float | None = None
-    agent_timeout_seconds: int | None = None
-    sdk_max_turns_per_query: int | None = None
-    sdk_max_budget_per_query: float | None = None
-    max_user_message_length: int | None = None
-    max_orchestrator_loops: int | None = None
+    max_turns_per_cycle: int | None = Field(default=None, ge=1, le=10000)
+    max_budget_usd: float | None = Field(default=None, gt=0, le=10000)
+    agent_timeout_seconds: int | None = Field(default=None, ge=30, le=7200)
+    sdk_max_turns_per_query: int | None = Field(default=None, ge=1, le=10000)
+    sdk_max_budget_per_query: float | None = Field(default=None, gt=0, le=10000)
+    max_user_message_length: int | None = Field(default=None, ge=100, le=100000)
+    max_orchestrator_loops: int | None = Field(default=None, ge=1, le=10000)
 
 
 class CreateScheduleRequest(BaseModel):
@@ -156,14 +156,18 @@ def _find_manager(project_id: str):
 
 
 def _manager_to_dict(manager, project_id: str) -> dict:
-    """Serialize an OrchestratorManager to a JSON-friendly dict."""
+    """Serialize an OrchestratorManager to a JSON-friendly dict.
+
+    Accesses only the last conversation entry to avoid copying the full log.
+    """
     last_message = None
-    if manager.conversation_log:
-        last = manager.conversation_log[-1]
+    conv_log = manager.conversation_log
+    if conv_log:
+        last = conv_log[-1]
         last_message = {
             "agent_name": last.agent_name,
             "role": last.role,
-            "content": last.content[:200],
+            "content": last.content[:200] if last.content else "",
             "timestamp": last.timestamp,
             "cost_usd": last.cost_usd,
         }
@@ -192,7 +196,7 @@ def _manager_to_dict(manager, project_id: str) -> dict:
         "current_agent": manager.current_agent,
         "current_tool": manager.current_tool,
         # Queue status — so frontend knows about pending messages
-        "pending_messages": manager._message_queue.qsize(),
+        "pending_messages": manager.pending_message_count,
         "pending_approval": manager.pending_approval,
     }
 
@@ -534,20 +538,22 @@ def create_app() -> FastAPI:
         # Get all projects from DB
         db_projects = await state.session_mgr.list_projects() if state.session_mgr else []
 
+        # Build a dict keyed by project_id for O(1) lookup instead of O(n) scan
+        db_project_map = {dbp["project_id"]: dbp for dbp in db_projects}
+
         projects = []
         seen = set()
 
         # Active projects first
         for project_id, data in active_map.items():
             seen.add(project_id)
-            # Enrich with DB info
-            for dbp in db_projects:
-                if dbp["project_id"] == project_id:
-                    data["description"] = dbp.get("description", "")
-                    data["created_at"] = dbp.get("created_at", 0)
-                    data["updated_at"] = dbp.get("updated_at", 0)
-                    data["message_count"] = dbp.get("message_count", 0)
-                    break
+            # Enrich with DB info — O(1) dict lookup
+            dbp = db_project_map.get(project_id)
+            if dbp:
+                data["description"] = dbp.get("description", "")
+                data["created_at"] = dbp.get("created_at", 0)
+                data["updated_at"] = dbp.get("updated_at", 0)
+                data["message_count"] = dbp.get("message_count", 0)
             projects.append(data)
 
         # DB-only projects (not currently active)
@@ -700,7 +706,7 @@ def create_app() -> FastAPI:
             "loop_progress": loop_progress,
             "shared_context_count": len(manager.shared_context),
             "shared_context_preview": [c[:200] for c in manager.shared_context[-5:]],
-            "pending_messages": manager._message_queue.qsize(),
+            "pending_messages": manager.pending_message_count,
             "pending_approval": manager.pending_approval,
             "background_tasks": len(manager._background_tasks),
             "turn_count": manager.turn_count,
@@ -768,7 +774,7 @@ def create_app() -> FastAPI:
                 "current_agent": manager.current_agent,
                 "turn_count": manager.turn_count,
                 "total_cost_usd": manager.total_cost_usd,
-                "pending_messages": manager._message_queue.qsize(),
+                "pending_messages": manager.pending_message_count,
                 "pending_approval": manager.pending_approval,
             }
         else:
@@ -1002,11 +1008,9 @@ def create_app() -> FastAPI:
             manager._dag_task_statuses = {}
 
             # Message queue (drain any pending messages)
-            while not manager._message_queue.empty():
-                try:
-                    manager._message_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+            drained = manager.drain_message_queue()
+            if drained:
+                logger.info(f"[{project_id}] Drained {drained} pending messages")
 
             # SDK session IDs — forces agents to start fresh sessions
             # (otherwise they resume with context from cleared conversations)
@@ -1316,7 +1320,7 @@ def create_app() -> FastAPI:
         else:
             logger.info(f"[{project_id}] Injecting message into running session")
             await manager.inject_user_message("orchestrator", req.message)
-            queue_size = manager._message_queue.qsize()
+            queue_size = manager.pending_message_count
             return {"ok": True, "action": "queued", "queue_size": queue_size}
 
     @app.post("/api/projects/{project_id}/talk/{agent}")

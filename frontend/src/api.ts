@@ -2,14 +2,38 @@ import type { Project, ProjectMessage, FileChanges, TaskHistoryItem, Stats, File
 
 const BASE = '/api';
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly isNetworkError: boolean = false,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...init,
+    });
+  } catch (err) {
+    // Network error (offline, DNS failure, CORS, etc.)
+    throw new ApiError(
+      err instanceof Error ? err.message : 'Network error',
+      0,
+      true,
+    );
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${res.status}`);
+    throw new ApiError(
+      body.error || body.detail || `HTTP ${res.status}`,
+      res.status,
+    );
   }
   return res.json() as Promise<T>;
 }

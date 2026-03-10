@@ -1249,6 +1249,30 @@ class OrchestratorManager:
     def pending_approval(self) -> str | None:
         return self._pending_approval
 
+    @property
+    def pending_message_count(self) -> int:
+        """Return the number of pending messages in the queue.
+
+        Public API for external consumers (state writer, dashboard API)
+        instead of accessing the private ``_message_queue`` directly.
+        """
+        return self._message_queue.qsize()
+
+    def drain_message_queue(self) -> int:
+        """Drain all pending messages from the queue.
+
+        Returns the number of messages drained. Used during history clear
+        to ensure no stale messages are processed after a reset.
+        """
+        count = 0
+        while not self._message_queue.empty():
+            try:
+                self._message_queue.get_nowait()
+                count += 1
+            except asyncio.QueueEmpty:
+                break
+        return count
+
     # --- DAG-based session (new Typed Contract system) ---
 
     async def _load_project_context(self) -> tuple[str, str, str]:

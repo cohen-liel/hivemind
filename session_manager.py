@@ -658,13 +658,13 @@ class SessionManager:
 
     async def get_session(self, user_id: int, project_id: str, agent_role: str) -> str | None:
         """Return the SDK session_id for resuming, or None if no active session."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT session_id FROM sessions WHERE project_id=? AND user_id=? AND agent_role=? AND status='active'",
-            (project_id, user_id, agent_role),
-        )
-        row = await cursor.fetchone()
-        return row["session_id"] if row else None
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT session_id FROM sessions WHERE project_id=? AND user_id=? AND agent_role=? AND status='active'",
+                (project_id, user_id, agent_role),
+            )
+            row = await cursor.fetchone()
+            return row["session_id"] if row else None
 
     async def save_session(
         self,
@@ -675,27 +675,35 @@ class SessionManager:
         cost: float = 0.0,
         turns: int = 0,
     ):
-        """Save or update a session for a given project+user+role."""
-        db = await self._get_db()
-        now = time.time()
-        await db.execute(
-            """INSERT INTO sessions (project_id, user_id, agent_role, session_id, cost_usd, turns, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
-               ON CONFLICT(project_id, user_id, agent_role)
-               DO UPDATE SET session_id=?, cost_usd=cost_usd+?, turns=turns+?, updated_at=?, status='active'""",
-            (project_id, user_id, agent_role, session_id, cost, turns, now, now,
-             session_id, cost, turns, now),
-        )
-        await db.commit()
+        """Save or update a session for a given project+user+role.
+
+        Uses ``excluded`` pseudo-table so the ON CONFLICT branch correctly
+        references the *proposed* row values instead of duplicating parameters.
+        Cost and turns are accumulated (INSERT value is the delta for this cycle).
+        """
+        async with self._connect() as db:
+            now = time.time()
+            await db.execute(
+                """INSERT INTO sessions (project_id, user_id, agent_role, session_id, cost_usd, turns, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                   ON CONFLICT(project_id, user_id, agent_role)
+                   DO UPDATE SET session_id=excluded.session_id,
+                                cost_usd=cost_usd + excluded.cost_usd,
+                                turns=turns + excluded.turns,
+                                updated_at=excluded.updated_at,
+                                status='active'""",
+                (project_id, user_id, agent_role, session_id, cost, turns, now, now),
+            )
+            await db.commit()
 
     async def invalidate_session(self, user_id: int, project_id: str, agent_role: str):
         """Mark a session as invalidated so it won't be resumed."""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE sessions SET status='invalidated', updated_at=? WHERE project_id=? AND user_id=? AND agent_role=?",
-            (time.time(), project_id, user_id, agent_role),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE sessions SET status='invalidated', updated_at=? WHERE project_id=? AND user_id=? AND agent_role=?",
+                (time.time(), project_id, user_id, agent_role),
+            )
+            await db.commit()
 
     async def invalidate_all_sessions(self, project_id: str):
         """Mark ALL sessions for a project as invalidated.
@@ -703,15 +711,15 @@ class SessionManager:
         Called when user clears chat history — forces every agent to start
         a fresh session instead of resuming with stale context.
         """
-        db = await self._get_db()
-        result = await db.execute(
-            "UPDATE sessions SET status='invalidated', updated_at=? "
-            "WHERE project_id=? AND status != 'invalidated'",
-            (time.time(), project_id),
-        )
-        await db.commit()
-        count = result.rowcount if hasattr(result, 'rowcount') else 0
-        logger.info(f"[{project_id}] Invalidated {count} active sessions (full context reset)")
+        async with self._connect() as db:
+            result = await db.execute(
+                "UPDATE sessions SET status='invalidated', updated_at=? "
+                "WHERE project_id=? AND status != 'invalidated'",
+                (time.time(), project_id),
+            )
+            await db.commit()
+            count = result.rowcount if hasattr(result, 'rowcount') else 0
+            logger.info(f"[{project_id}] Invalidated {count} active sessions (full context reset)")
 
     # --- Message CRUD ---
 
@@ -724,12 +732,12 @@ class SessionManager:
         cost_usd: float = 0.0,
     ):
         """Append a message to the project conversation log."""
-        db = await self._get_db()
-        await db.execute(
-            "INSERT INTO messages (project_id, agent_name, role, content, cost_usd, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-            (project_id, agent_name, role, content, cost_usd, time.time()),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO messages (project_id, agent_name, role, content, cost_usd, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (project_id, agent_name, role, content, cost_usd, time.time()),
+            )
+            await db.commit()
 
     async def get_recent_messages(self, project_id: str, count: int = 15) -> list[dict]:
         """Return the last N messages for a project.
@@ -738,14 +746,14 @@ class SessionManager:
             SEARCH messages USING INDEX idx_messages_project (project_id=?)
             — Index covers both the WHERE filter and ORDER BY timestamp DESC.
         """
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT agent_name, role, content, cost_usd, timestamp "
-            "FROM messages WHERE project_id=? ORDER BY timestamp DESC LIMIT ?",
-            (project_id, count),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in reversed(rows)]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT agent_name, role, content, cost_usd, timestamp "
+                "FROM messages WHERE project_id=? ORDER BY timestamp DESC LIMIT ?",
+                (project_id, count),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in reversed(rows)]
 
     # --- Project CRUD ---
 
@@ -759,20 +767,20 @@ class SessionManager:
         status: str = "active",
     ):
         """Create or update a project."""
-        db = await self._get_db()
-        now = time.time()
-        await db.execute(
-            """INSERT INTO projects (project_id, user_id, name, description, project_dir, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(project_id) DO UPDATE SET
-                   name=?, description=?, project_dir=?, status=?, updated_at=?""",
-            (project_id, user_id, name, description, project_dir, status, now, now,
-             name, description, project_dir, status, now),
-        )
-        await db.commit()
-        # Invalidate project and list caches
-        self._cache.invalidate(f"project:{project_id}")
-        self._cache.invalidate("projects:list")
+        async with self._connect() as db:
+            now = time.time()
+            await db.execute(
+                """INSERT INTO projects (project_id, user_id, name, description, project_dir, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(project_id) DO UPDATE SET
+                       name=?, description=?, project_dir=?, status=?, updated_at=?""",
+                (project_id, user_id, name, description, project_dir, status, now, now,
+                 name, description, project_dir, status, now),
+            )
+            await db.commit()
+            # Invalidate project and list caches
+            self._cache.invalidate(f"project:{project_id}")
+            self._cache.invalidate("projects:list")
 
     async def load_project(self, project_id: str) -> dict | None:
         """Load project metadata (cached with TTL)."""
@@ -780,16 +788,16 @@ class SessionManager:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT * FROM projects WHERE project_id=?",
-            (project_id,),
-        )
-        row = await cursor.fetchone()
-        result = dict(row) if row else None
-        if result is not None:
-            self._cache.set(cache_key, result)
-        return result
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT * FROM projects WHERE project_id=?",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+            result = dict(row) if row else None
+            if result is not None:
+                self._cache.set(cache_key, result)
+            return result
 
     async def list_projects(self) -> list[dict]:
         """List all projects, sorted by most recently updated (cached with TTL)."""
@@ -797,30 +805,30 @@ class SessionManager:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-        db = await self._get_db()
-        # Use cached message_count column (maintained by triggers) instead of expensive LEFT JOIN
-        cursor = await db.execute(
-            """SELECT project_id, user_id, name, description, project_dir,
-                      status, created_at, updated_at,
-                      COALESCE(message_count, 0) as message_count
-               FROM projects
-               ORDER BY updated_at DESC"""
-        )
-        rows = await cursor.fetchall()
-        result = [dict(row) for row in rows]
-        self._cache.set(cache_key, result)
-        return result
+        async with self._connect() as db:
+            # Use cached message_count column (maintained by triggers) instead of expensive LEFT JOIN
+            cursor = await db.execute(
+                """SELECT project_id, user_id, name, description, project_dir,
+                          status, created_at, updated_at,
+                          COALESCE(message_count, 0) as message_count
+                   FROM projects
+                   ORDER BY updated_at DESC"""
+            )
+            rows = await cursor.fetchall()
+            result = [dict(row) for row in rows]
+            self._cache.set(cache_key, result)
+            return result
 
     async def update_status(self, project_id: str, status: str):
         """Update a project's status."""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE projects SET status=?, updated_at=? WHERE project_id=?",
-            (status, time.time(), project_id),
-        )
-        await db.commit()
-        self._cache.invalidate(f"project:{project_id}")
-        self._cache.invalidate("projects:list")
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE projects SET status=?, updated_at=? WHERE project_id=?",
+                (status, time.time(), project_id),
+            )
+            await db.commit()
+            self._cache.invalidate(f"project:{project_id}")
+            self._cache.invalidate("projects:list")
 
     # Whitelist of columns that can be updated via update_project_fields.
     # Prevents SQL injection through dynamic column names.
@@ -837,13 +845,13 @@ class SessionManager:
         invalid = set(fields.keys()) - self._UPDATABLE_PROJECT_FIELDS
         if invalid:
             raise ValueError(f"Disallowed column names: {', '.join(sorted(invalid))}")
-        db = await self._get_db()
-        sets = ", ".join(f"{k}=?" for k in fields)
-        vals = list(fields.values()) + [time.time(), project_id]
-        await db.execute(f"UPDATE projects SET {sets}, updated_at=? WHERE project_id=?", vals)
-        await db.commit()
-        self._cache.invalidate(f"project:{project_id}")
-        self._cache.invalidate("projects:list")
+        async with self._connect() as db:
+            sets = ", ".join(f"{k}=?" for k in fields)
+            vals = list(fields.values()) + [time.time(), project_id]
+            await db.execute(f"UPDATE projects SET {sets}, updated_at=? WHERE project_id=?", vals)
+            await db.commit()
+            self._cache.invalidate(f"project:{project_id}")
+            self._cache.invalidate("projects:list")
 
     async def get_messages_paginated(self, project_id: str, limit: int = 50, offset: int = 0, *, cursor: int | None = None) -> tuple[list[dict], int]:
         """Return paginated messages and total count.
@@ -865,44 +873,44 @@ class SessionManager:
             SEARCH messages USING INDEX idx_messages_project_id (project_id=? AND id<?)
             — Composite (project_id, id DESC) index enables efficient range scan.
         """
-        db = await self._get_db()
-        if cursor is not None:
-            # Keyset pagination: use message id as cursor for O(1) seek
-            query_cursor = await db.execute(
-                "SELECT id, agent_name, role, content, cost_usd, timestamp FROM messages "
-                "WHERE project_id=? AND id < ? ORDER BY id DESC LIMIT ?",
-                (project_id, cursor, limit),
-            )
-            rows = await query_cursor.fetchall()
-        else:
-            # Legacy offset pagination (backward compatibility)
-            query_cursor = await db.execute(
-                "SELECT id, agent_name, role, content, cost_usd, timestamp FROM messages "
-                "WHERE project_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
-                (project_id, limit, offset),
-            )
-            rows = await query_cursor.fetchall()
-
-        # Total count — use cached message_count from projects table when available
-        cache_key = f"msg_count:{project_id}"
-        total = self._cache.get(cache_key)
-        if total is None:
-            count_cursor = await db.execute(
-                "SELECT COALESCE(message_count, 0) FROM projects WHERE project_id=?",
-                (project_id,),
-            )
-            count_row = await count_cursor.fetchone()
-            if count_row:
-                total = count_row[0]
-            else:
-                # Fallback: count from messages table
-                count_cursor2 = await db.execute(
-                    "SELECT COUNT(*) FROM messages WHERE project_id=?", (project_id,)
+        async with self._connect() as db:
+            if cursor is not None:
+                # Keyset pagination: use message id as cursor for O(1) seek
+                query_cursor = await db.execute(
+                    "SELECT id, agent_name, role, content, cost_usd, timestamp FROM messages "
+                    "WHERE project_id=? AND id < ? ORDER BY id DESC LIMIT ?",
+                    (project_id, cursor, limit),
                 )
-                total = (await count_cursor2.fetchone())[0]
-            self._cache.set(cache_key, total)
+                rows = await query_cursor.fetchall()
+            else:
+                # Legacy offset pagination (backward compatibility)
+                query_cursor = await db.execute(
+                    "SELECT id, agent_name, role, content, cost_usd, timestamp FROM messages "
+                    "WHERE project_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (project_id, limit, offset),
+                )
+                rows = await query_cursor.fetchall()
 
-        return [dict(row) for row in reversed(rows)], total
+            # Total count — use cached message_count from projects table when available
+            cache_key = f"msg_count:{project_id}"
+            total = self._cache.get(cache_key)
+            if total is None:
+                count_cursor = await db.execute(
+                    "SELECT COALESCE(message_count, 0) FROM projects WHERE project_id=?",
+                    (project_id,),
+                )
+                count_row = await count_cursor.fetchone()
+                if count_row:
+                    total = count_row[0]
+                else:
+                    # Fallback: count from messages table
+                    count_cursor2 = await db.execute(
+                        "SELECT COUNT(*) FROM messages WHERE project_id=?", (project_id,)
+                    )
+                    total = (await count_cursor2.fetchone())[0]
+                self._cache.set(cache_key, total)
+
+            return [dict(row) for row in reversed(rows)], total
 
     async def get_project_tasks(self, project_id: str, limit: int = 50) -> list[dict]:
         """Return task history for a project.
@@ -911,114 +919,114 @@ class SessionManager:
             SEARCH task_history USING INDEX idx_task_history_project_started (project_id=?)
             — Uses composite (project_id, started_at) index for both filter and sort.
         """
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT id, project_id, user_id, task_description, status, "
-            "cost_usd, turns_used, started_at, completed_at, summary "
-            "FROM task_history WHERE project_id=? ORDER BY started_at DESC LIMIT ?",
-            (project_id, limit),
-        )
-        return [dict(row) for row in await cursor.fetchall()]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT id, project_id, user_id, task_description, status, "
+                "cost_usd, turns_used, started_at, completed_at, summary "
+                "FROM task_history WHERE project_id=? ORDER BY started_at DESC LIMIT ?",
+                (project_id, limit),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def clear_project_data(self, project_id: str):
         """Clear all messages, sessions, and task_history for a project."""
-        db = await self._get_db()
-        await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
-        await db.execute("DELETE FROM sessions WHERE project_id=?", (project_id,))
-        await db.execute("DELETE FROM task_history WHERE project_id=?", (project_id,))
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
+            await db.execute("DELETE FROM sessions WHERE project_id=?", (project_id,))
+            await db.execute("DELETE FROM task_history WHERE project_id=?", (project_id,))
+            await db.commit()
 
     # --- Cleanup ---
 
     async def clear_messages(self, project_id: str):
         """Delete all messages for a project."""
-        db = await self._get_db()
-        await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
+            await db.commit()
 
     async def clear_stale_messages(self, project_id: str):
         """Remove old error messages and messages from the previous architecture."""
-        db = await self._get_db()
-        # Delete messages from old architecture (system/update, architect role)
-        await db.execute(
-            "DELETE FROM messages WHERE project_id=? AND (agent_name='system' OR role='update' OR agent_name='architect')",
-            (project_id,),
-        )
-        # Delete error messages (stale errors clutter the log)
-        await db.execute(
-            "DELETE FROM messages WHERE project_id=? AND content LIKE 'Error:%'",
-            (project_id,),
-        )
-        await db.execute(
-            "DELETE FROM messages WHERE project_id=? AND content LIKE 'Invalid API key%'",
-            (project_id,),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            # Delete messages from old architecture (system/update, architect role)
+            await db.execute(
+                "DELETE FROM messages WHERE project_id=? AND (agent_name='system' OR role='update' OR agent_name='architect')",
+                (project_id,),
+            )
+            # Delete error messages (stale errors clutter the log)
+            await db.execute(
+                "DELETE FROM messages WHERE project_id=? AND content LIKE 'Error:%'",
+                (project_id,),
+            )
+            await db.execute(
+                "DELETE FROM messages WHERE project_id=? AND content LIKE 'Invalid API key%'",
+                (project_id,),
+            )
+            await db.commit()
 
     async def delete_project(self, project_id: str):
         """Delete a project and all its associated sessions and messages."""
-        db = await self._get_db()
-        await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
-        await db.execute("DELETE FROM sessions WHERE project_id=?", (project_id,))
-        await db.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute("DELETE FROM messages WHERE project_id=?", (project_id,))
+            await db.execute("DELETE FROM sessions WHERE project_id=?", (project_id,))
+            await db.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
+            await db.commit()
 
     async def get_project_total_cost(self, project_id: str) -> float:
         """Return the total cost_usd spent across all sessions for a project."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions WHERE project_id=?",
-            (project_id,),
-        )
-        row = await cursor.fetchone()
-        return float(row[0]) if row else 0.0
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions WHERE project_id=?",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+            return float(row[0]) if row else 0.0
 
     async def get_project_budget(self, project_id: str) -> float:
         """Return the per-project budget (0 = unlimited)."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT budget_usd FROM projects WHERE project_id=?",
-            (project_id,),
-        )
-        row = await cursor.fetchone()
-        return float(row[0]) if row and row[0] else 0.0
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT budget_usd FROM projects WHERE project_id=?",
+                (project_id,),
+            )
+            row = await cursor.fetchone()
+            return float(row[0]) if row and row[0] else 0.0
 
     async def set_project_budget(self, project_id: str, budget_usd: float):
         """Set the per-project budget."""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE projects SET budget_usd=?, updated_at=? WHERE project_id=?",
-            (budget_usd, time.time(), project_id),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE projects SET budget_usd=?, updated_at=? WHERE project_id=?",
+                (budget_usd, time.time(), project_id),
+            )
+            await db.commit()
 
     # --- Notification Preferences ---
 
     async def get_notification_prefs(self, user_id: int) -> dict:
         """Get notification preferences for a user."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT level, budget_warning, stall_alert FROM notification_prefs WHERE user_id=?",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        if row:
-            return {"level": row["level"], "budget_warning": bool(row["budget_warning"]), "stall_alert": bool(row["stall_alert"])}
-        # Default prefs
-        return {"level": "all", "budget_warning": True, "stall_alert": True}
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT level, budget_warning, stall_alert FROM notification_prefs WHERE user_id=?",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                return {"level": row["level"], "budget_warning": bool(row["budget_warning"]), "stall_alert": bool(row["stall_alert"])}
+            # Default prefs
+            return {"level": "all", "budget_warning": True, "stall_alert": True}
 
     async def set_notification_prefs(self, user_id: int, level: str = "all", budget_warning: bool = True, stall_alert: bool = True):
         """Set notification preferences for a user."""
-        db = await self._get_db()
-        now = time.time()
-        await db.execute(
-            """INSERT INTO notification_prefs (user_id, level, budget_warning, stall_alert, updated_at)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET level=?, budget_warning=?, stall_alert=?, updated_at=?""",
-            (user_id, level, int(budget_warning), int(stall_alert), now,
-             level, int(budget_warning), int(stall_alert), now),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            now = time.time()
+            await db.execute(
+                """INSERT INTO notification_prefs (user_id, level, budget_warning, stall_alert, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET level=?, budget_warning=?, stall_alert=?, updated_at=?""",
+                (user_id, level, int(budget_warning), int(stall_alert), now,
+                 level, int(budget_warning), int(stall_alert), now),
+            )
+            await db.commit()
 
     # --- Task History ---
 
@@ -1033,15 +1041,15 @@ class SessionManager:
         summary: str = "",
     ) -> int:
         """Add a task history entry, returns the row ID."""
-        db = await self._get_db()
-        now = time.time()
-        cursor = await db.execute(
-            """INSERT INTO task_history (project_id, user_id, task_description, status, cost_usd, turns_used, started_at, summary)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (project_id, user_id, task_description, status, cost_usd, turns_used, now, summary),
-        )
-        await db.commit()
-        return cursor.lastrowid
+        async with self._connect() as db:
+            now = time.time()
+            cursor = await db.execute(
+                """INSERT INTO task_history (project_id, user_id, task_description, status, cost_usd, turns_used, started_at, summary)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (project_id, user_id, task_description, status, cost_usd, turns_used, now, summary),
+            )
+            await db.commit()
+            return cursor.lastrowid
 
     async def update_task_history(
         self,
@@ -1052,14 +1060,14 @@ class SessionManager:
         summary: str = "",
     ):
         """Update a task history entry on completion."""
-        db = await self._get_db()
-        now = time.time()
-        await db.execute(
-            """UPDATE task_history SET status=?, cost_usd=?, turns_used=?, completed_at=?, summary=?
-               WHERE id=?""",
-            (status, cost_usd, turns_used, now, summary, task_id),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            now = time.time()
+            await db.execute(
+                """UPDATE task_history SET status=?, cost_usd=?, turns_used=?, completed_at=?, summary=?
+                   WHERE id=?""",
+                (status, cost_usd, turns_used, now, summary, task_id),
+            )
+            await db.commit()
 
     async def get_recent_task_history(self, user_id: int, count: int = 10) -> list[dict]:
         """Get the last N completed tasks for a user.
@@ -1069,69 +1077,69 @@ class SessionManager:
             — Uses composite (user_id, started_at) index for filter and sort.
             — LEFT JOIN on projects uses PRIMARY KEY (project_id).
         """
-        db = await self._get_db()
-        cursor = await db.execute(
-            """SELECT th.id, th.project_id, th.user_id, th.task_description,
-                      th.status, th.cost_usd, th.turns_used, th.started_at,
-                      th.completed_at, th.summary, p.name as project_name
-               FROM task_history th
-               LEFT JOIN projects p ON th.project_id = p.project_id
-               WHERE th.user_id=?
-               ORDER BY th.started_at DESC LIMIT ?""",
-            (user_id, count),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT th.id, th.project_id, th.user_id, th.task_description,
+                          th.status, th.cost_usd, th.turns_used, th.started_at,
+                          th.completed_at, th.summary, p.name as project_name
+                   FROM task_history th
+                   LEFT JOIN projects p ON th.project_id = p.project_id
+                   WHERE th.user_id=?
+                   ORDER BY th.started_at DESC LIMIT ?""",
+                (user_id, count),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     # --- Away Mode ---
 
     async def set_away_mode(self, user_id: int, enabled: bool):
         """Set away mode for all projects of a user."""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE projects SET away_mode=?, updated_at=? WHERE user_id=?",
-            (int(enabled), time.time(), user_id),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE projects SET away_mode=?, updated_at=? WHERE user_id=?",
+                (int(enabled), time.time(), user_id),
+            )
+            await db.commit()
 
     async def is_away(self, user_id: int) -> bool:
         """Check if user is in away mode (checks any project)."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT away_mode FROM projects WHERE user_id=? AND away_mode=1 LIMIT 1",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        return bool(row)
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT away_mode FROM projects WHERE user_id=? AND away_mode=1 LIMIT 1",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            return bool(row)
 
     async def add_away_digest(self, user_id: int, project_id: str, event_type: str, summary: str):
         """Add an event to the away digest queue."""
-        db = await self._get_db()
-        await db.execute(
-            "INSERT INTO away_digest (user_id, project_id, event_type, summary, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (user_id, project_id, event_type, summary, time.time()),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO away_digest (user_id, project_id, event_type, summary, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (user_id, project_id, event_type, summary, time.time()),
+            )
+            await db.commit()
 
     async def get_away_digest(self, user_id: int) -> list[dict]:
         """Get all pending away digest entries for a user."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            """SELECT ad.*, p.name as project_name
-               FROM away_digest ad
-               LEFT JOIN projects p ON ad.project_id = p.project_id
-               WHERE ad.user_id=?
-               ORDER BY ad.timestamp ASC""",
-            (user_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT ad.*, p.name as project_name
+                   FROM away_digest ad
+                   LEFT JOIN projects p ON ad.project_id = p.project_id
+                   WHERE ad.user_id=?
+                   ORDER BY ad.timestamp ASC""",
+                (user_id,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def clear_away_digest(self, user_id: int):
         """Clear all away digest entries for a user after catchup."""
-        db = await self._get_db()
-        await db.execute("DELETE FROM away_digest WHERE user_id=?", (user_id,))
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute("DELETE FROM away_digest WHERE user_id=?", (user_id,))
+            await db.commit()
 
     # --- Schedules ---
 
@@ -1144,71 +1152,71 @@ class SessionManager:
         repeat: str = "once",
     ) -> int:
         """Add a scheduled task, returns the row ID."""
-        db = await self._get_db()
-        now = time.time()
-        cursor = await db.execute(
-            """INSERT INTO schedules (user_id, project_id, schedule_time, task_description, repeat, enabled, created_at)
-               VALUES (?, ?, ?, ?, ?, 1, ?)""",
-            (user_id, project_id, schedule_time, task_description, repeat, now),
-        )
-        await db.commit()
-        return cursor.lastrowid
+        async with self._connect() as db:
+            now = time.time()
+            cursor = await db.execute(
+                """INSERT INTO schedules (user_id, project_id, schedule_time, task_description, repeat, enabled, created_at)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                (user_id, project_id, schedule_time, task_description, repeat, now),
+            )
+            await db.commit()
+            return cursor.lastrowid
 
     async def get_schedules(self, user_id: int) -> list[dict]:
         """Get all schedules for a user."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            """SELECT s.*, p.name as project_name
-               FROM schedules s
-               LEFT JOIN projects p ON s.project_id = p.project_id
-               WHERE s.user_id=? AND s.enabled=1
-               ORDER BY s.schedule_time ASC""",
-            (user_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT s.*, p.name as project_name
+                   FROM schedules s
+                   LEFT JOIN projects p ON s.project_id = p.project_id
+                   WHERE s.user_id=? AND s.enabled=1
+                   ORDER BY s.schedule_time ASC""",
+                (user_id,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def get_due_schedules(self, current_time_hhmm: str) -> list[dict]:
         """Get all enabled schedules matching the given HH:MM time."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            """SELECT s.*, p.name as project_name, p.project_dir
-               FROM schedules s
-               LEFT JOIN projects p ON s.project_id = p.project_id
-               WHERE s.enabled=1 AND s.schedule_time=?""",
-            (current_time_hhmm,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT s.*, p.name as project_name, p.project_dir
+                   FROM schedules s
+                   LEFT JOIN projects p ON s.project_id = p.project_id
+                   WHERE s.enabled=1 AND s.schedule_time=?""",
+                (current_time_hhmm,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def mark_schedule_run(self, schedule_id: int):
         """Mark a schedule as having run."""
-        db = await self._get_db()
-        now = time.time()
-        await db.execute(
-            "UPDATE schedules SET last_run=? WHERE id=?",
-            (now, schedule_id),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            now = time.time()
+            await db.execute(
+                "UPDATE schedules SET last_run=? WHERE id=?",
+                (now, schedule_id),
+            )
+            await db.commit()
 
     async def disable_schedule(self, schedule_id: int):
         """Disable a one-time schedule after it runs."""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE schedules SET enabled=0 WHERE id=?",
-            (schedule_id,),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE schedules SET enabled=0 WHERE id=?",
+                (schedule_id,),
+            )
+            await db.commit()
 
     async def delete_schedule(self, schedule_id: int, user_id: int) -> bool:
         """Delete a schedule (ensures user owns it). Returns True if deleted."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            "DELETE FROM schedules WHERE id=? AND user_id=?",
-            (schedule_id, user_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "DELETE FROM schedules WHERE id=? AND user_id=?",
+                (schedule_id, user_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def cleanup_expired(self, max_age_hours: int = SESSION_EXPIRY_HOURS):
         """Clean up sessions older than max_age_hours.
@@ -1217,13 +1225,13 @@ class SessionManager:
             SEARCH sessions USING INDEX idx_sessions_status (status=? AND updated_at<?)
             — Uses composite (status, updated_at) index for efficient range scan.
         """
-        db = await self._get_db()
-        cutoff = time.time() - (max_age_hours * 3600)
-        await db.execute(
-            "UPDATE sessions SET status='expired' WHERE status='active' AND updated_at < ?",
-            (cutoff,),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            cutoff = time.time() - (max_age_hours * 3600)
+            await db.execute(
+                "UPDATE sessions SET status='expired' WHERE status='active' AND updated_at < ?",
+                (cutoff,),
+            )
+            await db.commit()
 
     async def _migrate_add_columns(self):
         """Add columns that may be missing in older DBs."""
@@ -1489,17 +1497,17 @@ class SessionManager:
         Returns:
             The row ID of the inserted lesson.
         """
-        db = await self._get_db()
-        now = time.time()
-        cursor = await db.execute(
-            """INSERT INTO lessons
-               (project_id, user_id, task_description, lesson_type, lesson, tags, outcome, rounds_used, cost_usd, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (project_id, user_id, task_description, lesson_type, lesson, tags, outcome, rounds_used, cost_usd, now),
-        )
-        await db.commit()
-        logger.info(f"Stored lesson for project={project_id}: type={lesson_type}, outcome={outcome}")
-        return cursor.lastrowid
+        async with self._connect() as db:
+            now = time.time()
+            cursor = await db.execute(
+                """INSERT INTO lessons
+                   (project_id, user_id, task_description, lesson_type, lesson, tags, outcome, rounds_used, cost_usd, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (project_id, user_id, task_description, lesson_type, lesson, tags, outcome, rounds_used, cost_usd, now),
+            )
+            await db.commit()
+            logger.info(f"Stored lesson for project={project_id}: type={lesson_type}, outcome={outcome}")
+            return cursor.lastrowid
 
     async def get_lessons_for_project(self, project_id: str, limit: int = 20) -> list[dict]:
         """Retrieve lessons for a specific project, most recent first.
@@ -1507,17 +1515,17 @@ class SessionManager:
         These are project-specific lessons that help the orchestrator avoid
         repeating mistakes within the same codebase.
         """
-        db = await self._get_db()
-        cursor = await db.execute(
-            """SELECT lesson_type, lesson, tags, outcome, rounds_used, cost_usd, task_description, created_at
-               FROM lessons
-               WHERE project_id = ?
-               ORDER BY created_at DESC
-               LIMIT ?""",
-            (project_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT lesson_type, lesson, tags, outcome, rounds_used, cost_usd, task_description, created_at
+                   FROM lessons
+                   WHERE project_id = ?
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                (project_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def get_lessons_for_user(self, user_id: int, limit: int = 30) -> list[dict]:
         """Retrieve all lessons for a user across all projects.
@@ -1525,19 +1533,19 @@ class SessionManager:
         These cross-project lessons help the orchestrator transfer knowledge
         between different codebases (e.g., 'pytest always needs --tb=short').
         """
-        db = await self._get_db()
-        cursor = await db.execute(
-            """SELECT l.lesson_type, l.lesson, l.tags, l.outcome, l.rounds_used,
-                      l.cost_usd, l.task_description, l.created_at, p.name as project_name
-               FROM lessons l
-               LEFT JOIN projects p ON l.project_id = p.project_id
-               WHERE l.user_id = ?
-               ORDER BY l.created_at DESC
-               LIMIT ?""",
-            (user_id, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT l.lesson_type, l.lesson, l.tags, l.outcome, l.rounds_used,
+                          l.cost_usd, l.task_description, l.created_at, p.name as project_name
+                   FROM lessons l
+                   LEFT JOIN projects p ON l.project_id = p.project_id
+                   WHERE l.user_id = ?
+                   ORDER BY l.created_at DESC
+                   LIMIT ?""",
+                (user_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def search_lessons(self, user_id: int, keywords: list[str], limit: int = 10) -> list[dict]:
         """Search lessons by keywords in task_description, lesson text, and tags.
@@ -1545,35 +1553,35 @@ class SessionManager:
         This is the retrieval mechanism for injecting relevant past experience
         into the orchestrator's prompt at task start.
         """
-        db = await self._get_db()
-        # Build a WHERE clause that matches any keyword in lesson, tags, or task_description
-        conditions = []
-        params: list = [user_id]
-        for kw in keywords[:10]:  # Cap at 10 keywords
-            kw_clean = kw.strip().replace("'", "")
-            if kw_clean:
-                conditions.append(
-                    "(l.lesson LIKE ? OR l.tags LIKE ? OR l.task_description LIKE ?)"
-                )
-                like_val = f"%{kw_clean}%"
-                params.extend([like_val, like_val, like_val])
+        async with self._connect() as db:
+            # Build a WHERE clause that matches any keyword in lesson, tags, or task_description
+            conditions = []
+            params: list = [user_id]
+            for kw in keywords[:10]:  # Cap at 10 keywords
+                kw_clean = kw.strip().replace("'", "")
+                if kw_clean:
+                    conditions.append(
+                        "(l.lesson LIKE ? OR l.tags LIKE ? OR l.task_description LIKE ?)"
+                    )
+                    like_val = f"%{kw_clean}%"
+                    params.extend([like_val, like_val, like_val])
 
-        if not conditions:
-            return []
+            if not conditions:
+                return []
 
-        where_clause = " OR ".join(conditions)
-        cursor = await db.execute(
-            f"""SELECT l.lesson_type, l.lesson, l.tags, l.outcome, l.rounds_used,
-                       l.task_description, l.created_at, p.name as project_name
-                FROM lessons l
-                LEFT JOIN projects p ON l.project_id = p.project_id
-                WHERE l.user_id = ? AND ({where_clause})
-                ORDER BY l.created_at DESC
-                LIMIT ?""",
-            (*params, limit),
-        )
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+            where_clause = " OR ".join(conditions)
+            cursor = await db.execute(
+                f"""SELECT l.lesson_type, l.lesson, l.tags, l.outcome, l.rounds_used,
+                           l.task_description, l.created_at, p.name as project_name
+                    FROM lessons l
+                    LEFT JOIN projects p ON l.project_id = p.project_id
+                    WHERE l.user_id = ? AND ({where_clause})
+                    ORDER BY l.created_at DESC
+                    LIMIT ?""",
+                (*params, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     # ── Activity Log (cross-device sync) ─────────────────────────────────
 
@@ -1753,28 +1761,28 @@ class SessionManager:
 
         Used on startup to offer task resumption.
         """
-        db = await self._get_db()
-        cursor = await db.execute(
-            """SELECT os.*, p.name as project_name, p.project_dir
-               FROM orchestrator_state os
-               JOIN projects p ON os.project_id = p.project_id
-               WHERE os.status = 'running'
-               ORDER BY os.updated_at DESC""",
-        )
-        rows = await cursor.fetchall()
-        result = []
-        for row in rows:
-            entry = dict(row)
-            try:
-                entry["shared_context"] = json.loads(entry.get("shared_context", "[]"))
-            except (json.JSONDecodeError, TypeError):
-                entry["shared_context"] = []
-            try:
-                entry["agent_states"] = json.loads(entry.get("agent_states", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                entry["agent_states"] = {}
-            result.append(entry)
-        return result
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """SELECT os.*, p.name as project_name, p.project_dir
+                   FROM orchestrator_state os
+                   JOIN projects p ON os.project_id = p.project_id
+                   WHERE os.status = 'running'
+                   ORDER BY os.updated_at DESC""",
+            )
+            rows = await cursor.fetchall()
+            result = []
+            for row in rows:
+                entry = dict(row)
+                try:
+                    entry["shared_context"] = json.loads(entry.get("shared_context", "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    entry["shared_context"] = []
+                try:
+                    entry["agent_states"] = json.loads(entry.get("agent_states", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    entry["agent_states"] = {}
+                result.append(entry)
+            return result
 
     # ── Agent Performance Tracking ────────────────────────────────────
 

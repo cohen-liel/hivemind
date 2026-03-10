@@ -64,10 +64,12 @@ export default function ProjectView(): React.ReactElement | null {
   // Controlled input — stays as useState (high-frequency keystrokes)
   const [message, setMessage] = useState('');
 
-  // Tick counter for elapsed time displays (every second)
+  // Tick counter for elapsed time displays — 10s is sufficient for
+  // relative timestamps like "2m ago" and avoids re-rendering the entire
+  // component tree every second (PERF-04).
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const timer = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(timer);
   }, []);
 
