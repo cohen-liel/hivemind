@@ -15,6 +15,13 @@ BG=false
 LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "localhost")
 PORT=${DASHBOARD_PORT:-8080}
 
+# Bind to all interfaces so LAN devices (phone, tablet) can connect.
+# Rate limits are generous for local dev — a page load fires ~7 API calls
+# in parallel; with multiple tabs the default burst-30 is too tight.
+export DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
+export RATE_LIMIT_MAX_REQUESTS="${RATE_LIMIT_MAX_REQUESTS:-300}"
+export RATE_LIMIT_BURST="${RATE_LIMIT_BURST:-60}"
+
 echo ""
 echo "  ⚡ Nexus — Agent OS"
 echo "  ━━━━━━━━━━━━━━━━━━━"
