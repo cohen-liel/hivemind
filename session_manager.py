@@ -371,23 +371,39 @@ class ConnectionPool:
                 conn = await self._pool.get()
 
         try:
-            # Health check — recreate if broken (2s timeout to prevent blocking)
+            # Health check — recreate if broken (2s timeout to prevent blocking).
+            # conn_ok tracks whether `conn` is healthy; only put it back if True.
+            conn_ok = True
             try:
                 await asyncio.wait_for(conn.execute("SELECT 1"), timeout=2.0)
-            except (asyncio.TimeoutError, Exception):
+            except (asyncio.TimeoutError, Exception) as health_exc:
+                conn_ok = False
+                logger.warning("[Pool] Health check failed, replacing connection: %s", health_exc)
                 try:
                     await conn.close()
-                except Exception:
-                    pass
-                async with self._lock:
-                    conn = await self._create_connection()
+                except Exception as close_exc:
+                    logger.debug("[Pool] Failed to close unhealthy connection: %s", close_exc)
+                try:
+                    async with self._lock:
+                        conn = await self._create_connection()
+                    conn_ok = True
+                except Exception as create_exc:
+                    # Replacement also failed — the slot is lost; shrink the counter
+                    # so a future acquire() can try to open a new connection.
+                    async with self._lock:
+                        self._size = max(0, self._size - 1)
+                    logger.error("[Pool] Failed to replace connection, pool shrunk to %d: %s",
+                                 self._size, create_exc)
+                    raise
             yield conn
         finally:
-            if not self._closed:
+            # Only return the connection if it is healthy (conn_ok=True).
+            # A closed/broken connection must never re-enter the pool.
+            if not self._closed and conn_ok:
                 try:
                     await self._pool.put(conn)
-                except Exception:
-                    pass
+                except Exception as put_exc:
+                    logger.warning("[Pool] Failed to return connection to pool: %s", put_exc)
 
     @property
     def size(self) -> int:
@@ -1214,24 +1230,22 @@ class SessionManager:
         db = await self._get_db()
         try:
             await db.execute("SELECT away_mode FROM projects LIMIT 1")
-        except Exception:
+        except aiosqlite.OperationalError:
             await db.execute("ALTER TABLE projects ADD COLUMN away_mode INTEGER DEFAULT 0")
-            await db.commit()
         try:
             await db.execute("SELECT budget_usd FROM projects LIMIT 1")
-        except Exception:
+        except aiosqlite.OperationalError:
             await db.execute("ALTER TABLE projects ADD COLUMN budget_usd REAL DEFAULT 0")
-            await db.commit()
         try:
             await db.execute("SELECT message_count FROM projects LIMIT 1")
-        except Exception:
+        except aiosqlite.OperationalError:
             await db.execute("ALTER TABLE projects ADD COLUMN message_count INTEGER DEFAULT 0")
             # Backfill message_count from existing messages
             await db.execute(
                 "UPDATE projects SET message_count = "
                 "(SELECT COUNT(*) FROM messages WHERE messages.project_id = projects.project_id)"
             )
-            await db.commit()
+        await db.commit()
 
     # --- Migration from JSON ConversationStore ---
 

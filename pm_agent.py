@@ -21,6 +21,7 @@ It only creates the structured execution plan (TaskGraph).
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -285,8 +286,8 @@ def _build_pm_prompt(
     memory_snapshot: str = "",
 ) -> str:
     parts = [
-        f"<project_id>{project_id}</project_id>",
-        f"<user_request>{user_message}</user_request>",
+        f"<project_id>{html.escape(project_id)}</project_id>",
+        f"<user_request>{html.escape(user_message)}</user_request>",
     ]
     if memory_snapshot:
         parts.append(
@@ -344,6 +345,10 @@ def _parse_task_graph(
 
     for candidate in candidates:
         try:
+            # Guard against oversized JSON that could exhaust memory
+            if len(candidate) > 500_000:
+                logger.warning("[PM] Skipping oversized JSON candidate (%d bytes)", len(candidate))
+                continue
             data = json.loads(candidate)
             data.setdefault("project_id", project_id)
             data.setdefault("user_message", user_message)

@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # ── Global mutable state ──────────────────────────────────────────────
 
 _state_lock = asyncio.Lock()
+_init_lock = asyncio.Lock()   # separate lock so initialize() doesn't deadlock get_manager()
+_initialized = False
 
 # user_id -> {project_id -> OrchestratorManager}
 active_sessions: dict[int, dict[str, OrchestratorManager]] = {}
@@ -48,20 +50,26 @@ async def initialize() -> None:
     Raises:
         RuntimeError: If SessionManager.initialize() fails (DB issues).
     """
-    global sdk_client, session_mgr
+    global sdk_client, session_mgr, _initialized
 
-    if sdk_client is None:
-        sdk_client = ClaudeSDKManager()
-        logger.info("SDK client initialized")
+    async with _init_lock:
+        if _initialized:
+            return
 
-    if session_mgr is None:
-        session_mgr = SessionManager()
-        await session_mgr.initialize()
-        logger.info("Session manager initialized")
+        if sdk_client is None:
+            sdk_client = ClaudeSDKManager()
+            logger.info("SDK client initialized")
 
-    # Scan available skills
-    skills = scan_skills()
-    logger.info("Loaded %d skills: %s", len(skills), list(skills.keys()))
+        if session_mgr is None:
+            session_mgr = SessionManager()
+            await session_mgr.initialize()
+            logger.info("Session manager initialized")
+
+        # Scan available skills
+        skills = scan_skills()
+        logger.info("Loaded %d skills: %s", len(skills), list(skills.keys()))
+
+        _initialized = True
 
 
 # ── Helper functions ──────────────────────────────────────────────────
@@ -154,6 +162,9 @@ async def unregister_manager(user_id: int, project_id: str) -> None:
                 del active_sessions[user_id]
             if removed is not None:
                 logger.debug("Unregistered manager for user=%d project=%s", user_id, project_id)
+        # Cascade: clear current_project pointer if it pointed at removed project
+        if current_project.get(user_id) == project_id:
+            del current_project[user_id]
 
 
 def is_valid_project_name(name: str) -> bool:

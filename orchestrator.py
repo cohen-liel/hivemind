@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -169,7 +170,7 @@ class OrchestratorManager:
         self.on_event = on_event
         self.multi_agent = multi_agent
 
-        self.conversation_log: list[Message] = []
+        self.conversation_log: collections.deque[Message] = collections.deque(maxlen=2000)
         self._agents_used: set[str] = set()  # All agent roles that have run — persists even if log is trimmed
         self.is_running = False
         self.is_paused = False
@@ -280,7 +281,7 @@ class OrchestratorManager:
                     "timestamp": m.timestamp,
                     "cost_usd": m.cost_usd,
                 }
-                for m in self.conversation_log[-50:]  # last 50 messages
+                for m in list(self.conversation_log)[-50:]  # last 50 messages
             ],
             "completed_rounds": self._completed_rounds[-30:],
             "agents_used": list(self._agents_used),
@@ -771,8 +772,8 @@ class OrchestratorManager:
                     if len(content) > 3000:
                         truncated += "\n... (manifest truncated — read the full file for details)"
                     return truncated
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
         return ""
 
     def _estimate_task_complexity(self, task: str) -> str:
@@ -880,8 +881,8 @@ class OrchestratorManager:
                             "No file changes detected and no successful agent rounds recorded. "
                             "The task requires actual code changes. Delegate the implementation work."
                         )
-            except Exception:
-                pass  # Don't block completion on detection failure
+            except Exception as _exc:
+                logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)  # Don't block completion on detection failure
 
         # For any non-trivial task, require at least one writer + one reviewer to have run
         _reviewer_roles = {"reviewer", "security_auditor", "ux_critic"}
@@ -1763,8 +1764,8 @@ class OrchestratorManager:
             if manifest_path.exists():
                 try:
                     return manifest_path.read_text(encoding="utf-8")[:4000]
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
             return ""
         return await asyncio.to_thread(_read)
 
@@ -1792,8 +1793,8 @@ class OrchestratorManager:
                             else:
                                 data[key] = data[key][:10]
                     return _json.dumps(data)[:8000]
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
             return ""
         return await asyncio.to_thread(_read)
 
@@ -1816,8 +1817,8 @@ class OrchestratorManager:
                     if len(lines) >= max_files:
                         lines.append(f"... (truncated at {max_files} files)")
                         break
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
         return "\n".join(lines)
 
     # --- Core orchestration loop (legacy) ---
@@ -2251,8 +2252,8 @@ class OrchestratorManager:
                     try:
                         if self.session_mgr:
                             await self.session_mgr.clear_orchestrator_state(self.project_id)
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
 
                     await self._send_final(
                         await self._build_final_summary(user_message, start_time)
@@ -2265,8 +2266,8 @@ class OrchestratorManager:
                     project_budget = await self.session_mgr.get_project_budget(self.project_id)
                     if project_budget > 0:
                         effective_budget = min(effective_budget, project_budget)
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
                 self._effective_budget = effective_budget  # Store for sub-agent budget checks
 
                 if self.total_cost_usd >= effective_budget:
@@ -2560,8 +2561,8 @@ class OrchestratorManager:
                             cost_usd=self.total_cost_usd, turns_used=self.turn_count,
                             summary="Task was cancelled",
                         )
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
                 await self._send_final(
                     f"🛑 *{self.project_name}* — Task cancelled.\n"
                     f"📊 Turns: {self.turn_count} | 💰 ${self.total_cost_usd:.4f}"
@@ -2603,8 +2604,8 @@ class OrchestratorManager:
                         cost_usd=self.total_cost_usd, turns_used=self.turn_count,
                         summary=f"Error: {e}",
                     )
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
 
             # ── Reflection on failed task ──
             try:
@@ -2615,8 +2616,8 @@ class OrchestratorManager:
                     await self._store_lessons(
                         task=user_message, reflection=reflection, outcome="failure"
                     )
-            except Exception:
-                pass  # Don't let reflection failure mask the original error
+            except Exception as _exc:
+                logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)  # Don't let reflection failure mask the original error
         else:
             # Loop exited normally (not via exception).
             # If we hit the safety limit without a clean exit, send a final summary.
@@ -2628,8 +2629,8 @@ class OrchestratorManager:
                             cost_usd=self.total_cost_usd, turns_used=self.turn_count,
                             summary="Stopped (loop limit reached)",
                         )
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
 
                 # ── Reflection on incomplete task ──
                 try:
@@ -2653,8 +2654,8 @@ class OrchestratorManager:
             try:
                 if self.session_mgr:
                     await self._checkpoint_state(status="completed")
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
             if not self.is_paused:
                 self.is_running = False
 
@@ -3315,8 +3316,8 @@ class OrchestratorManager:
                 stat_out = await _git_acc("diff", "--stat", "HEAD")
                 if stat_out.strip():
                     git_diff_snippet = stat_out.strip()[:300]
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
 
         # Fallback: parse text for file operations if git didn't find anything
         files_from_text = []
@@ -3818,10 +3819,6 @@ class OrchestratorManager:
                 cost_usd=response.cost_usd,
             )
         )
-        # Cap log at 2000 entries — drop oldest to prevent memory blowup in EPIC 50-round tasks.
-        # Agent participation is tracked separately in _agents_used so it survives trimming.
-        if len(self.conversation_log) > 2000:
-            self.conversation_log = self.conversation_log[-2000:]
         # Persist to SQLite in background (safe: tracked reference, errors logged)
         self._create_background_task(
             self.session_mgr.add_message(
@@ -4492,8 +4489,8 @@ class OrchestratorManager:
                 scripts = pkg.get("scripts", {})
                 if "test" in scripts and scripts["test"] != 'echo "Error: no test specified" && exit 1':
                     test_commands.append(["npm", "test", "--", "--watchAll=false"])
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
 
         if not test_commands:
             return None
@@ -4539,8 +4536,8 @@ class OrchestratorManager:
         if todo_path.exists():
             try:
                 return todo_path.read_text(encoding="utf-8").strip()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
         return ""
 
     def _write_todo(self, content: str):
@@ -4681,8 +4678,8 @@ class OrchestratorManager:
                         recent = "\n".join(lines[keep_from:])
                         content = f"{header}\n\n... (older lessons trimmed)\n\n{recent}"
                 return content
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
         return ""
 
     def _write_experience(self, content: str):

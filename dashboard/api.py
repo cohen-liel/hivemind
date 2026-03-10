@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from dashboard.events import event_bus
 import state
@@ -89,10 +89,10 @@ class TalkAgentRequest(BaseModel):
 
 
 class CreateProjectRequest(BaseModel):
-    name: str
-    directory: str
-    agents_count: int = 2
-    description: str = ""
+    name: str = Field(max_length=200)
+    directory: str = Field(max_length=1000)
+    agents_count: int = Field(default=2, ge=1, le=20)
+    description: str = Field(default="", max_length=2000)
 
 
 class UpdateProjectRequest(BaseModel):
@@ -286,24 +286,53 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Agent Dashboard", docs_url="/api/docs")
 
+    # Per-project locks to prevent duplicate manager creation under concurrent requests
+    _manager_creation_locks: dict[str, asyncio.Lock] = {}
+    _manager_creation_locks_lock = asyncio.Lock()
+
+    async def _get_or_create_manager_lock(project_id: str) -> asyncio.Lock:
+        async with _manager_creation_locks_lock:
+            if project_id not in _manager_creation_locks:
+                _manager_creation_locks[project_id] = asyncio.Lock()
+            return _manager_creation_locks[project_id]
+
     # CORS — configurable via CORS_ORIGINS env var
-    from config import CORS_ORIGINS
+    from config import CORS_ORIGINS, AUTH_ENABLED
+    dashboard_host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
     if "*" in CORS_ORIGINS:
         logger.warning(
             "CORS is configured with wildcard origin (*). "
             "Set CORS_ORIGINS env var to restrict access in production."
         )
+    # Warn loudly when binding on all interfaces without authentication
+    if dashboard_host not in ("127.0.0.1", "localhost") and not AUTH_ENABLED:
+        logger.warning(
+            "⚠️  SECURITY WARNING: Server is bound to %s (all interfaces) but "
+            "DASHBOARD_API_KEY is not set. Any host on the network can fully "
+            "control agents, spend budget, and browse project files. "
+            "Set DASHBOARD_API_KEY in your .env to enable authentication.",
+            dashboard_host,
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Request-ID", "Authorization"],
     )
+
+    # --- Security headers middleware ---
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-XSS-Protection", "0")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
 
     # --- Optional API key middleware ---
     DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
-    from config import AUTH_ENABLED
     if DASHBOARD_API_KEY:
         @app.middleware("http")
         async def check_api_key(request: Request, call_next):
@@ -802,6 +831,8 @@ def create_app() -> FastAPI:
     @app.get("/api/projects/{project_id}/messages")
     async def get_messages(project_id: str, limit: int = 50, offset: int = 0):
         """Conversation history (paginated, from DB)."""
+        limit = max(1, min(limit, 500))   # clamp: 1–500
+        offset = max(0, offset)
         if not state.session_mgr:
             return {"messages": [], "total": 0}
         messages, total = await state.session_mgr.get_messages_paginated(project_id, limit, offset)
@@ -845,9 +876,8 @@ def create_app() -> FastAPI:
                 "diff": diff_out[:50000],
             }
         except Exception as e:
-            return {"error": str(e)}
-
-    @app.get("/api/projects/{project_id}/tasks")
+            logger.error("Git operation failed for %s: %s", project_id, e, exc_info=True)
+            return {"error": "An internal error occurred. Check server logs for details."}
     async def get_tasks(project_id: str):
         """Task history from DB."""
         if not state.session_mgr:
@@ -1165,6 +1195,16 @@ def create_app() -> FastAPI:
                 status_code=400,
             )
 
+        # Clamp numeric settings to sane bounds
+        NUMERIC_BOUNDS = {
+            "max_budget_usd": (0.1, 500.0),
+            "max_turns_per_cycle": (1, 500),
+            "max_task_budget_usd": (0.1, 100.0),
+        }
+        for key, (lo, hi) in NUMERIC_BOUNDS.items():
+            if key in data and isinstance(data[key], (int, float)):
+                data[key] = max(lo, min(float(data[key]), hi))
+
         overrides_path = Path("data/settings_overrides.json")
         overrides_path.parent.mkdir(parents=True, exist_ok=True)
         # Merge with existing overrides
@@ -1246,19 +1286,24 @@ def create_app() -> FastAPI:
             # Try to activate from DB first
             logger.info(f"[{project_id}] No active manager, trying DB lookup...")
             if state.session_mgr:
-                db_project = await state.session_mgr.load_project(project_id)
-                if db_project:
-                    user_id = db_project.get("user_id", 0)
-                    manager = _create_web_manager(
-                        project_id=project_id,
-                        project_name=db_project["name"],
-                        project_dir=db_project.get("project_dir", ""),
-                        user_id=user_id,
-                        agents_count=2,
-                    )
-                    if manager:
-                        await state.register_manager(user_id, project_id, manager)
-                        logger.info(f"[{project_id}] Manager created from DB")
+                _proj_lock = await _get_or_create_manager_lock(project_id)
+                async with _proj_lock:
+                    # Re-check under the lock to avoid duplicate creation
+                    manager, _ = _find_manager(project_id)
+                    if not manager:
+                        db_project = await state.session_mgr.load_project(project_id)
+                        if db_project:
+                            user_id = db_project.get("user_id", 0)
+                            manager = _create_web_manager(
+                                project_id=project_id,
+                                project_name=db_project["name"],
+                                project_dir=db_project.get("project_dir", ""),
+                                user_id=user_id,
+                                agents_count=2,
+                            )
+                            if manager:
+                                await state.register_manager(user_id, project_id, manager)
+                                logger.info(f"[{project_id}] Manager created from DB")
 
         if not manager:
             logger.error(f"[{project_id}] No manager found — cannot send message")
@@ -1490,7 +1535,7 @@ def create_app() -> FastAPI:
                     break
         except Exception as e:
             logger.error("File tree error for %s: %s", project_id, e, exc_info=True)
-            return {"error": str(e)}
+            return {"error": "An internal error occurred. Check server logs for details."}
 
         return {"tree": tree, "project_dir": project_dir}
 
@@ -1532,7 +1577,8 @@ def create_app() -> FastAPI:
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
-            return {"error": str(e)}
+            logger.error("File read failed for %s path=%s: %s", project_id, path, e, exc_info=True)
+            return {"error": "An internal error occurred. Check server logs for details."}
 
         return {"content": content, "path": path, "size": size}
 
@@ -1540,11 +1586,9 @@ def create_app() -> FastAPI:
 
     @app.get("/api/projects/{project_id}/activity")
     async def get_activity(project_id: str, since: int = 0, limit: int = 200):
-        """Get activity events after a given sequence_id.
-
-        Used by clients on reconnect to catch up on missed events.
-        First tries the fast in-memory ring buffer, falls back to DB.
-        """
+        """Get activity events after a given sequence_id."""
+        since = max(0, since)
+        limit = max(1, min(limit, 1000))  # clamp: 1–1000
         # Fast path: check in-memory ring buffer
         buffered = event_bus.get_buffered_events(project_id, since_sequence=since)
         if buffered:
@@ -1597,6 +1641,7 @@ def create_app() -> FastAPI:
     @app.get("/api/agent-stats/{agent_role}/recent")
     async def get_agent_recent(agent_role: str, limit: int = 10):
         """Get recent performance entries for a specific agent."""
+        limit = max(1, min(limit, 200))  # clamp: 1–200
         if not state.session_mgr:
             return {"entries": []}
         entries = await state.session_mgr.get_agent_recent_performance(agent_role, limit)
@@ -1605,6 +1650,7 @@ def create_app() -> FastAPI:
     @app.get("/api/cost-breakdown")
     async def get_cost_breakdown(project_id: str | None = None, days: int = 30):
         """Get cost breakdown by agent and by day."""
+        days = max(1, min(days, 365))  # clamp: 1–365 days
         if not state.session_mgr:
             return {"by_agent": [], "by_day": [], "total_cost": 0, "total_runs": 0}
         return await state.session_mgr.get_cost_breakdown(project_id, days)
@@ -1813,6 +1859,11 @@ def create_app() -> FastAPI:
                         # Client requests missed events since a sequence_id
                         project_id = data.get("project_id", "")
                         since_seq = data.get("since_sequence", 0)
+                        # Validate inputs before use
+                        if not isinstance(project_id, str) or not _valid_project_id(project_id):
+                            continue
+                        if not isinstance(since_seq, int) or since_seq < 0:
+                            since_seq = 0
                         if project_id:
                             # Try in-memory first (fast)
                             events = event_bus.get_buffered_events(project_id, since_seq)

@@ -153,7 +153,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const addToast = useCallback((toast: ToastInput) => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setToasts(prev => [...prev.slice(-4), { ...toast, id }]); // max 5 toasts
+    setToasts(prev => [...prev, { ...toast, id }].slice(-5));
   }, []);
 
   const removeToast = useCallback((id: string) => {

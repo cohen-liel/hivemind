@@ -94,7 +94,7 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
       await onSend(message.trim());  // Always routes through Orchestrator
       setMessage('');
     } finally {
-      setSending(false);
+      setTimeout(() => setSending(false), 1000);
     }
   };
 

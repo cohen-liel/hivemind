@@ -1,35 +1,14 @@
 {
-  "timestamp": 1773087611.993442,
-  "timestamp_human": "2026-03-09 22:20:11",
+  "timestamp": 1773123341.0728,
+  "timestamp_human": "2026-03-10 08:15:41",
   "projects": {
     "web-claude-bot": {
       "status": "idle",
-      "turn_count": 1,
+      "turn_count": 0,
       "total_cost_usd": 0.0,
       "current_agent": null,
       "pending_messages": 0,
-      "agent_states": {
-        "orchestrator": {
-          "state": "done",
-          "task": "completed",
-          "current_tool": ""
-        },
-        "frontend_developer": {
-          "state": "done",
-          "task": "Polish the Dashboard.tsx page and global design system: upgrade project cards with better visual hierarchy showing statu",
-          "current_tool": ""
-        },
-        "database_expert": {
-          "state": "error",
-          "task": "Optimize session_manager.py database queries: add missing indexes for frequently queried columns (project_id, created_at",
-          "current_tool": ""
-        },
-        "researcher": {
-          "state": "done",
-          "task": "Research and document best practices for multi-agent prompt engineering (XML layering, few-shot examples, context window",
-          "current_tool": ""
-        }
-      }
+      "agent_states": {}
     },
     "family-finance": {
       "status": "idle",

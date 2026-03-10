@@ -263,12 +263,12 @@ class TaskOutput(BaseModel):
     status: TaskStatus
     summary: str = Field(..., description="2-3 sentences describing what was done")
     artifacts: list[str] = Field(default_factory=list, description="Files created or modified")
-    issues: list[str] = Field(default_factory=list, description="Problems or concerns found")
-    blockers: list[str] = Field(default_factory=list, description="Things preventing completion")
-    followups: list[str] = Field(default_factory=list, description="Recommended follow-up tasks")
+    issues: list[str] = Field(default_factory=list, max_length=50, description="Problems or concerns found")
+    blockers: list[str] = Field(default_factory=list, max_length=50, description="Things preventing completion")
+    followups: list[str] = Field(default_factory=list, max_length=50, description="Recommended follow-up tasks")
     cost_usd: float = Field(default=0.0, ge=0.0)
     turns_used: int = Field(default=0, ge=0)
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Agent's confidence in its output (0-1)")
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="Agent's confidence in its output (0-1). Defaults to 0.5 — must be explicitly set by the agent or extract_task_output().")
     # v2: Structured artifacts (max 20 per task to prevent memory issues)
     structured_artifacts: list[Artifact] = Field(
         default_factory=list,
@@ -928,6 +928,11 @@ def validate_artifact_contracts(graph: TaskGraph) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+# Pre-compiled patterns used in extract_task_output() — avoids recompiling on every call
+_FILE_PATH_RE = re.compile(
+    r'[\w./-]+\.(?:py|ts|tsx|js|jsx|json|md|yaml|yml|css|html|sql|sh|env|toml|cfg)',
+)
+_CODE_BLOCK_RE = re.compile(r'```(?:python|typescript|javascript|bash|sql|\w+)?\n')
 
 
 def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
@@ -1001,10 +1006,7 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
         score += 0.2
 
     # Signal 2: File paths mentioned (strong indicator of real work)
-    file_paths = re.findall(
-        r'[\w./-]+\.(?:py|ts|tsx|js|jsx|json|md|yaml|yml|css|html|sql|sh|env|toml|cfg)',
-        raw_text,
-    )
+    file_paths = _FILE_PATH_RE.findall(raw_text)
     unique_files = list(dict.fromkeys(file_paths))[:30]
     if len(unique_files) >= 5:
         score += 0.3
@@ -1057,7 +1059,7 @@ def extract_task_output(raw_text: str, task_id: str) -> TaskOutput:
         signals.append(f"text_volume({len(raw_text)})")
 
     # Signal 7: Code blocks (agent wrote or showed code)
-    code_blocks = re.findall(r'```(?:python|typescript|javascript|bash|sql|\w+)?\n', raw_text)
+    code_blocks = _CODE_BLOCK_RE.findall(raw_text)
     if len(code_blocks) >= 2:
         score += 0.2
         signals.append(f"code_blocks({len(code_blocks)})")

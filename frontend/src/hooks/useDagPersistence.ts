@@ -45,17 +45,20 @@ export function useDagPersistence(
   // Persist to localStorage on changes
   useEffect(() => {
     if (!projectId || !dagGraph) return;
+    const key = `nexus_dag_${projectId}`;
+    const value = JSON.stringify({
+      graph: dagGraph,
+      statuses: dagTaskStatus,
+      savedAt: Date.now(),
+    });
     try {
-      localStorage.setItem(
-        `nexus_dag_${projectId}`,
-        JSON.stringify({
-          graph: dagGraph,
-          statuses: dagTaskStatus,
-          savedAt: Date.now(),
-        }),
-      );
-    } catch {
-      /* quota exceeded — ignore */
+      localStorage.setItem(key, value);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+        console.warn('[DagPersistence] localStorage quota exceeded, DAG state not persisted');
+      } else {
+        throw e;
+      }
     }
   }, [projectId, dagGraph, dagTaskStatus]);
 }

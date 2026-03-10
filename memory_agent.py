@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -336,7 +337,9 @@ def _heuristic_update(
     snapshot.file_map = all_files
     snapshot.api_surface = _dedupe_endpoints(all_api_endpoints)
     snapshot.db_tables = list(dict.fromkeys(all_tables))
-    snapshot.key_decisions = snapshot.key_decisions + new_decisions
+    # Bound key_decisions to last 100 entries — prevents unbounded growth across sessions
+    combined = snapshot.key_decisions + new_decisions
+    snapshot.key_decisions = combined[-100:] if len(combined) > 100 else combined
     snapshot.known_issues = list(dict.fromkeys(snapshot.known_issues + new_issues))
     snapshot.cumulative_cost_usd = (
         snapshot.cumulative_cost_usd + sum(o.cost_usd for o in outputs)
@@ -449,12 +452,26 @@ def _load_existing_snapshot(nexus_dir: Path, project_id: str) -> MemorySnapshot 
 
 
 def _save_snapshot(nexus_dir: Path, snapshot: MemorySnapshot) -> None:
-    """Save MemorySnapshot to disk."""
+    """Save MemorySnapshot to disk atomically (write-then-rename)."""
     snapshot_path = nexus_dir / "memory_snapshot.json"
-    snapshot_path.write_text(
-        snapshot.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
+    _atomic_write(snapshot_path, snapshot.model_dump_json(indent=2))
+
+
+def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write *content* to *path* atomically using a sibling .tmp file.
+
+    Prevents partial reads on concurrent access — os.replace() is atomic
+    on POSIX when src and dst are on the same filesystem (guaranteed here
+    because both are under the same project directory).
+    """
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(content, encoding=encoding)
+        os.replace(tmp_path, path)
+    except Exception:
+        # Best-effort cleanup of the .tmp file on failure
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _write_manifest(nexus_dir: Path, snapshot: MemorySnapshot, graph: TaskGraph) -> None:
@@ -509,7 +526,7 @@ def _write_manifest(nexus_dir: Path, snapshot: MemorySnapshot, graph: TaskGraph)
         lines.append("")
 
     manifest_path = nexus_dir / "PROJECT_MANIFEST.md"
-    manifest_path.write_text("\n".join(lines), encoding="utf-8")
+    _atomic_write(manifest_path, "\n".join(lines))
 
 
 def _write_artifact_index(nexus_dir: Path, outputs: list[TaskOutput]) -> None:
@@ -530,10 +547,7 @@ def _write_artifact_index(nexus_dir: Path, outputs: list[TaskOutput]) -> None:
 
     if index:
         index_path = artifacts_dir / "artifact_index.json"
-        index_path.write_text(
-            json.dumps(index, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write(index_path, json.dumps(index, indent=2))
 
 
 MAX_DECISION_LOG_BYTES = 500_000  # 500KB max before rotation
@@ -551,16 +565,14 @@ def _append_decision_log(
     if log_path.exists() and log_path.stat().st_size > MAX_DECISION_LOG_BYTES:
         archive_path = nexus_dir / "decision_log.old.md"
         try:
-            # Keep only the last half of the file
             content = log_path.read_text(encoding="utf-8")
             half = len(content) // 2
-            # Find the next section boundary
             cut_point = content.find("\n## ", half)
             if cut_point > 0:
-                archive_path.write_text(content[:cut_point], encoding="utf-8")
-                log_path.write_text(content[cut_point:], encoding="utf-8")
-        except Exception:
-            pass  # Non-fatal: just keep appending
+                _atomic_write(archive_path, content[:cut_point])
+                _atomic_write(log_path, content[cut_point:])
+        except Exception as exc:
+            logger.warning("[Memory] Decision log rotation failed (non-fatal): %s", exc)
 
     lines = [
         f"\n## {time.strftime('%Y-%m-%d %H:%M')} — {graph.vision[:80]}",

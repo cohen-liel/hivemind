@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getProjects } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
@@ -137,8 +137,8 @@ export default function Dashboard() {
 
   const { connected } = useWSSubscribe(handleWSEvent);
 
-  // Filter projects
-  const filteredProjects = projects.filter(p => {
+  // Memoised derivations — only recompute when projects/filters actually change
+  const filteredProjects = useMemo(() => projects.filter(p => {
     if (statusFilter !== 'all' && p.status !== statusFilter) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -146,9 +146,9 @@ export default function Dashboard() {
         (p.description || '').toLowerCase().includes(q);
     }
     return true;
-  });
+  }), [projects, statusFilter, searchQuery]);
 
-  const statusConfig = (status: string): {
+  const statusConfig = useMemo(() => (status: string): {
     color: string;
     bg: string;
     glow: string;
@@ -194,10 +194,10 @@ export default function Dashboard() {
           cardClass: '',
         };
     }
-  };
+  }, []);  // statusConfig has no external deps — stable reference
 
-  const runningCount = projects.filter(p => p.status === 'running').length;
-  const totalCost = projects.reduce((sum, p) => sum + (p.total_cost_usd || 0), 0);
+  const runningCount = useMemo(() => projects.filter(p => p.status === 'running').length, [projects]);
+  const totalCost = useMemo(() => projects.reduce((sum, p) => sum + (p.total_cost_usd || 0), 0), [projects]);
 
   // Animated stat values
   const animatedCost = useAnimatedNumber(totalCost, 700, totalCost < 1 ? 3 : 2);

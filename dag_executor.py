@@ -306,7 +306,7 @@ async def execute_graph(
 
                 # Validate required artifacts
                 if output.is_successful() and task.required_artifacts:
-                    _validate_artifacts(task, output)
+                    _check_required_artifact_types(task, output)
 
         # Auto-commit after each round
         try:
@@ -359,6 +359,7 @@ class _ExecutionContext:
         self.remediation_count: int = 0
         self.healing_history: list[dict[str, str]] = []
         self.task_counter: int = len(graph.tasks)
+        self.graph_lock: asyncio.Lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -458,8 +459,8 @@ async def _run_single_task(
     if ctx.on_task_start:
         try:
             await ctx.on_task_start(task)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("[DAG] on_task_start callback failed for %s: %s", task.id, exc)
 
     # Gather context from upstream tasks (now with structured artifacts)
     context_outputs = {
@@ -508,14 +509,14 @@ async def _run_single_task(
         async def _on_stream(text):
             try:
                 await ctx.on_agent_stream(role_name, text, task.id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[DAG] on_agent_stream callback error (task=%s): %s", task.id, exc)
     if ctx.on_agent_tool_use:
         async def _on_tool_use(tool_name, tool_info="", tool_input=None):
             try:
                 await ctx.on_agent_tool_use(role_name, tool_name, tool_info, task.id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[DAG] on_agent_tool_use callback error (task=%s): %s", task.id, exc)
 
     # ── Two-Phase Execution ──
     # Phase 1: WORK — agent does the actual task with full tools.
@@ -726,18 +727,25 @@ def _validate_artifacts(output: TaskOutput, project_dir: str) -> TaskOutput:
     if not output.artifacts:
         return output
 
-    project_path = Path(project_dir)
+    project_path = Path(project_dir).resolve()
     verified: list[str] = []
     phantom: list[str] = []
 
     for artifact_path in output.artifacts:
-        # Try multiple resolution strategies
-        candidates = [
-            Path(artifact_path),                    # Absolute path
-            project_path / artifact_path,            # Relative to project
-            project_path / artifact_path.lstrip("/"),  # Strip leading /
-        ]
-        found = any(c.exists() for c in candidates)
+        # Use resolve() + is_relative_to() to prevent path traversal
+        found = False
+        for candidate in [
+            project_path / artifact_path.lstrip("/"),   # relative to project (primary)
+            Path(artifact_path),                         # absolute path (agent may give abs)
+        ]:
+            try:
+                resolved = candidate.resolve()
+                # Only accept paths inside the project directory
+                if resolved.is_relative_to(project_path) and resolved.exists():
+                    found = True
+                    break
+            except (ValueError, OSError):
+                continue
         if found:
             verified.append(artifact_path)
         else:
@@ -953,22 +961,23 @@ async def _create_remediation(
     ctx: _ExecutionContext,
 ) -> None:
     """Create and inject a remediation task into the graph."""
-    ctx.task_counter += 1
-    remediation = create_remediation_task(
-        failed_task=failed_task,
-        failed_output=failed_output,
-        task_counter=ctx.task_counter,
-    )
-
-    if remediation is None:
-        logger.warning(
-            f"[DAG] No remediation strategy for {failed_task.id} "
-            f"({failed_output.failure_category})"
+    async with ctx.graph_lock:
+        ctx.task_counter += 1
+        remediation = create_remediation_task(
+            failed_task=failed_task,
+            failed_output=failed_output,
+            task_counter=ctx.task_counter,
         )
-        return
 
-    # Inject into the live graph
-    ctx.graph.add_task(remediation)
+        if remediation is None:
+            logger.warning(
+                f"[DAG] No remediation strategy for {failed_task.id} "
+                f"({failed_output.failure_category})"
+            )
+            return
+
+        # Inject into the live graph
+        ctx.graph.add_task(remediation)
     ctx.remediation_count += 1
 
     healing_entry = {
@@ -1027,8 +1036,8 @@ async def _try_self_heal(ctx: _ExecutionContext) -> bool:
 # Artifact validation
 # ---------------------------------------------------------------------------
 
-def _validate_artifacts(task: TaskInput, output: TaskOutput) -> None:
-    """Warn if an agent didn't produce its required artifacts."""
+def _check_required_artifact_types(task: TaskInput, output: TaskOutput) -> None:
+    """Warn if an agent didn't produce its required artifact *types*."""
     if not task.required_artifacts:
         return
 

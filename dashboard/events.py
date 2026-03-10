@@ -11,7 +11,7 @@ Enhanced with:
 
 from __future__ import annotations
 
-import asyncio
+import itertools
 import collections
 import json
 import logging
@@ -186,8 +186,10 @@ class EventBus:
         self._subscribers: list[_TrackedQueue] = []
         self._lock = asyncio.Lock()
 
-        # Per-project sequence counters (project_id -> next_seq)
-        self._sequence_counters: dict[str, int] = {}
+        # Per-project sequence counters — itertools.count gives lock-free atomic increments
+        # (next() on a C-level count object is GIL-protected and never returns duplicates).
+        self._sequence_counters: dict[str, itertools.count[int]] = {}
+        self._sequence_latest: dict[str, int] = {}
 
         # Per-project ring buffers for fast in-memory replay
         self._ring_buffers: dict[str, collections.deque] = {}
@@ -466,9 +468,16 @@ class EventBus:
             ]
 
     def _next_sequence(self, project_id: str) -> int:
-        """Get and increment the sequence counter for a project."""
-        seq = self._sequence_counters.get(project_id, 0) + 1
-        self._sequence_counters[project_id] = seq
+        """Get and increment the sequence counter for a project.
+
+        Uses itertools.count which is GIL-protected — next() is atomic and
+        guaranteed to never return the same value twice, even under concurrent
+        asyncio tasks.
+        """
+        if project_id not in self._sequence_counters:
+            self._sequence_counters[project_id] = itertools.count(1)
+        seq = next(self._sequence_counters[project_id])
+        self._sequence_latest[project_id] = seq
         return seq
 
     def _buffer_event(self, project_id: str, event: dict):
@@ -476,6 +485,20 @@ class EventBus:
         if project_id not in self._ring_buffers:
             self._ring_buffers[project_id] = collections.deque(maxlen=_RING_BUFFER_SIZE)
         self._ring_buffers[project_id].append(event)
+
+        # Evict excess project buffers to prevent unbounded dict growth.
+        # When more than 100 projects have accumulated, remove the one whose
+        # ring buffer has the smallest (oldest) last sequence_id.
+        if len(self._ring_buffers) > 100:
+            oldest_pid = min(
+                self._ring_buffers,
+                key=lambda pid: (
+                    self._ring_buffers[pid][-1].get("sequence_id", 0)
+                    if self._ring_buffers[pid]
+                    else 0
+                ),
+            )
+            del self._ring_buffers[oldest_pid]
 
     async def publish(self, event: dict):
         """Broadcast an event dict to all subscribers and persist to DB.
@@ -629,7 +652,7 @@ class EventBus:
 
     def get_latest_sequence(self, project_id: str) -> int:
         """Get the latest sequence_id for a project (0 if no events)."""
-        return self._sequence_counters.get(project_id, 0)
+        return self._sequence_latest.get(project_id, 0)
 
     async def _db_writer_loop(self):
         """Background task that batches and writes events to DB.

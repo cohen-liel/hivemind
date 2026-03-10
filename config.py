@@ -55,7 +55,7 @@ def _get(key: str, default: str, type_fn: Callable[[str], T] = str) -> T:
     if key.lower() in _OVERRIDES:
         raw = str(_OVERRIDES[key.lower()])
     else:
-        raw = os.getenv(key, default)
+        raw = os.getenv(key.upper(), default)
     try:
         return type_fn(raw)
     except (ValueError, TypeError) as exc:
@@ -73,8 +73,10 @@ CLAUDE_CLI_PATH: str = os.getenv("CLAUDE_CLI_PATH", "claude")
 PROJECTS_BASE_DIR = Path(os.getenv("CLAUDE_PROJECTS_DIR", "~/Downloads")).expanduser()
 try:
     PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
-except OSError:
-    pass  # Directory may already exist with restricted permissions
+except OSError as e:
+    if not PROJECTS_BASE_DIR.exists():
+        raise RuntimeError(f"Cannot create PROJECTS_BASE_DIR {PROJECTS_BASE_DIR}: {e}") from e
+    # Already exists (race with another process) — safe to continue
 
 # Agent limits
 MAX_TURNS_PER_CYCLE: int = _get("MAX_TURNS_PER_CYCLE", "200", int)
@@ -170,8 +172,11 @@ MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "4000", int)
 # Request body size limit (bytes)
 MAX_REQUEST_BODY_SIZE: int = _get("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024), int)  # 1MB default
 
-# Authentication — auth is enabled when DASHBOARD_API_KEY is set
-AUTH_ENABLED: bool = bool(os.getenv("DASHBOARD_API_KEY", ""))
+# Authentication — auth is enabled only when DASHBOARD_API_KEY is a non-empty,
+# non-falsy string.  Explicitly setting it to "0", "false", or "no" disables auth
+# even if the env var is technically set.
+_raw_api_key = os.getenv("DASHBOARD_API_KEY", "")
+AUTH_ENABLED: bool = bool(_raw_api_key) and _raw_api_key.lower() not in ("0", "false", "no", "off")
 
 
 # ── Agent timeout helper ─────────────────────────────────────────────

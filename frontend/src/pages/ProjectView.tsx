@@ -72,7 +72,7 @@ export default function ProjectView(): React.ReactElement | null {
   }, []);
 
   // ── Custom hooks ──
-  useSmartHeartbeat(now, agentStates, dispatch);
+  useSmartHeartbeat(agentStates, dispatch);
   useDagPersistence(id, dagGraph, dagTaskStatus, dispatch);
   const agentMetrics = useAgentMetrics(activities);
 
