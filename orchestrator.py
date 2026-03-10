@@ -224,6 +224,17 @@ class OrchestratorManager:
         # Track which agents have already had a silence alert emitted (avoids spamming)
         self._silence_alerted: set[str] = set()
 
+        # Rate limiting: minimum gap between orchestrator API calls
+        self._last_orch_call_time: float = 0.0
+        # Budget warning sent flag (prevents duplicate warnings)
+        self._budget_warning_sent: bool = False
+        # Orchestrator error retry counter
+        self._orch_error_retries: int = 0
+        # Last user message (for state persistence)
+        self._last_user_message: str = ""
+        # Stuck escalation hint (injected into review prompt when stuck detected)
+        self._stuck_escalation_hint: str = ""
+
     # Checkpoint every N orchestrator rounds (periodic safety-net)
     _CHECKPOINT_INTERVAL_ROUNDS = 3
 
@@ -304,7 +315,7 @@ class OrchestratorManager:
                 total_cost_usd=self.total_cost_usd,
                 shared_context=checkpoint_context,
                 agent_states=checkpoint_agents,
-                last_user_message=getattr(self, '_last_user_message', ''),
+                last_user_message=self._last_user_message,
             )
             logger.info(
                 f"[{self.project_id}] Checkpoint saved "
@@ -2068,7 +2079,7 @@ class OrchestratorManager:
 
                 # Rate limiting: enforce minimum gap between orchestrator calls
                 # to avoid overwhelming the API on fast loops (stuck detection may be slow)
-                _last = getattr(self, "_last_orch_call_time", 0.0)
+                _last = self._last_orch_call_time
                 _gap = time.monotonic() - _last
                 if _gap < RATE_LIMIT_SECONDS and loop_count > 0:
                     await asyncio.sleep(RATE_LIMIT_SECONDS - _gap)
@@ -2099,11 +2110,14 @@ class OrchestratorManager:
                             else:
                                 status = f"thinking... ({elapsed}s)"
 
-                        self.agent_states["orchestrator"] = {
+                        # Use update to preserve accumulated fields (tool_count, etc.)
+                        orch_state = self.agent_states.get("orchestrator", {})
+                        orch_state.update({
                             "state": "working",
                             "task": status,
                             "current_tool": status,
-                        }
+                        })
+                        self.agent_states["orchestrator"] = orch_state
                         await self._emit_event(
                             "agent_update",
                             agent="orchestrator",
@@ -2152,12 +2166,15 @@ class OrchestratorManager:
                 self._record_response("orchestrator", "Orchestrator", response)
                 self.current_agent = None
                 self.current_tool = None
-                self.agent_states["orchestrator"] = {
+                # Preserve accumulated fields when updating orchestrator state
+                orch_done_state = self.agent_states.get("orchestrator", {})
+                orch_done_state.update({
                     "state": "error" if response.is_error else "done",
                     "cost": response.cost_usd,
                     "turns": response.num_turns,
                     "duration": agent_duration,
-                }
+                })
+                self.agent_states["orchestrator"] = orch_done_state
                 await self._emit_event(
                     "agent_finished",
                     agent="orchestrator",
@@ -2189,7 +2206,7 @@ class OrchestratorManager:
                         )
                     else:
                         # Transient error — retry with exponential backoff (up to 3 times)
-                        _orch_retries = getattr(self, '_orch_error_retries', 0)
+                        _orch_retries = self._orch_error_retries
                         if _orch_retries < 3:
                             self._orch_error_retries = _orch_retries + 1
                             wait_time = min(5 * (2 ** _orch_retries), 30)
@@ -2306,7 +2323,7 @@ class OrchestratorManager:
                 warning_threshold = effective_budget * BUDGET_WARNING_THRESHOLD
                 if (
                     self.total_cost_usd >= warning_threshold
-                    and not getattr(self, "_budget_warning_sent", False)
+                    and not self._budget_warning_sent
                 ):
                     self._budget_warning_sent = True
                     pct = int(self.total_cost_usd / effective_budget * 100)
@@ -2542,6 +2559,9 @@ class OrchestratorManager:
                     for role, resps in sub_results.items()
                 )
                 self._completed_rounds.append(f"Round {loop_count}: {_round_summary}")
+                # Trim to last 15 rounds to prevent unbounded growth in review prompts
+                if len(self._completed_rounds) > 15:
+                    self._completed_rounds = self._completed_rounds[-15:]
 
                 # Update the persistent task ledger with this round's results
                 self._update_todo_after_round(loop_count, _round_summary)
@@ -2872,11 +2892,12 @@ class OrchestratorManager:
                             else:
                                 status = f"waiting for Claude response... ({elapsed}s)"
 
-                        self.agent_states[role] = {
-                            **state_info,
+                        # Use update to preserve all accumulated fields atomically
+                        state_info.update({
                             "state": "working",
                             "current_tool": status,
-                        }
+                        })
+                        self.agent_states[role] = state_info
                         await self._emit_event(
                             "agent_update",
                             agent=role,
@@ -2961,13 +2982,17 @@ class OrchestratorManager:
 
                 # Emit agent_finished event
                 agent_duration = time.monotonic() - agent_start
-                self.agent_states[agent_role] = {
+                # Preserve accumulated fields (tool_count, last_activity_at, etc.)
+                # instead of creating a brand new dict that loses them
+                prev_state = self.agent_states.get(agent_role, {})
+                prev_state.update({
                     "state": "error" if response.is_error else "done",
                     "task": delegation.task[:300],
                     "cost": response.cost_usd,
                     "turns": response.num_turns,
                     "duration": agent_duration,
-                }
+                })
+                self.agent_states[agent_role] = prev_state
                 # Build failure reason for UI display
                 _failure_reason = ""
                 if response.is_error:
@@ -4338,7 +4363,7 @@ class OrchestratorManager:
                 )
 
         # ── Inject stuck escalation hint if detected ──
-        hint = getattr(self, '_stuck_escalation_hint', None)
+        hint = self._stuck_escalation_hint or None
         if hint:
             parts.append(f"\n{'='*50}")
             parts.append(hint)
