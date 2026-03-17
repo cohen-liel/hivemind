@@ -100,17 +100,6 @@ def extract_section(text: str, markers: list[str], max_lines: int = 10) -> str:
     return ""
 
 
-def escape_json_str(s: str) -> str:
-    """Escape a string for safe inclusion in a JSON string value."""
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", " ")
-        .replace("\r", "")
-        .replace("\t", " ")
-    )
-
-
 # ── File change detection ─────────────────────────────────────────────
 
 
@@ -429,127 +418,72 @@ async def build_review_prompt(
             parts.append(f"  <round>{r}</round>")
         parts.append("</round_history>")
 
-    # Generate ready-made <delegate> blocks
-    suggested_blocks: list[str] = []
+    # Build concise hints instead of ready-made <delegate> blocks.
+    # The orchestrator should decide HOW to act, not just rubber-stamp
+    # pre-built delegations. Hints give it the "what" without the "how".
+    hints: list[str] = []
 
-    # Priority 1: Retry crashed/failed agents
+    # Crashed/failed agents
     _retried = set()
     for agent in crashed_agents + failed_agents:
         if agent in _retried:
             continue
         _retried.add(agent)
-        error_ctx = _agent_summaries.get(agent, "unknown error")[:200]
-        suggested_blocks.append(
-            f"<delegate>\n"
-            f'{{"agent": "{agent}", "task": "RETRY: Your previous attempt failed/crashed. '
-            f'Please retry the same task with a fresh approach.", '
-            f'"context": "Previous error: {escape_json_str(error_ctx)}"}}\n'
-            f"</delegate>"
-        )
+        error_ctx = _agent_summaries.get(agent, "unknown error")[:150]
+        if error_ctx.startswith(("FAILED: ", "CRASHED: ")):
+            error_ctx = error_ctx.split(": ", 1)[1]
+        hints.append(f"{agent} FAILED: {error_ctx}")
 
-    # Priority 2: Fix issues found by reviewer/tester
+    # Critical issues from reviewer/tester
     if critical_findings and not failed_agents:
-        files_with_issues: dict[str, list[str]] = {}
-        general_issues: list[str] = []
-        for f in critical_findings:
-            if f["file"]:
-                files_with_issues.setdefault(f["file"], []).append(f["description"])
-            else:
-                general_issues.append(f["description"])
+        for f in critical_findings[:5]:
+            file_hint = f" in {f['file']}" if f["file"] else ""
+            hints.append(f"[{f['severity']}] {f['agent']}{file_hint}: {f['description'][:120]}")
 
-        fix_descriptions: list[str] = []
-        for fpath, descs in list(files_with_issues.items())[:5]:
-            fix_descriptions.append(f"In {fpath}: {'; '.join(d[:80] for d in descs[:3])}")
-        if general_issues:
-            fix_descriptions.append(f"General: {'; '.join(d[:80] for d in general_issues[:3])}")
-
-        if fix_descriptions:
-            fix_task = "Fix the following issues found by reviewer/tester: " + " | ".join(
-                fix_descriptions[:4]
-            )
-            fix_context = (
-                f"Issues found in round {loops_done}. Fix the actual code, don't just report."
-            )
-            suggested_blocks.append(
-                f"<delegate>\n"
-                f'{{"agent": "developer", "task": "{escape_json_str(fix_task[:500])}", '
-                f'"context": "{escape_json_str(fix_context)}"}}\n'
-                f"</delegate>"
-            )
-
-    # Priority 3: Test failures need developer fixes
+    # Test failures
     test_failures = [f for f in _findings if f["type"] == "test_failure"]
     if test_failures and not failed_agents and not critical_findings:
-        failure_descs = "; ".join(f["description"][:80] for f in test_failures[:5])
-        suggested_blocks.append(
-            f"<delegate>\n"
-            f'{{"agent": "developer", "task": "Fix failing tests: {escape_json_str(failure_descs[:400])}", '
-            f'"context": "Tests were run and some failed. Fix the code (not the tests) to make them pass."}}\n'
-            f"</delegate>"
-        )
+        failure_count = len(test_failures)
+        sample = test_failures[0]["description"][:100]
+        hints.append(f"{failure_count} test failure(s): {sample}")
 
-    # Priority 4: Reports written but no code changes
+    # Reports written but no code changes
     if _agents_only_reports and not _agents_wrote_code and not failed_agents:
         report_agents = ", ".join(_agents_only_reports)
-        suggested_blocks.append(
-            f"<delegate>\n"
-            f'{{"agent": "developer", "task": "Implement the fixes/changes described in the reports written by {report_agents}. '
-            f'Read their output above and make the actual code changes.", '
-            f'"context": "Previous round produced reports/analysis but no code changes. Now implement."}}\n'
-            f"</delegate>"
-        )
+        hints.append(f"Reports only (no code changes) from: {report_agents}")
 
-    # Priority 5: Code was written but not reviewed/tested
+    # Code written but not reviewed/tested
     roles_this_round = set(successful_agents)
-
     if _agents_wrote_code or has_file_changes:
+        missing_quality = []
         if "reviewer" not in roles_this_round and "reviewer" not in failed_agents:
-            changed_files = file_changes[:200] if has_file_changes else "check git diff"
-            suggested_blocks.append(
-                f"<delegate>\n"
-                f'{{"agent": "reviewer", "task": "Review the code changes from this round for bugs, security issues, and best practices.", '
-                f'"context": "Files changed: {escape_json_str(changed_files)}"}}\n'
-                f"</delegate>"
-            )
+            missing_quality.append("code review")
         if "tester" not in roles_this_round and "tester" not in failed_agents:
-            suggested_blocks.append(
-                "<delegate>\n"
-                '{"agent": "tester", "task": "Write and run tests for the code changes made this round. Report PASS/FAIL with details.", '
-                '"context": "Code was modified — verify it works correctly."}\n'
-                "</delegate>"
-            )
+            missing_quality.append("testing")
+        if missing_quality:
+            hints.append(f"Code changed but missing: {', '.join(missing_quality)}")
 
-    # Priority 6: Blocked/followup items
+    # Blocked/followup items
     blocked_findings = [f for f in _findings if f["type"] == "blocked"]
     followup_findings = [f for f in _findings if f["type"] == "followup"]
     for bf in blocked_findings:
-        suggested_blocks.append(
-            f"<delegate>\n"
-            f'{{"agent": "{bf["agent"]}", "task": "UNBLOCK: {escape_json_str(bf["description"][:300])}", '
-            f'"context": "This agent was blocked in the previous round. Provide what they need to proceed."}}\n'
-            f"</delegate>"
-        )
+        hints.append(f"{bf['agent']} BLOCKED: {bf['description'][:120]}")
     for ff in followup_findings:
-        suggested_blocks.append(
-            f"<delegate>\n"
-            f'{{"agent": "{ff["agent"]}", "task": "FOLLOWUP: {escape_json_str(ff["description"][:300])}", '
-            f'"context": "This agent needs follow-up work from the previous round."}}\n'
-            f"</delegate>"
-        )
+        hints.append(f"{ff['agent']} NEEDS FOLLOWUP: {ff['description'][:120]}")
 
-    # Final decision section
-    if suggested_blocks:
-        parts.append("<suggested_delegations>")
-        parts.append("Use these <delegate> blocks as-is, modify them, or add more:")
-        parts.append("")
-        parts.extend(suggested_blocks)
-        parts.append("")
+    # Decision section
+    if hints:
+        parts.append("<hints>")
+        for hint_text in hints:
+            parts.append(f"  - {hint_text}")
+        parts.append("</hints>")
         parts.append(
-            "<instruction>Copy the <delegate> blocks above into your response. "
-            "You may modify the task/context or add additional blocks. "
-            "Do NOT say TASK_COMPLETE — there is work to do.</instruction>"
+            "<instruction>\n"
+            "Based on the hints above, create <delegate> blocks for the next actions.\n"
+            "Choose the right agent and write a specific task description for each.\n"
+            "Do NOT say TASK_COMPLETE while there are unresolved issues.\n"
+            "</instruction>"
         )
-        parts.append("</suggested_delegations>")
     else:
         all_success = not has_errors
         has_review = "reviewer" in mgr._agents_used
@@ -576,20 +510,6 @@ async def build_review_prompt(
                 f"Delegate the missing steps before TASK_COMPLETE.\n"
                 f"</decision>"
             )
-            if not has_review:
-                parts.append(
-                    "\n<delegate>\n"
-                    '{"agent": "reviewer", "task": "Review all code changes for bugs, security, and best practices.", '
-                    '"context": "Code was written but not yet reviewed."}\n'
-                    "</delegate>"
-                )
-            if not has_tests:
-                parts.append(
-                    "\n<delegate>\n"
-                    '{"agent": "tester", "task": "Write and run tests for the implementation. Report PASS/FAIL.", '
-                    '"context": "Code was written but not yet tested."}\n'
-                    "</delegate>"
-                )
         elif not code_changed and all_success:
             parts.append(
                 "<decision>\n"
