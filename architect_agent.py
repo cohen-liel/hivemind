@@ -188,8 +188,8 @@ async def run_architect_review(
 def should_run_architect(task: str, has_memory: bool) -> bool:
     """Decide whether the Architect Agent should run before the PM.
 
-    Returns True for EPIC/LARGE tasks or when there's no existing memory
-    (first time working on a project).
+    Returns True for EPIC tasks (always) or LARGE tasks when there's no
+    existing memory (first time working on a project).
     """
     from orch_watchdog import estimate_task_complexity
 
