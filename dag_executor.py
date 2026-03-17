@@ -901,11 +901,12 @@ async def _run_single_task(
     session_key = f"{ctx.graph.project_id}:{role_name}:{task.id}"
     session_id = ctx.session_ids.get(session_key)
 
+    _sys_prompt_tokens = max(1, len(system_prompt) // 4)  # ~4 chars/token heuristic
     logger.info(
         f"[DAG] Task {task.id}: calling SDK "
         f"max_turns={max_turns}, timeout={task_timeout}s, max_budget=${_get_task_budget(role_name)}, "
         f"session={'resume' if session_id else 'new'}, "
-        f"prompt_len={len(prompt)}, system_prompt_len={len(system_prompt)}"
+        f"prompt_len={len(prompt)}, system_prompt_len={len(system_prompt)} (~{_sys_prompt_tokens:,} tokens)"
     )
 
     # ── Agent output file logging for real-time visibility ──

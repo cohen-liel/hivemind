@@ -127,6 +127,13 @@ async def query_agent(
     _boundary_header = build_project_header(mgr.project_name, mgr.project_dir)
     system_prompt = _boundary_header + system_prompt
 
+    # Log system prompt token usage for observability
+    _prompt_tokens = max(1, len(system_prompt) // 4)  # ~4 chars/token heuristic
+    logger.info(
+        f"[{mgr.project_id}] System prompt for '{agent_role}': "
+        f"~{_prompt_tokens:,} tokens ({len(system_prompt):,} chars)"
+    )
+
     # Try to resume session
     session_id = await mgr.session_mgr.get_session(mgr.user_id, mgr.project_id, agent_role)
 
