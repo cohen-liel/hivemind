@@ -1428,9 +1428,13 @@ class OrchestratorManager:
                     )
                     if architect_brief and architect_brief.codebase_summary:
                         # Inject architect brief into memory_snapshot for PM
-                        _key_files_str = "\n".join(
-                            f"  {fp}: {desc}" for fp, desc in architect_brief.key_files.items()
-                        ) if architect_brief.key_files else "(none identified)"
+                        _key_files_str = (
+                            "\n".join(
+                                f"  {fp}: {desc}" for fp, desc in architect_brief.key_files.items()
+                            )
+                            if architect_brief.key_files
+                            else "(none identified)"
+                        )
                         arch_context = (
                             f"\n\n<architect_brief>\n"
                             f"Codebase: {architect_brief.codebase_summary}\n"

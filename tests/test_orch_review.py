@@ -44,8 +44,13 @@ class TestBuildReviewPromptHints:
         mgr = _make_mgr()
         results = {"developer": [_error_response("timeout after 120s")]}
 
-        with patch("orch_review.detect_file_changes", new_callable=AsyncMock, return_value="(no file changes detected)"):
+        with patch(
+            "orch_review.detect_file_changes",
+            new_callable=AsyncMock,
+            return_value="(no file changes detected)",
+        ):
             from orch_review import build_review_prompt
+
             prompt = await build_review_prompt(mgr, results)
 
         assert "<hints>" in prompt
@@ -62,8 +67,13 @@ class TestBuildReviewPromptHints:
             "tester": [_ok_response("## SUMMARY\nAll tests pass.")],
         }
 
-        with patch("orch_review.detect_file_changes", new_callable=AsyncMock, return_value="src/app.py | 5 +"):
+        with patch(
+            "orch_review.detect_file_changes",
+            new_callable=AsyncMock,
+            return_value="src/app.py | 5 +",
+        ):
             from orch_review import build_review_prompt
+
             prompt = await build_review_prompt(mgr, results)
 
         assert "<hints>" not in prompt
@@ -77,8 +87,13 @@ class TestBuildReviewPromptHints:
             "developer": [_ok_response("## FILES CHANGED\n- src/app.py\n## SUMMARY\nDone.")],
         }
 
-        with patch("orch_review.detect_file_changes", new_callable=AsyncMock, return_value="src/app.py | 5 +"):
+        with patch(
+            "orch_review.detect_file_changes",
+            new_callable=AsyncMock,
+            return_value="src/app.py | 5 +",
+        ):
             from orch_review import build_review_prompt
+
             prompt = await build_review_prompt(mgr, results)
 
         assert "<hints>" in prompt
@@ -90,8 +105,13 @@ class TestBuildReviewPromptHints:
         mgr = _make_mgr()
         results = {"developer": [_error_response("some error")]}
 
-        with patch("orch_review.detect_file_changes", new_callable=AsyncMock, return_value="(no file changes detected)"):
+        with patch(
+            "orch_review.detect_file_changes",
+            new_callable=AsyncMock,
+            return_value="(no file changes detected)",
+        ):
             from orch_review import build_review_prompt
+
             prompt = await build_review_prompt(mgr, results)
 
         assert "</delegate>" not in prompt
