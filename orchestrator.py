@@ -2406,10 +2406,20 @@ class OrchestratorManager:
     async def _run_orchestrator(self, user_message: str, *, _retry_count: int = 0):
         """Main orchestrator loop (legacy regex-delegate system).
 
+        DEPRECATED: This path is superseded by _run_dag_session() which uses
+        typed contracts (TaskGraph/TaskOutput) instead of regex-parsed
+        <delegate> blocks. Set USE_DAG_EXECUTOR=true (the default) to use
+        the new system. This legacy path remains as a fallback only.
+
         Uses a cumulative retry count (_retry_count) to bound retries on
         spurious anyio CancelledErrors.  Previous implementation used
         unbounded tail-call recursion which reset the counter each time.
         """
+        if _retry_count == 0:
+            logger.warning(
+                f"[{self.project_id}] Using legacy orchestrator path. "
+                f"Set USE_DAG_EXECUTOR=true for the typed-contract DAG system."
+            )
         start_time = time.monotonic()
         self._last_user_message = user_message  # Track for state persistence
 
