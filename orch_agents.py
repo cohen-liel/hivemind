@@ -109,7 +109,7 @@ async def query_agent(
     else:
         system_prompt = get_specialist_prompt(agent_role, mode=mgr.mode)
         task_hint = prompt[:1000]
-        auto_skills = select_skills_for_task(agent_role, task_hint, max_skills=5)
+        auto_skills = select_skills_for_task(agent_role, task_hint, max_skills=2)
         all_skills = list(dict.fromkeys(list(skill_names or []) + auto_skills))
         if all_skills:
             skill_suffix = build_skill_prompt(list(dict.fromkeys(all_skills)))
