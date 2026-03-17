@@ -22,29 +22,12 @@ is no per-request engine creation overhead.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.db.database import get_db, get_session_factory
+from src.db.database import get_session_factory
 from src.projects.project_manager import ProjectManager
 from src.storage.conversation_store import ConversationStore
 from src.storage.memory_store import MemoryStore
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Raw DB session dependency (re-exported for convenience)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
-    """Yield an AsyncSession for use in REST endpoints.
-
-    Thin alias for ``src.db.database.get_db`` — import from here to keep
-    all dependency imports in one place.
-    """
-    async for session in get_db():
-        yield session
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Store dependencies
@@ -84,44 +67,6 @@ def get_memory_store() -> MemoryStore:
     """
     factory: async_sessionmaker[AsyncSession] = get_session_factory()
     return MemoryStore(factory)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Convenience: get both stores in one dependency
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class StoreBundle:
-    """Container holding both ConversationStore and MemoryStore.
-
-    Use this when an endpoint needs both stores to avoid declaring two
-    separate ``Depends()`` parameters::
-
-        @router.post("/reconnect/{project_id}")
-        async def on_reconnect(
-            project_id: str,
-            stores: StoreBundle = Depends(get_stores),
-        ):
-            context = await stores.memory.get_all_memory(project_id)
-            history = await stores.conversations.get_conversation_history(conv_id)
-    """
-
-    def __init__(
-        self,
-        conversations: ConversationStore,
-        memory: MemoryStore,
-    ) -> None:
-        self.conversations = conversations
-        self.memory = memory
-
-
-def get_stores() -> StoreBundle:
-    """Return a StoreBundle with both ConversationStore and MemoryStore."""
-    factory = get_session_factory()
-    return StoreBundle(
-        conversations=ConversationStore(factory),
-        memory=MemoryStore(factory),
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -451,88 +451,8 @@ class TestActiveEscalation:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4. Dynamic Skill Discovery Tests
+# 4. (Removed — dynamic_skills.py was dead code, deleted in cleanup)
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestDynamicSkillDiscovery:
-    """Tests for dynamic_skills.py"""
-
-    def test_score_skill_name_match(self):
-        """Skills with matching names score higher."""
-        from dynamic_skills import _score_skill
-
-        score = _score_skill(
-            "react-typescript",
-            "# React TypeScript\nBuild React apps with TypeScript",
-            "build a react typescript app",
-            {"build", "react", "typescript", "app"},
-        )
-        assert score > 0
-
-    def test_score_skill_no_match(self):
-        """Skills with no matching keywords score 0."""
-        from dynamic_skills import _score_skill
-
-        score = _score_skill(
-            "docker-deployment",
-            "# Docker\nDeploy with Docker",
-            "build a react app",
-            {"build", "react", "app"},
-        )
-        assert score == 0
-
-    def test_extract_description_from_header(self):
-        """Description extracted from markdown header."""
-        from dynamic_skills import _extract_description
-
-        desc = _extract_description("# React TypeScript Patterns\nSome content")
-        assert "React TypeScript" in desc
-
-    def test_extract_description_from_frontmatter(self):
-        """Description extracted from description: line."""
-        from dynamic_skills import _extract_description
-
-        desc = _extract_description("---\ndescription: Build React apps\n---")
-        assert "Build React apps" in desc
-
-    def test_auto_assign_frontend(self):
-        """Frontend skills are assigned to frontend_developer."""
-        from dynamic_skills import auto_assign_skill_to_agents
-
-        roles = auto_assign_skill_to_agents(
-            "react-components",
-            "# React Components\nBuild reusable React UI components with JSX and CSS",
-        )
-        assert "frontend_developer" in roles
-
-    def test_auto_assign_backend(self):
-        """Backend skills are assigned to backend_developer."""
-        from dynamic_skills import auto_assign_skill_to_agents
-
-        roles = auto_assign_skill_to_agents(
-            "fastapi-endpoints",
-            "# FastAPI Endpoints\nBuild REST API endpoints with FastAPI server",
-        )
-        assert "backend_developer" in roles
-
-    def test_auto_assign_default(self):
-        """Unknown skills default to backend_developer."""
-        from dynamic_skills import auto_assign_skill_to_agents
-
-        roles = auto_assign_skill_to_agents(
-            "mystery-skill",
-            "# Mystery\nThis skill does mysterious things",
-        )
-        assert len(roles) > 0
-
-    def test_discover_unmapped_skills(self):
-        """discover_unmapped_skills finds skills not in SKILL_AGENT_MAP."""
-        from dynamic_skills import discover_unmapped_skills
-
-        # This just tests it doesn't crash — actual results depend on skills dir
-        result = discover_unmapped_skills()
-        assert isinstance(result, list)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

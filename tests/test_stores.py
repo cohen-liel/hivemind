@@ -448,15 +448,6 @@ class TestDependencies:
         store = get_memory_store()
         assert isinstance(store, MemoryStore)
 
-    def test_get_stores_returns_bundle(self):
-        """get_stores() returns a StoreBundle with both stores."""
-        from src.dependencies import StoreBundle, get_stores
-
-        bundle = get_stores()
-        assert isinstance(bundle, StoreBundle)
-        assert isinstance(bundle.conversations, ConversationStore)
-        assert isinstance(bundle.memory, MemoryStore)
-
 
 # ---------------------------------------------------------------------------
 # WebSocket handler tests

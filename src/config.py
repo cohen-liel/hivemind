@@ -35,7 +35,6 @@ working for legacy callers.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -246,18 +245,6 @@ class AppSettings(BaseSettings):
         key = self.DASHBOARD_API_KEY
         return bool(key) and key.lower() not in ("0", "false", "no", "off")
 
-    @property
-    def cors_origins_list(self) -> list[str]:
-        """CORS_ORIGINS split into a list, whitespace-stripped."""
-        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
-
-    @property
-    def effective_database_url(self) -> str:
-        """Return the effective async database URL (delegates to url_helpers)."""
-        from src.db.url_helpers import resolve_database_url
-
-        return resolve_database_url(self.PLATFORM_DB_PATH)
-
     @model_validator(mode="after")
     def _validate_constraints(self) -> AppSettings:
         """Runtime cross-field invariant checks."""
@@ -275,16 +262,6 @@ class AppSettings(BaseSettings):
         if errors:
             raise ValueError("AppSettings validation errors:\n  • " + "\n  • ".join(errors))
         return self
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return all settings as a plain dict (useful for logging/debugging).
-
-        Sensitive fields (DASHBOARD_API_KEY) are redacted.
-        """
-        d = self.model_dump()
-        if d.get("DASHBOARD_API_KEY"):
-            d["DASHBOARD_API_KEY"] = "***"
-        return d
 
 
 # ---------------------------------------------------------------------------
