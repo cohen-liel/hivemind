@@ -53,12 +53,9 @@ export function useDagPersistence(
     });
     try {
       localStorage.setItem(key, value);
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'QuotaExceededError') {
-        console.warn('[DagPersistence] localStorage quota exceeded, DAG state not persisted');
-      } else {
-        throw e;
-      }
+    } catch {
+      // localStorage may be unavailable (private browsing, quota exceeded).
+      // DAG persistence is non-critical — fail silently.
     }
   }, [projectId, dagGraph, dagTaskStatus]);
 }

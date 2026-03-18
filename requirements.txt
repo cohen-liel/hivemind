@@ -26,3 +26,5 @@ httptools==0.7.1
 watchfiles==1.1.1
 # SSE support
 sse-starlette==3.3.2
+# QR code in terminal for mobile access (optional — startup works without it)
+qrcode>=7.0

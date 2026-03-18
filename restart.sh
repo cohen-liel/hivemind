@@ -74,18 +74,8 @@ else
   echo "  ⏭️  Keeping existing history"
 fi
 
-# ── 3. Build frontend ───────────────────────────────────────
-echo "  📦 Building frontend..."
-cd frontend
-npx vite build --logLevel error 2>/dev/null
-cp public/manifest.json dist/manifest.json 2>/dev/null || true
-cd ..
-echo "  ✅ Frontend built"
-
-# ── 4. Start server ─────────────────────────────────────────
-LOG_FILE="/tmp/hivemind-server.log"
-
-  # Find python (support both venv and .venv)
+# ── 3. Resolve Python & install deps ──────────────────────
+# Find python (support both venv and .venv)
 if [ -f ./venv/bin/python3 ]; then
   PY=./venv/bin/python3
 elif [ -f ./.venv/bin/python3 ]; then
@@ -93,6 +83,19 @@ elif [ -f ./.venv/bin/python3 ]; then
 else
   PY=python3
 fi
+
+$PY -m pip install -q -r requirements.txt 2>/dev/null || true
+
+# ── 4. Build frontend ────────────────────────────────────
+echo "  📦 Building frontend..."
+cd frontend
+npx vite build --logLevel error 2>/dev/null
+cp public/manifest.json dist/manifest.json 2>/dev/null || true
+cd ..
+echo "  ✅ Frontend built"
+
+# ── 5. Start server ─────────────────────────────────────────
+LOG_FILE="/tmp/hivemind-server.log"
 
 if $BG; then
   echo "  🚀 Starting server (background)..."
@@ -103,39 +106,30 @@ if $BG; then
   for i in {1..20}; do
     if curl -s http://localhost:$PORT/api/health > /dev/null 2>&1; then
       echo "  ✅ Server running (PID: $SERVER_PID)"
-      echo ""
-      echo "  ┌─────────────────────────────────────────────┐"
-      echo "  │  🌐 Local:   http://localhost:$PORT            │"
-      echo "  │  📱 Network: http://$LOCAL_IP:$PORT"
-      echo "  │  📋 Logs:    tail -f $LOG_FILE"
-      echo "  └─────────────────────────────────────────────┘"
-      echo ""
 
       # Wait for cloudflare tunnel URL
+      TUNNEL_URL=""
       if command -v cloudflared &>/dev/null; then
-        echo "  ⏳ Waiting for public URL..."
         for j in {1..20}; do
           TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$LOG_FILE" 2>/dev/null | head -1)
           if [ -n "$TUNNEL_URL" ]; then
-            echo ""
-            echo "  ┌─────────────────────────────────────────────┐"
-            echo "  │  🌍 PUBLIC URL (use from anywhere):         │"
-            echo "  │                                             │"
-            echo "  │  $TUNNEL_URL"
-            echo "  │                                             │"
-            echo "  │  Open this link on your phone or any device │"
-            echo "  └─────────────────────────────────────────────┘"
-            echo ""
-            # Copy to clipboard (macOS)
-            echo "$TUNNEL_URL" | pbcopy 2>/dev/null && echo "  📋 Copied to clipboard!" || true
+            echo "$TUNNEL_URL" | pbcopy 2>/dev/null || true
             break
           fi
           sleep 1
         done
-        if [ -z "$TUNNEL_URL" ]; then
-          echo "  ⚠️  Tunnel URL not found yet. Check logs: tail -f $LOG_FILE"
-        fi
       fi
+
+      QR_TARGET="${TUNNEL_URL:-http://$LOCAL_IP:$PORT}"
+      echo ""
+      echo "  ╔══════════════════════════════════════════════════════╗"
+      echo "  ║  🌐 Local:   http://localhost:$PORT                     ║"
+      echo "  ║  🏠 Network: http://$LOCAL_IP:$PORT                     ║"
+      if [ -n "$TUNNEL_URL" ]; then
+      echo "  ║  🌍 Public:  $TUNNEL_URL"
+      fi
+      echo "  ║  📋 Logs:    tail -f $LOG_FILE              ║"
+      echo "  ╚══════════════════════════════════════════════════════╝"
       echo ""
       exit 0
     fi
@@ -148,15 +142,6 @@ else
   echo "  🚀 Starting server..."
   echo ""
 
-  # Find python (support both venv and .venv)
-  if [ -f ./venv/bin/python3 ]; then
-    PY=./venv/bin/python3
-  elif [ -f ./.venv/bin/python3 ]; then
-    PY=./.venv/bin/python3
-  else
-    PY=python3
-  fi
-
   # Run server in background, tail the log, and wait for the URL
   $PY server.py > "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
@@ -166,51 +151,61 @@ else
   for i in {1..30}; do
     if curl -s http://localhost:$PORT/api/health > /dev/null 2>&1; then
       echo "  ✅ Server running (PID: $SERVER_PID)"
-      echo ""
-      echo "  ┌─────────────────────────────────────────────┐"
-      echo "  │  🌐 Local:   http://localhost:$PORT            │"
-      echo "  │  📱 Network: http://$LOCAL_IP:$PORT            │"
-      echo "  └─────────────────────────────────────────────┘"
 
-      # Show access code
+      # Collect access code
       ACCESS_CODE=$(grep "ACCESS CODE:" "$LOG_FILE" 2>/dev/null | tail -1 | sed 's/.*ACCESS CODE:  *//')
-      if [ -n "$ACCESS_CODE" ]; then
-        echo ""
-        echo "  ┌─────────────────────────────────────────────┐"
-        echo "  │  🔑 ACCESS CODE:  $ACCESS_CODE                    │"
-        echo "  │  Enter this code in the browser to connect. │"
-        echo "  └─────────────────────────────────────────────┘"
-      fi
 
       # Wait for Cloudflare tunnel URL
-      echo ""
       echo "  ⏳ Waiting for public URL..."
+      TUNNEL_URL=""
       for j in {1..30}; do
         TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$LOG_FILE" 2>/dev/null | head -1)
         if [ -n "$TUNNEL_URL" ]; then
-          echo ""
-          echo "  ============================================================"
-          echo "  🌍 PUBLIC URL (use from anywhere):"
-          echo ""
-          echo "     $TUNNEL_URL"
-          echo ""
-          echo "     Open this on your phone or any device."
-          echo "  ============================================================"
-          echo ""
-          # Copy to clipboard (macOS)
-          echo "$TUNNEL_URL" | pbcopy 2>/dev/null && echo "  📋 Copied to clipboard!" || true
+          echo "$TUNNEL_URL" | pbcopy 2>/dev/null || true
           break
         fi
         sleep 1
       done
-      if [ -z "$TUNNEL_URL" ]; then
-        echo "  ⚠️  No public URL (cloudflared may not be installed)."
-        echo "     Run ./setup.sh to install it."
-      fi
 
+      # ── Print unified startup banner ──────────────────────────
+      QR_TARGET="${TUNNEL_URL:-http://$LOCAL_IP:$PORT}"
       echo ""
-      echo "  📋 Logs: tail -f $LOG_FILE"
-      echo "  🛑 Stop: kill $SERVER_PID"
+      echo "  ╔══════════════════════════════════════════════════════╗"
+      echo "  ║              ⚡ Hivemind is running                  ║"
+      echo "  ╠══════════════════════════════════════════════════════╣"
+      echo "  ║                                                      ║"
+      echo "  ║  🌐 Local:   http://localhost:$PORT                     ║"
+      echo "  ║  🏠 Network: http://$LOCAL_IP:$PORT                     ║"
+      if [ -n "$TUNNEL_URL" ]; then
+      echo "  ║                                                      ║"
+      echo "  ║  🌍 Public:  $TUNNEL_URL"
+      echo "  ║             (copied to clipboard)                    ║"
+      fi
+      echo "  ║                                                      ║"
+      if [ -n "$ACCESS_CODE" ]; then
+      echo "  ╠══════════════════════════════════════════════════════╣"
+      echo "  ║                                                      ║"
+      echo "  ║  🔑 Access Code:  $ACCESS_CODE                           ║"
+      echo "  ║     Enter in browser to connect (new devices only)   ║"
+      echo "  ║                                                      ║"
+      fi
+      echo "  ╠══════════════════════════════════════════════════════╣"
+      echo "  ║                                                      ║"
+      echo "  ║  📱 Scan QR to open on your phone:                   ║"
+      echo "  ║                                                      ║"
+      # Inline QR code
+      $PY -c "
+try:
+    from terminal_qr import print_qr_for_url
+    print_qr_for_url('$QR_TARGET')
+except Exception:
+    print('     (install qrcode: pip install qrcode)')
+" 2>/dev/null
+      echo "  ║                                                      ║"
+      echo "  ╠══════════════════════════════════════════════════════╣"
+      echo "  ║  📋 Logs: tail -f $LOG_FILE              ║"
+      echo "  ║  🛑 Stop: kill $SERVER_PID                                   ║"
+      echo "  ╚══════════════════════════════════════════════════════╝"
       echo ""
 
       # Follow logs

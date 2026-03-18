@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useCallback } from 'react';
 import type { MobileView } from '../reducers/projectReducer';
 import type { Project } from '../types';
 
@@ -93,7 +93,19 @@ const MobileTabNav = React.memo(function MobileTabNav({
   // iOS autocorrect doesn't always fire React's onChange, leaving `message`
   // state empty while the input visually shows text. Reading from the DOM
   // directly bypasses this race condition.
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea: 1 line → up to 5 lines, then scroll.
+  // Measures actual scrollHeight to handle variable-width text correctly.
+  const autoResize = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto'; // reset to measure content
+    // lineHeight ~20px * 5 rows + padding = ~120px max
+    const maxH = 120;
+    el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
+    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden';
+  }, []);
 
   const handleSubmit = (): void => {
     // Prefer DOM value (avoids iOS autocorrect lag), fall back to React state
@@ -101,7 +113,10 @@ const MobileTabNav = React.memo(function MobileTabNav({
     if (val && !sending) {
       onMessageChange('');
       // Also clear the DOM value directly so iOS sees it cleared immediately
-      if (inputRef.current) inputRef.current.value = '';
+      if (inputRef.current) {
+        inputRef.current.value = '';
+        inputRef.current.style.height = 'auto'; // reset to single line
+      }
       onSend(val);
     }
   };
@@ -204,33 +219,41 @@ const MobileTabNav = React.memo(function MobileTabNav({
         )}
       </div>
 
-      {/* Input row — min-h-[44px] on input and send button for touch compliance */}
-      <div className="flex items-center gap-1.5 px-2 pt-1" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 8px))' }}>
-        <input
+      {/* Input row — auto-expanding textarea like WhatsApp/Telegram */}
+      <div className="flex items-end gap-1.5 px-2 pt-1" style={{ paddingBottom: 'max(8px, env(safe-area-inset-bottom, 8px))' }}>
+        <textarea
           ref={inputRef}
-          type="text"
+          rows={1}
           value={message}
-          onChange={(e) => onMessageChange(e.target.value)}
+          onChange={(e) => {
+            onMessageChange(e.target.value);
+            autoResize();
+          }}
           onInput={(e) => {
             // onInput fires for every keystroke including iOS autocorrect/IME
             // completions that don't always trigger onChange. Syncing here keeps
             // React state (and thus button visual style) accurate on iOS.
-            const val = (e.currentTarget as HTMLInputElement).value;
+            const val = (e.currentTarget as HTMLTextAreaElement).value;
             if (val !== message) onMessageChange(val);
+            autoResize();
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
+            // Enter sends, Shift+Enter adds newline (like WhatsApp)
+            if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               handleSubmit();
             }
           }}
           disabled={sending}
           placeholder={projectStatus === 'idle' ? 'Send a task...' : 'Message...'}
-          className="flex-1 text-base rounded-full px-4 py-3 min-h-[44px] focus:outline-none min-w-0 disabled:opacity-50 transition-colors focus:ring-2 focus:ring-[var(--accent-blue)]"
+          className="flex-1 text-base rounded-2xl px-4 py-3 min-h-[44px] focus:outline-none min-w-0 disabled:opacity-50 transition-colors focus:ring-2 focus:ring-[var(--accent-blue)] resize-none"
           style={{
             background: 'var(--bg-elevated)',
             border: '1px solid var(--border-subtle)',
             color: 'var(--text-primary)',
+            lineHeight: '1.4',
+            maxHeight: '120px',
+            overflowY: 'hidden',
           }}
           aria-label="Message input"
         />

@@ -40,6 +40,9 @@ export function messagesToActivities(messages: ProjectMessage[]): ActivityEntry[
 /** Convert persisted activity events from DB into ActivityEntry objects for the feed. */
 export function activityEventsToEntries(events: ActivityEvent[]): ActivityEntry[] {
   const entries: ActivityEntry[] = [];
+  // Track last summary per agent to deduplicate agent_update events (same
+  // logic the live reducer uses — only include new, meaningful summaries).
+  const lastSummaryByAgent = new Map<string, string>();
   for (let i = 0; i < events.length; i++) {
     const evt = events[i];
     // Prefer sequence_id (monotonically unique per project in the DB).
@@ -114,11 +117,52 @@ export function activityEventsToEntries(events: ActivityEvent[]): ActivityEntry[
           content: evt.text || evt.summary,
         });
         break;
-      // Skip agent_update, agent_result, agent_final, project_status —
-      // these are either ephemeral or duplicated in messages table
+      case 'agent_update': {
+        // Reconstruct agent text entries from persisted agent_update events.
+        // Apply the same dedup/filtering as the live reducer: only include
+        // summaries > 25 chars that differ from the previous one for the agent.
+        const summary = evt.summary || evt.text || '';
+        if (summary.length > 25) {
+          const agentKey = evt.agent || '';
+          const prev = lastSummaryByAgent.get(agentKey);
+          if (summary !== prev) {
+            lastSummaryByAgent.set(agentKey, summary);
+            entries.push({
+              id: stableId,
+              type: 'agent_text',
+              timestamp: evt.timestamp,
+              agent: evt.agent,
+              content: summary,
+            });
+          }
+        }
+        break;
+      }
+      // Skip agent_result, agent_final, project_status —
+      // agent_result/agent_final are duplicated in messages table,
+      // project_status is a state transition (not content)
     }
   }
   return entries;
+}
+
+/** Reconstruct DAG task statuses from persisted activity events (for refresh recovery). */
+export function reconstructDagTaskStatus(
+  events: ActivityEvent[],
+): Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'> {
+  const statuses: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'> = {};
+  for (const evt of events) {
+    if (evt.type === 'dag_task_update' && evt.task_id && evt.status) {
+      const s = evt.status;
+      statuses[evt.task_id] =
+        s === 'completed' ? 'completed' :
+        s === 'working' ? 'working' :
+        s === 'failed' ? 'failed' :
+        s === 'cancelled' ? 'cancelled' :
+        'pending';
+    }
+  }
+  return statuses;
 }
 
 /** Reconstruct SdkCall entries from persisted agent_started/agent_finished events. */

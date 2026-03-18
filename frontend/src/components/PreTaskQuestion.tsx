@@ -38,6 +38,8 @@ const PreTaskQuestion = React.memo(function PreTaskQuestion({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    } else if (e.key === 'Escape') {
+      onDismiss();
     }
   };
 

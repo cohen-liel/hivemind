@@ -5,6 +5,7 @@ import { useWSSubscribe } from '../WebSocketContext';
 import { AGENT_ICONS } from '../constants';
 import { DashboardSkeleton } from '../components/Skeleton';
 import ErrorState from '../components/ErrorState';
+import { useToast } from '../components/Toast';
 import CostChart from '../components/CostChart';
 import AgentLogPanel from '../components/AgentLogPanel';
 import { useAnimatedNumber, formatCost } from '../hooks/useAnimatedNumber';
@@ -78,6 +79,8 @@ type DashboardAction =
   | { type: 'SET_PROJECT_STATUS'; projectId: string; status: Project['status'] }
   | { type: 'SET_LIVE_STATE'; projectId: string; liveState: DashboardLiveState }
   | { type: 'CLEAR_LIVE_STATE'; projectId: string }
+  | { type: 'AGENT_STARTED'; projectId: string; agent: string; text: string }
+  | { type: 'AGENT_FINISHED'; projectId: string; agent: string; text: string }
   | { type: 'REMOVE_PROJECT'; projectId: string }
   | { type: 'RENAME_PROJECT'; projectId: string; name: string };
 
@@ -116,14 +119,50 @@ function dashboardReducer(state: DashboardState, action: DashboardAction): Dashb
           p.project_id === action.projectId ? { ...p, status: action.status } : p,
         ),
       };
-    case 'SET_LIVE_STATE':
+    case 'SET_LIVE_STATE': {
+      const existing = state.liveStates[action.projectId];
       return {
         ...state,
         liveStates: {
           ...state.liveStates,
-          [action.projectId]: action.liveState,
+          [action.projectId]: {
+            ...action.liveState,
+            // Preserve activeAgents from existing state when the caller
+            // passes an empty set (e.g. tool_use events that only update text)
+            activeAgents: action.liveState.activeAgents.size > 0
+              ? action.liveState.activeAgents
+              : existing?.activeAgents ?? new Set<string>(),
+          },
         },
       };
+    }
+    case 'AGENT_STARTED': {
+      const prev = state.liveStates[action.projectId] ?? { text: '', activeAgents: new Set<string>() };
+      const active = new Set(prev.activeAgents);
+      active.add(action.agent);
+      return {
+        ...state,
+        projects: state.projects.map(p =>
+          p.project_id === action.projectId ? { ...p, status: 'running' as const } : p,
+        ),
+        liveStates: {
+          ...state.liveStates,
+          [action.projectId]: { text: action.text, agent: action.agent, activeAgents: active },
+        },
+      };
+    }
+    case 'AGENT_FINISHED': {
+      const prev = state.liveStates[action.projectId] ?? { text: '', activeAgents: new Set<string>() };
+      const active = new Set(prev.activeAgents);
+      active.delete(action.agent);
+      return {
+        ...state,
+        liveStates: {
+          ...state.liveStates,
+          [action.projectId]: { text: action.text, agent: action.agent, activeAgents: active },
+        },
+      };
+    }
     case 'CLEAR_LIVE_STATE': {
       const next = { ...state.liveStates };
       delete next[action.projectId];
@@ -151,6 +190,7 @@ function dashboardReducer(state: DashboardState, action: DashboardAction): Dashb
 // ============================================================================
 
 export default function Dashboard(): React.ReactElement {
+  const toast = useToast();
   const [state, dispatch] = useReducer(dashboardReducer, initialDashboardState);
   const {
     projects, liveStates, searchQuery, statusFilter,
@@ -166,6 +206,8 @@ export default function Dashboard(): React.ReactElement {
   // Inline rename state
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  // Prevents onBlur from double-saving when Enter already committed the rename
+  const renameSavedRef = useRef(false);
 
   // Dynamic page title
   usePageTitle('Dashboard');
@@ -215,54 +257,41 @@ export default function Dashboard(): React.ReactElement {
     const pid = event.project_id;
 
     if (event.type === 'tool_use' && event.description) {
+      // tool_use only updates the text — activeAgents are managed by
+      // AGENT_STARTED/AGENT_FINISHED which read from reducer state directly,
+      // avoiding stale closure issues.
       dispatch({
         type: 'SET_LIVE_STATE',
         projectId: pid,
         liveState: {
           text: event.description!,
           agent: event.agent,
-          activeAgents: liveStates[pid]?.activeAgents ?? new Set(),
+          // Preserve existing activeAgents — the reducer reads current state
+          activeAgents: new Set(),
         },
       });
     } else if (event.type === 'agent_started' && event.agent) {
-      // Immediately mark project as running (don't wait for API poll)
-      dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: 'running' });
-      const existing = liveStates[pid] ?? { text: '', activeAgents: new Set() };
-      const active = new Set(existing.activeAgents);
-      active.add(event.agent!);
       dispatch({
-        type: 'SET_LIVE_STATE',
+        type: 'AGENT_STARTED',
         projectId: pid,
-        liveState: {
-          text: event.task ? `${event.agent}: ${event.task.slice(0, 80)}` : `${event.agent} started`,
-          agent: event.agent,
-          activeAgents: active,
-        },
+        agent: event.agent,
+        text: event.task ? `${event.agent}: ${event.task.slice(0, 80)}` : `${event.agent} started`,
       });
     } else if (event.type === 'agent_finished' && event.agent) {
-      const existing = liveStates[pid] ?? { text: '', activeAgents: new Set() };
-      const active = new Set(existing.activeAgents);
-      active.delete(event.agent!);
       dispatch({
-        type: 'SET_LIVE_STATE',
+        type: 'AGENT_FINISHED',
         projectId: pid,
-        liveState: {
-          text: `${event.agent} ${event.is_error ? 'failed' : 'done'}`,
-          agent: event.agent,
-          activeAgents: active,
-        },
+        agent: event.agent,
+        text: `${event.agent} ${event.is_error ? 'failed' : 'done'}`,
       });
     } else if (event.type === 'project_status' && event.status) {
-      // Immediately reflect status change (running/idle/paused) on the card
       dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: event.status as Project['status'] });
-      // Reload full project data (costs, turn counts etc.)
       loadData();
     } else if (event.type === 'agent_final') {
-      // Task fully done — reload and clear live state
       loadData();
       dispatch({ type: 'CLEAR_LIVE_STATE', projectId: pid });
     }
-  }, [loadData, liveStates]);
+  }, [loadData]);
 
   const { connected } = useWSSubscribe(handleWSEvent);
 
@@ -582,6 +611,13 @@ export default function Dashboard(): React.ReactElement {
               </p>
             </div>
           </div>
+        ) : filteredProjects.length === 0 ? (
+          <div className="text-center py-16" style={{ color: 'var(--text-muted)' }}>
+            <p className="text-sm mb-1">No projects match your filter</p>
+            <p className="text-xs" style={{ fontFamily: 'var(--font-mono)' }}>
+              Try adjusting your search or status filter
+            </p>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {filteredProjects.map((project, i) => {
@@ -635,23 +671,30 @@ export default function Dashboard(): React.ReactElement {
                           onKeyDown={e => {
                             e.stopPropagation();
                             if (e.key === 'Enter') {
+                              renameSavedRef.current = true;
                               const trimmed = renameValue.trim();
                               if (trimmed && trimmed !== project.project_name) {
                                 updateProject(project.project_id, { name: trimmed })
                                   .then(() => dispatch({ type: 'RENAME_PROJECT', projectId: project.project_id, name: trimmed }))
-                                  .catch(() => {});
+                                  .catch(() => toast.error('Rename failed', 'Could not rename project'));
                               }
                               setRenamingId(null);
                             } else if (e.key === 'Escape') {
+                              renameSavedRef.current = true;
                               setRenamingId(null);
                             }
                           }}
                           onBlur={() => {
+                            // Skip if Enter/Escape already handled this
+                            if (renameSavedRef.current) {
+                              renameSavedRef.current = false;
+                              return;
+                            }
                             const trimmed = renameValue.trim();
                             if (trimmed && trimmed !== project.project_name) {
                               updateProject(project.project_id, { name: trimmed })
                                 .then(() => dispatch({ type: 'RENAME_PROJECT', projectId: project.project_id, name: trimmed }))
-                                .catch(() => {});
+                                .catch(() => toast.error('Rename failed', 'Could not rename project'));
                             }
                             setRenamingId(null);
                           }}
@@ -713,7 +756,7 @@ export default function Dashboard(): React.ReactElement {
                             if (confirm(`Remove "${project.project_name}" from dashboard?\n\nThis only removes it from the list — project files are NOT deleted.`)) {
                               deleteProject(project.project_id)
                                 .then(() => dispatch({ type: 'REMOVE_PROJECT', projectId: project.project_id }))
-                                .catch(() => {});
+                                .catch(() => toast.error('Delete failed', 'Could not remove project'));
                             }
                           }}
                           className="opacity-0 group-hover:opacity-70 hover:!opacity-100 p-1.5 rounded-lg transition-all"

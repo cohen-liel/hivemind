@@ -799,14 +799,33 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
     calculateVisibleRange();
   }, [groups.length, calculateVisibleRange]);
 
+  // Scroll to bottom on initial mount so the user always sees the latest messages
+  const initialScrollDone = useRef(false);
+  useEffect(() => {
+    if (!initialScrollDone.current && groups.length > 0) {
+      initialScrollDone.current = true;
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+          isNearBottomRef.current = true;
+        }
+      });
+    }
+  }, [groups.length]);
+
   // Auto-scroll to bottom when new events arrive (only if user was near bottom)
   useEffect(() => {
     if (activities.length > prevActivitiesLenRef.current) {
       if (isNearBottomRef.current) {
+        // Double-rAF to account for virtual scroll re-rendering
         requestAnimationFrame(() => {
           const el = scrollRef.current;
           if (el) {
             el.scrollTop = el.scrollHeight;
+            requestAnimationFrame(() => {
+              el.scrollTop = el.scrollHeight;
+            });
           }
         });
       } else {
@@ -821,9 +840,19 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
   const scrollToBottom = useCallback((): void => {
     const el = scrollRef.current;
     if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      // Use instant scroll for "New messages" button — smooth scroll can feel
+      // sluggish when there are many messages between current position and bottom.
+      // Double-rAF ensures we stay at the bottom even after React re-renders
+      // the virtual scroll groups (which may change total scrollHeight).
+      el.scrollTop = el.scrollHeight;
       isNearBottomRef.current = true;
       setHasNewBelow(false);
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight;
+        });
+      });
     }
   }, []);
 
@@ -855,6 +884,7 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
     <div className="relative h-full">
       <div
         ref={scrollRef}
+        id="activity-scroll-container"
         className="flex flex-col h-full overflow-y-auto overflow-x-hidden p-4"
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
         role="log"

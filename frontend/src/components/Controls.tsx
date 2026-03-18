@@ -98,6 +98,11 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
     try {
       await onSend(message.trim(), mode);
       setMessage('');
+      // Scroll the activity feed to bottom after sending so the user sees their message
+      requestAnimationFrame(() => {
+        const feedEl = document.getElementById('activity-scroll-container');
+        if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+      });
     } catch {
       setSendError('Failed to send — tap to retry');
     } finally {

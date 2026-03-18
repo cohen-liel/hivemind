@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { ActivityEntry } from '../types';
 import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 
@@ -212,6 +212,7 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {} }: P
   }
 
   const completedCount = steps.filter(s => s.status === 'done').length;
+  const [collapseCompleted, setCollapseCompleted] = useState(false);
   const errorCount = steps.filter(s => s.status === 'error').length;
   const cancelledCount = steps.filter(s => s.status === 'cancelled').length;
   const hasFailures = errorCount > 0 || cancelledCount > 0;
@@ -271,6 +272,32 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {} }: P
         </div>
       </div>
 
+      {/* Collapse toggle for completed tasks */}
+      {completedCount >= 3 && steps.length > completedCount && (
+        <button
+          onClick={() => setCollapseCompleted(prev => !prev)}
+          className="w-full flex items-center gap-2 mb-3 px-3 py-1.5 rounded-lg text-xs transition-colors hover:opacity-80"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-dim)',
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            fontFamily: 'var(--font-mono)',
+          }}
+        >
+          <svg
+            width="10" height="10" viewBox="0 0 16 16" fill="none"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+            style={{ transform: collapseCompleted ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+          >
+            <path d="M4 6l4 4 4-4" />
+          </svg>
+          {collapseCompleted
+            ? `Show ${completedCount} completed tasks`
+            : `Hide ${completedCount} completed tasks`}
+        </button>
+      )}
+
       {/* Timeline steps */}
       <div className="relative">
         {/* Vertical timeline line */}
@@ -278,7 +305,7 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {} }: P
           style={{ background: 'var(--border-subtle)' }} />
 
         <div className="space-y-0">
-          {steps.map((step, i) => {
+          {steps.filter(step => !(collapseCompleted && step.status === 'done')).map((step, i) => {
             const accent = step.agent ? getAgentAccent(step.agent) : { color: 'var(--text-muted)', glow: 'transparent', bg: 'transparent' };
             const isActive = step.status === 'in_progress';
             const isDone = step.status === 'done';

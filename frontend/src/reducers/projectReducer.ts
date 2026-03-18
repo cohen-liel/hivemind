@@ -16,6 +16,19 @@ import type {
 } from '../types';
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/** Maximum activity entries kept in memory. Prevents unbounded growth during long sessions. */
+const MAX_ACTIVITIES = 2000;
+
+/** Append entries to activities, capping at MAX_ACTIVITIES by dropping oldest. */
+function appendActivities(existing: ActivityEntry[], ...entries: ActivityEntry[]): ActivityEntry[] {
+  const combined = [...existing, ...entries];
+  return combined.length > MAX_ACTIVITIES ? combined.slice(-MAX_ACTIVITIES) : combined;
+}
+
+// ============================================================================
 // Supporting Types
 // ============================================================================
 
@@ -135,6 +148,7 @@ export type ProjectAction =
       activities: ActivityEntry[];
       sdkCalls: SdkCall[];
       agentStates: Record<string, AgentStateType>;
+      dagTaskStatus?: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
       hasMoreMessages: boolean;
       messageOffset: number;
       lastSequenceId: number;
@@ -245,11 +259,18 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           mergedAgentStates[name] = agentState;
         }
       }
+      // Merge DAG task statuses: only apply if current state is empty (avoids
+      // overwriting live WS updates that arrived before the activity load).
+      const mergedDagTaskStatus = Object.keys(state.dagTaskStatus).length > 0
+        ? state.dagTaskStatus
+        : action.dagTaskStatus ?? state.dagTaskStatus;
+
       return {
         ...state,
         activities: action.activities,
         sdkCalls: action.sdkCalls.length > 0 ? action.sdkCalls : state.sdkCalls,
         agentStates: mergedAgentStates,
+        dagTaskStatus: mergedDagTaskStatus,
         hasMoreMessages: action.hasMoreMessages,
         messageOffset: action.messageOffset,
         lastSequenceId: action.lastSequenceId,
@@ -393,13 +414,13 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       ) {
         const icon = updateAgent === 'orchestrator' ? '🎯' :
                      updateAgent === 'PM' || updateAgent === 'pm' ? '📋' : '⚙️';
-        newActivities = [...state.activities, {
+        newActivities = appendActivities(state.activities, {
           id: nextId(),
           type: 'agent_text' as const,
           timestamp: event.timestamp,
           agent: updateAgent,
           content: `${icon} ${summaryText}`,
-        }];
+        });
         newLastAgentSummaries = { ...state.lastAgentSummaries, [updateAgent]: summaryText };
       }
 
@@ -419,10 +440,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       if (!event.agent) return state;
 
       const newActivities = isNewEvent(state, event)
-        ? [...state.activities, {
+        ? appendActivities(state.activities, {
             id: nextId(), type: 'tool_use' as const, timestamp: event.timestamp,
             agent: event.agent, tool_name: event.tool_name, tool_description: event.description,
-          }]
+          })
         : state.activities;
 
       return {
@@ -460,10 +481,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         : state.dagTaskStatus;
 
       const newActivities = isNewEvent(state, event)
-        ? [...state.activities, {
+        ? appendActivities(state.activities, {
             id: nextId(), type: 'agent_started' as const, timestamp: event.timestamp,
             agent: event.agent, task: event.task,
-          }]
+          })
         : state.activities;
 
       return {
@@ -510,12 +531,12 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       delete newLiveStream[event.agent];
 
       const newActivities = isNewEvent(state, event)
-        ? [...state.activities, {
+        ? appendActivities(state.activities, {
             id: nextId(), type: 'agent_finished' as const, timestamp: event.timestamp,
             agent: event.agent, cost: event.cost, turns: event.turns,
             duration: event.duration, is_error: event.is_error,
             failure_reason: event.failure_reason,
-          }]
+          })
         : state.activities;
 
       // Update SDK calls — find the matching running entry for this agent.
@@ -579,10 +600,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       const event = action.event;
 
       const newActivities = isNewEvent(state, event)
-        ? [...state.activities, {
+        ? appendActivities(state.activities, {
             id: nextId(), type: 'delegation' as const, timestamp: event.timestamp,
             from_agent: event.from_agent, to_agent: event.to_agent, task: event.task,
-          }]
+          })
         : state.activities;
 
       let newAgentStates = state.agentStates;
@@ -661,10 +682,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       }
 
       const newActivities = isNewEvent(state, event)
-        ? [...state.activities, {
+        ? appendActivities(state.activities, {
             id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
             agent: resultAgent, content: event.text,
-          }]
+          })
         : state.activities;
 
       return {
@@ -679,10 +700,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       const event = action.event;
 
       const newActivities = event.text
-        ? [...state.activities, {
+        ? appendActivities(state.activities, {
             id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
             agent: 'system', content: event.text,
-          }]
+          })
         : state.activities;
 
       // Reset working agents to idle, preserve done/error
@@ -770,11 +791,11 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ...state,
         dagGraph: event.graph,
         dagTaskStatus: {},
-        activities: [...state.activities, {
+        activities: appendActivities(state.activities, {
           id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
           agent: 'PM',
           content: `📋 **DAG Plan:** ${event.graph.vision || 'Execution plan created'} (${event.graph.tasks?.length || 0} tasks)`,
-        }],
+        }),
         lastTicker: `Plan: ${event.graph.vision?.slice(0, 80) || 'DAG created'}`,
         lastSequenceId: trackSequence(state, event),
       };
@@ -808,13 +829,13 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
       return {
         ...state,
-        activities: [...state.activities, {
+        activities: appendActivities(state.activities, {
           id: nextId(),
           type: 'error' as const,
           timestamp: event.timestamp ?? Date.now() / 1000,
           agent: 'system',
           content: `\u274c **Execution ${errorType === 'cancelled' ? 'cancelled' : 'crashed'}:** ${errorMessage}\n\nCompleted ${completedTasks}/${totalTasks} tasks before failure.`,
-        }],
+        }),
         lastTicker: `\u274c Execution ${errorType === 'cancelled' ? 'cancelled' : 'failed'}: ${errorMessage.slice(0, 80)}`,
         lastSequenceId: trackSequence(state, event),
       };
@@ -831,11 +852,11 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           remediation_task: event.remediation_task || '',
           remediation_role: event.remediation_role || '',
         }],
-        activities: [...state.activities, {
+        activities: appendActivities(state.activities, {
           id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
           agent: 'system',
           content: `🔧 **Self-healing:** Task ${event.failed_task} failed (${event.failure_category}). Auto-fix: ${event.remediation_task} (${event.remediation_role})`,
-        }],
+        }),
         lastTicker: `🔧 Self-healing: ${event.failure_category} → ${event.remediation_role}`,
         lastSequenceId: trackSequence(state, event),
       };
@@ -974,7 +995,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       return { ...state, showClearConfirm: action.show };
 
     case 'ADD_ACTIVITY':
-      return { ...state, activities: [...state.activities, action.activity] };
+      return { ...state, activities: appendActivities(state.activities, action.activity) };
 
     case 'CLEAR_ALL_STATE':
       // Full state reset — clears everything including DAG graph, healing events,

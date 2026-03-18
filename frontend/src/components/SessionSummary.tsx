@@ -133,8 +133,20 @@ const SessionSummary = React.memo(function SessionSummary({
 }: SessionSummaryProps): React.ReactElement | null {
   const [data, setData] = useState<SessionSummaryData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
   const [prevStatus, setPrevStatus] = useState(projectStatus);
+
+  // Persist dismissed state in localStorage so it survives page reloads.
+  // Key is scoped to projectId so dismissing one project doesn't affect others.
+  const dismissKey = `hivemind:session-dismissed:${projectId}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem(dismissKey) === 'true'; }
+    catch { return false; }
+  });
+
+  const handleDismiss = useCallback(() => {
+    setDismissed(true);
+    try { localStorage.setItem(dismissKey, 'true'); } catch { /* noop */ }
+  }, [dismissKey]);
 
   // Determine whether we should show the summary card.
   // Show when status is "idle" or "completed" (i.e. after having run something).
@@ -164,7 +176,9 @@ const SessionSummary = React.memo(function SessionSummary({
       projectStatus === 'idle' || projectStatus === 'completed' || projectStatus === 'stopped';
 
     if (wasRunning && isNowDone) {
-      setDismissed(false); // reset dismiss state for new sessions
+      // New session completed — clear the old dismiss flag so the new summary shows
+      setDismissed(false);
+      try { localStorage.removeItem(dismissKey); } catch { /* noop */ }
       fetchSummary();
     }
 
@@ -233,7 +247,7 @@ const SessionSummary = React.memo(function SessionSummary({
         </div>
 
         <button
-          onClick={() => setDismissed(true)}
+          onClick={handleDismiss}
           className="w-5 h-5 rounded flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-2"
           style={{ color: 'var(--text-muted)' }}
           aria-label="Dismiss session summary"
