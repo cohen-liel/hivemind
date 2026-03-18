@@ -47,7 +47,7 @@ def _print_qr_terminal(url: str) -> bool:
     # Dark modules = black in QR spec.  We use inverted colors
     # (dark module → white-on-black terminal) for better contrast.
 
-    FULL = "\u2588"   # █
+    FULL = "\u2588"  # █
     UPPER = "\u2580"  # ▀
     LOWER = "\u2584"  # ▄
     EMPTY = " "
@@ -68,7 +68,7 @@ def _print_qr_terminal(url: str) -> bool:
             elif bot:
                 line += UPPER  # top light, bottom dark → upper half (inverted)
             else:
-                line += FULL   # both light → full block (inverted)
+                line += FULL  # both light → full block (inverted)
         lines.append(line)
 
     print()

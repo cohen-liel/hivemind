@@ -374,6 +374,7 @@ async def run():
                             # Print QR for the tunnel URL (scannable from anywhere)
                             try:
                                 from terminal_qr import print_qr_for_url
+
                                 print("  📱 Scan to open on any device:")
                                 print_qr_for_url(url)
                             except Exception:
@@ -426,6 +427,7 @@ async def run():
     qr_url = lan_url or f"http://localhost:{DASHBOARD_PORT}"
     try:
         from terminal_qr import print_qr_for_url
+
         print("  📱 Scan to open on your phone:")
         print_qr_for_url(qr_url)
     except Exception:
