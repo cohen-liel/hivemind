@@ -818,10 +818,14 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
   useEffect(() => {
     if (activities.length > prevActivitiesLenRef.current) {
       if (isNearBottomRef.current) {
+        // Double-rAF to account for virtual scroll re-rendering
         requestAnimationFrame(() => {
           const el = scrollRef.current;
           if (el) {
             el.scrollTop = el.scrollHeight;
+            requestAnimationFrame(() => {
+              el.scrollTop = el.scrollHeight;
+            });
           }
         });
       } else {
@@ -837,10 +841,18 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
     const el = scrollRef.current;
     if (el) {
       // Use instant scroll for "New messages" button — smooth scroll can feel
-      // sluggish when there are many messages between current position and bottom
+      // sluggish when there are many messages between current position and bottom.
+      // Double-rAF ensures we stay at the bottom even after React re-renders
+      // the virtual scroll groups (which may change total scrollHeight).
       el.scrollTop = el.scrollHeight;
       isNearBottomRef.current = true;
       setHasNewBelow(false);
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight;
+        });
+      });
     }
   }, []);
 

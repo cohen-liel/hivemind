@@ -148,6 +148,7 @@ export type ProjectAction =
       activities: ActivityEntry[];
       sdkCalls: SdkCall[];
       agentStates: Record<string, AgentStateType>;
+      dagTaskStatus?: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
       hasMoreMessages: boolean;
       messageOffset: number;
       lastSequenceId: number;
@@ -258,11 +259,18 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           mergedAgentStates[name] = agentState;
         }
       }
+      // Merge DAG task statuses: only apply if current state is empty (avoids
+      // overwriting live WS updates that arrived before the activity load).
+      const mergedDagTaskStatus = Object.keys(state.dagTaskStatus).length > 0
+        ? state.dagTaskStatus
+        : action.dagTaskStatus ?? state.dagTaskStatus;
+
       return {
         ...state,
         activities: action.activities,
         sdkCalls: action.sdkCalls.length > 0 ? action.sdkCalls : state.sdkCalls,
         agentStates: mergedAgentStates,
+        dagTaskStatus: mergedDagTaskStatus,
         hasMoreMessages: action.hasMoreMessages,
         messageOffset: action.messageOffset,
         lastSequenceId: action.lastSequenceId,

@@ -444,6 +444,7 @@ export interface OtherActivityEvent extends ActivityEventBase {
   tool_name?: string;
   description?: string;
   task?: string;
+  task_id?: string;
   cost?: number;
   turns?: number;
   duration?: number;

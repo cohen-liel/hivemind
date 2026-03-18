@@ -34,7 +34,7 @@ import type { Project, ProjectMessage, AgentState as AgentStateType } from '../t
 import type { ActivityEvent } from '../api';
 import {
   messagesToActivities, activityEventsToEntries,
-  reconstructSdkCalls, reconstructAgentStates,
+  reconstructSdkCalls, reconstructAgentStates, reconstructDagTaskStatus,
 } from '../utils/activityHelpers';
 
 // ── Extracted sub-components ──
@@ -160,6 +160,7 @@ export default function ProjectView(): React.ReactElement | null {
         activities: merged,
         sdkCalls: reconstructSdkCalls(actData.events),
         agentStates: reconstructAgentStates(actData.events),
+        dagTaskStatus: reconstructDagTaskStatus(actData.events),
         hasMoreMessages: msgData.total > 100,
         messageOffset: 100,
         lastSequenceId: actData.latest_sequence ?? 0,

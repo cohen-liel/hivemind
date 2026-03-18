@@ -146,6 +146,25 @@ export function activityEventsToEntries(events: ActivityEvent[]): ActivityEntry[
   return entries;
 }
 
+/** Reconstruct DAG task statuses from persisted activity events (for refresh recovery). */
+export function reconstructDagTaskStatus(
+  events: ActivityEvent[],
+): Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'> {
+  const statuses: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'> = {};
+  for (const evt of events) {
+    if (evt.type === 'dag_task_update' && evt.task_id && evt.status) {
+      const s = evt.status;
+      statuses[evt.task_id] =
+        s === 'completed' ? 'completed' :
+        s === 'working' ? 'working' :
+        s === 'failed' ? 'failed' :
+        s === 'cancelled' ? 'cancelled' :
+        'pending';
+    }
+  }
+  return statuses;
+}
+
 /** Reconstruct SdkCall entries from persisted agent_started/agent_finished events. */
 export function reconstructSdkCalls(events: ActivityEvent[]): SdkCall[] {
   const calls: SdkCall[] = [];
