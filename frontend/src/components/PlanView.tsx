@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { ActivityEntry } from '../types';
 import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 
@@ -212,6 +212,7 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {} }: P
   }
 
   const completedCount = steps.filter(s => s.status === 'done').length;
+  const [collapseCompleted, setCollapseCompleted] = useState(false);
   const errorCount = steps.filter(s => s.status === 'error').length;
   const cancelledCount = steps.filter(s => s.status === 'cancelled').length;
   const hasFailures = errorCount > 0 || cancelledCount > 0;
