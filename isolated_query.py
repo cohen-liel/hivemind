@@ -123,6 +123,7 @@ async def isolated_query(
     allowed_tools: list[str] | None = None,
     tools: list[str] | None = None,
     per_message_timeout: int | None = None,
+    model: str | None = None,
 ) -> SDKResponse:
     """Run an SDK query in a process-isolated event loop.
 
@@ -243,6 +244,8 @@ async def isolated_query(
                     options.tools = tools
                 if current_session:
                     options.resume = current_session
+                if model:
+                    options.model = model
 
                 query_start = time.monotonic()
                 text_parts: list[str] = []

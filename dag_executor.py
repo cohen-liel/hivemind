@@ -41,6 +41,9 @@ from contracts import (
 )
 from git_discipline import commit_single_task, executor_commit
 from isolated_query import isolated_query
+from file_output_manager import ArtifactRegistry, register_task_artifacts, build_artifact_context
+from dynamic_spawner import DynamicSpawner
+from structured_notes import StructuredNotes, NoteCategory
 from sdk_client import CircuitOpenError
 from skills_registry import build_skill_prompt, select_skills_for_task
 
@@ -743,6 +746,12 @@ class _ExecutionContext:
         # on_event callback for forwarding events to the orchestrator / frontend
         self.on_event: Callable | None = on_event
 
+        # ── Hivemind improvements ──
+        self.artifact_registry: ArtifactRegistry = ArtifactRegistry(project_dir)
+        self.dynamic_spawner: DynamicSpawner = DynamicSpawner()
+        self.structured_notes: StructuredNotes = StructuredNotes(project_dir)
+        self.structured_notes.init_session(graph.vision)
+
 
 # ---------------------------------------------------------------------------
 # Execution Result
@@ -897,6 +906,28 @@ async def _run_single_task(
     except Exception as exc:
         logger.warning(f"[DAG] Task {task.id}: skill injection failed (non-fatal): {exc}")
 
+    # ── Inject file artifact context (JIT Context) ──
+    try:
+        artifact_ctx = build_artifact_context(
+            ctx.artifact_registry, task.context_from or []
+        )
+        if artifact_ctx:
+            prompt += f"\n\n{artifact_ctx}"
+            logger.info(f"[DAG] Task {task.id}: injected artifact context ({len(artifact_ctx)} chars)")
+    except Exception as exc:
+        logger.warning(f"[DAG] Task {task.id}: artifact context injection failed (non-fatal): {exc}")
+
+    # ── Inject structured notes (shared knowledge base) ──
+    try:
+        notes_ctx = ctx.structured_notes.build_notes_context(
+            role=role_name, task_goal=task.goal
+        )
+        if notes_ctx:
+            prompt += f"\n\n{notes_ctx}"
+            logger.info(f"[DAG] Task {task.id}: injected notes context ({len(notes_ctx)} chars)")
+    except Exception as exc:
+        logger.warning(f"[DAG] Task {task.id}: notes injection failed (non-fatal): {exc}")
+
     # Resume session if available
     session_key = f"{ctx.graph.project_id}:{role_name}:{task.id}"
     session_id = ctx.session_ids.get(session_key)
@@ -1023,6 +1054,11 @@ async def _run_single_task(
         from config import get_agent_timeout as _get_role_timeout
 
         _role_timeout = _get_role_timeout(role_name)
+        # Check for model override from Dynamic Spawner
+        _model_override = getattr(ctx, 'model_overrides', {}).get(task.id)
+        if _model_override:
+            logger.info(f"[DAG] Task {task.id}: using model override: {_model_override}")
+
         response = await isolated_query(
             ctx.sdk,
             prompt=prompt,
@@ -1034,6 +1070,7 @@ async def _run_single_task(
             on_stream=_on_stream,
             on_tool_use=_on_tool_use,
             per_message_timeout=_role_timeout,
+            model=_model_override,
         )
         # Check if the SDK itself timed out (returned error response)
         if response.is_error and "timeout" in response.error_message.lower():
@@ -1356,6 +1393,33 @@ def _validate_artifacts(output: TaskOutput, project_dir: str) -> TaskOutput:
     else:
         logger.info(f"[DAG] Task {output.task_id}: all {len(verified)} artifacts verified on disk")
 
+    # ── Register artifacts for downstream JIT Context ──
+    try:
+        register_task_artifacts(ctx.artifact_registry, task, output)
+        logger.info(f"[DAG] Task {output.task_id}: artifacts registered in registry")
+    except Exception as exc:
+        logger.warning(f"[DAG] Task {output.task_id}: artifact registration failed (non-fatal): {exc}")
+
+    # ── Record structured notes from task output ──
+    try:
+        if output.is_successful() and output.summary:
+            ctx.structured_notes.add_note(
+                content=output.summary[:500],
+                category=NoteCategory.CONTEXT,
+                author=role_name,
+                tags=[task.id, role_name],
+            )
+        if output.issues:
+            for issue in output.issues[:3]:  # Cap to avoid noise
+                ctx.structured_notes.add_note(
+                    content=issue,
+                    category=NoteCategory.GOTCHA,
+                    author=role_name,
+                    tags=[task.id, role_name],
+                )
+    except Exception as exc:
+        logger.warning(f"[DAG] Task {output.task_id}: notes recording failed (non-fatal): {exc}")
+
     return output
 
 
@@ -1635,7 +1699,37 @@ async def _handle_failure(
         del ctx.completed[task.id]
         return
 
-    # Retries exhausted — try remediation if allowed for this category
+    # Retries exhausted — try dynamic model switch before remediation.
+    # If the failure is likely model-related (e.g. the model got confused),
+    # try re-running the same task with a different Claude model.
+    try:
+        alt_model = ctx.dynamic_spawner.suggest_alternative_model(
+            task=task, output=output, category=category
+        )
+        if alt_model:
+            logger.info(
+                f"[DAG] Task {task.id}: Dynamic Spawner suggests model switch to {alt_model}"
+            )
+            # Re-queue the task with a model override
+            ctx.retries[task.id] = retry_count  # Don't increment — this is a model switch, not a retry
+            ctx.total_cost -= output.cost_usd
+            del ctx.completed[task.id]
+            # Store the model override for _run_single_task to pick up
+            if not hasattr(ctx, 'model_overrides'):
+                ctx.model_overrides = {}
+            ctx.model_overrides[task.id] = alt_model
+            ctx.healing_history.append({
+                "task_id": task.id,
+                "action": "model_switch",
+                "from_model": "default",
+                "to_model": alt_model,
+                "reason": f"Dynamic Spawner: {category.value} failure",
+            })
+            return
+    except Exception as spawn_err:
+        logger.warning(f"[DAG] Task {task.id}: Dynamic Spawner failed (non-fatal): {spawn_err}")
+
+    # Model switch not applicable — try remediation if allowed for this category
     # NOTE: We intentionally do NOT check ctx.remediation_count here.
     # The cap is enforced atomically inside _create_remediation under
     # graph_lock to prevent a TOCTOU race where two concurrent task

@@ -45,6 +45,11 @@ import orch_watchdog
 from architect_agent import ArchitectureBrief, run_architect_review, should_run_architect
 from config import AGENT_EMOJI
 from cross_project_memory import CrossProjectMemory
+# New modules are imported lazily inside _run_dag_session to avoid
+# circular import issues (conftest -> config -> orchestrator -> ...).
+# from debate_engine import DebateEngine
+# from judge_agent import JudgeAgent
+# from structured_notes import StructuredNotes
 
 # Regex to parse <delegate> blocks from orchestrator output
 # Match everything between <delegate> and </delegate> tags, then parse JSON separately
@@ -1735,6 +1740,32 @@ class OrchestratorManager:
             # Session IDs shared across tasks (agent resume)
             session_id_store: dict[str, str] = {}
 
+            # ── Step 1.5: Debate Engine — structured review for critical tasks ──
+            try:
+                from debate_engine import DebateEngine
+                _debate = DebateEngine(project_dir=self.project_dir)
+                for task in graph.tasks:
+                    if _debate.should_debate(task):
+                        logger.info(
+                            f"[{self.project_id}] Debate triggered for task {task.id} ({task.role.value})"
+                        )
+                        await self._notify(
+                            f"🗣️ **Debate Engine** reviewing critical task: {task.goal[:80]}..."
+                        )
+                        debate_result = await _debate.run_debate(
+                            task=task,
+                            graph_vision=graph.vision,
+                        )
+                        if debate_result and debate_result.enhanced_goal:
+                            task.goal = debate_result.enhanced_goal
+                            logger.info(
+                                f"[{self.project_id}] Debate enhanced goal for {task.id}"
+                            )
+            except Exception as debate_err:
+                logger.warning(
+                    f"[{self.project_id}] Debate Engine failed (non-fatal): {debate_err}"
+                )
+
             # Step 2: DAG Executor
             logger.info(
                 f"[{self.project_id}] Starting DAG execution: "
@@ -1768,6 +1799,37 @@ class OrchestratorManager:
                     f"confidence={o.confidence:.2f}, turns={o.turns_used}, "
                     f"${o.cost_usd:.4f}, "
                     f"failure={'(' + (o.failure_category.value if o.failure_category else 'none') + ') ' + o.failure_details[:80] if not o.is_successful() else 'none'}"
+                )
+
+            # ── Step 2.5: Judge Agent — quality evaluation of DAG results ──
+            try:
+                from judge_agent import JudgeAgent as _JA
+                _judge = _JA(project_dir=self.project_dir)
+                judge_verdict = await _judge.evaluate_dag_results(
+                    graph=graph,
+                    results={o.task_id: o for o in result.outputs},
+                    project_dir=self.project_dir,
+                    goal=graph.vision,
+                )
+                if judge_verdict:
+                    _score = judge_verdict.overall_score
+                    _pass = judge_verdict.passed
+                    logger.info(
+                        f"[{self.project_id}] Judge Agent: score={_score:.1f}/10, "
+                        f"passed={_pass}"
+                    )
+                    _summary = judge_verdict.summary or ('Good quality' if _pass else 'Needs improvement')
+                    if _score >= 7:
+                        await self._notify(
+                            f"✅ **Quality Review:** Score {_score:.1f}/10 — {_summary}"
+                        )
+                    else:
+                        await self._notify(
+                            f"⚠️ **Quality Review:** Score {_score:.1f}/10 — {_summary}"
+                        )
+            except Exception as judge_err:
+                logger.warning(
+                    f"[{self.project_id}] Judge Agent failed (non-fatal): {judge_err}"
                 )
 
             # Step 3: Memory Agent — update project knowledge
