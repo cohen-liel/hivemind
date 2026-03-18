@@ -50,13 +50,15 @@ export default function ConductorBar({
         boxShadow: isActive ? '0 4px 30px var(--glow-blue)' : 'none',
       }}
     >
-      {/* Active glow bar */}
-      {isActive && (
+      {/* Active glow bar — shows during orchestration and during startup */}
+      {(isActive || status === 'running') && (
         <div
           className="absolute bottom-0 left-0 h-[2px] animate-[loading_3s_ease-in-out_infinite]"
           style={{
             width: '40%',
-            background: 'linear-gradient(90deg, transparent, var(--accent-blue), transparent)',
+            background: isActive
+              ? 'linear-gradient(90deg, transparent, var(--accent-blue), transparent)'
+              : 'linear-gradient(90deg, transparent, var(--accent-amber), transparent)',
           }}
         />
       )}
@@ -127,6 +129,16 @@ export default function ConductorBar({
               <div className="text-[10px] truncate"
                 style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
                 {orchestrator?.current_tool || orchestrator?.task || lastTicker || 'orchestrating...'}
+              </div>
+            </div>
+          )}
+          {!isActive && status === 'running' && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-1 h-1 rounded-full animate-pulse flex-shrink-0"
+                style={{ background: 'var(--accent-amber)' }} />
+              <div className="text-[10px] truncate"
+                style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
+                {lastTicker || 'initializing agents...'}
               </div>
             </div>
           )}
