@@ -16,6 +16,19 @@ import type {
 } from '../types';
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/** Maximum activity entries kept in memory. Prevents unbounded growth during long sessions. */
+const MAX_ACTIVITIES = 2000;
+
+/** Append entries to activities, capping at MAX_ACTIVITIES by dropping oldest. */
+function appendActivities(existing: ActivityEntry[], ...entries: ActivityEntry[]): ActivityEntry[] {
+  const combined = [...existing, ...entries];
+  return combined.length > MAX_ACTIVITIES ? combined.slice(-MAX_ACTIVITIES) : combined;
+}
+
+// ============================================================================
 // Supporting Types
 // ============================================================================
 
@@ -393,13 +406,13 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       ) {
         const icon = updateAgent === 'orchestrator' ? '🎯' :
                      updateAgent === 'PM' || updateAgent === 'pm' ? '📋' : '⚙️';
-        newActivities = [...state.activities, {
+        newActivities = appendActivities(state.activities, {
           id: nextId(),
           type: 'agent_text' as const,
           timestamp: event.timestamp,
           agent: updateAgent,
           content: `${icon} ${summaryText}`,
-        }];
+        });
         newLastAgentSummaries = { ...state.lastAgentSummaries, [updateAgent]: summaryText };
       }
 
@@ -974,7 +987,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       return { ...state, showClearConfirm: action.show };
 
     case 'ADD_ACTIVITY':
-      return { ...state, activities: [...state.activities, action.activity] };
+      return { ...state, activities: appendActivities(state.activities, action.activity) };
 
     case 'CLEAR_ALL_STATE':
       // Full state reset — clears everything including DAG graph, healing events,

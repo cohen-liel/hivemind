@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 interface Props {
   description: string;
@@ -8,51 +8,61 @@ interface Props {
 
 export default function ApprovalModal({ description, projectId, onClose }: Props) {
   const [loading, setLoading] = useState<'approve' | 'reject' | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Focus trap + keyboard shortcuts
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      if (e.key === 'Enter' && !e.shiftKey && !loading) handleApprove();
-    };
-    document.addEventListener('keydown', handler);
-    dialogRef.current?.focus();
-    return () => document.removeEventListener('keydown', handler);
-  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleApprove = async () => {
+  const handleApprove = useCallback(async () => {
     if (loading) return;
     setLoading('approve');
+    setError(null);
     try {
       const res = await fetch(`/api/projects/${projectId}/approve`, { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       onClose();
     } catch (e) {
       setLoading(null);
-      // Show inline error instead of alert
-      console.error('Failed to approve:', e);
+      setError(`Failed to approve: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
-  };
+  }, [loading, projectId, onClose]);
 
-  const handleReject = async () => {
+  const handleReject = useCallback(async () => {
     if (loading) return;
     setLoading('reject');
+    setError(null);
     try {
       const res = await fetch(`/api/projects/${projectId}/reject`, { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       onClose();
     } catch (e) {
       setLoading(null);
-      console.error('Failed to reject:', e);
+      setError(`Failed to reject: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
-  };
+  }, [loading, projectId, onClose]);
+
+  // Keyboard shortcuts + body scroll lock
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !loading) onClose();
+      if (e.key === 'Enter' && !e.shiftKey && !loading) handleApprove();
+    };
+    document.addEventListener('keydown', handler);
+    dialogRef.current?.focus();
+
+    // Lock body scroll while modal is open
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.removeEventListener('keydown', handler);
+      document.body.style.overflow = prev;
+    };
+  }, [loading, onClose, handleApprove]);
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)' }}
-      onClick={onClose}
+      onClick={() => { if (!loading) onClose(); }}
       role="dialog"
       aria-modal="true"
       aria-label="Approval required"
@@ -98,6 +108,14 @@ export default function ApprovalModal({ description, projectId, onClose }: Props
             {description}
           </p>
         </div>
+
+        {/* Error message */}
+        {error && (
+          <div className="rounded-lg px-3 py-2 mb-3 text-xs"
+            style={{ background: 'rgba(245,71,91,0.1)', color: 'var(--accent-red)', border: '1px solid rgba(245,71,91,0.2)' }}>
+            {error}
+          </div>
+        )}
 
         {/* Keyboard hint */}
         <p className="text-[10px] mb-3 text-center" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>

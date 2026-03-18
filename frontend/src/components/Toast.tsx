@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, createContext, useContext } from 'react';
+import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react';
 
 // ============================================================
 // TOAST NOTIFICATION SYSTEM
@@ -74,21 +74,27 @@ const EXIT_ANIMATION_MS = 300;
 function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: () => void }) {
   const [exiting, setExiting] = useState(false);
   const colors = TOAST_COLORS[toast.type];
+  // Stable ref to onRemove — avoids resetting timers when the parent
+  // re-renders with a new inline callback (which happens on every toast
+  // add/remove because the closure captures the toast id).
+  const onRemoveRef = useRef(onRemove);
+  onRemoveRef.current = onRemove;
 
   const dismiss = useCallback(() => {
+    if (exiting) return;
     setExiting(true);
-    setTimeout(onRemove, EXIT_ANIMATION_MS);
-  }, [onRemove]);
+    setTimeout(() => onRemoveRef.current(), EXIT_ANIMATION_MS);
+  }, [exiting]);
 
   useEffect(() => {
     const duration = Math.max(toast.duration ?? 4000, EXIT_ANIMATION_MS + 100);
     const exitTimer = setTimeout(() => setExiting(true), duration - EXIT_ANIMATION_MS);
-    const removeTimer = setTimeout(onRemove, duration);
+    const removeTimer = setTimeout(() => onRemoveRef.current(), duration);
     return () => {
       clearTimeout(exitTimer);
       clearTimeout(removeTimer);
     };
-  }, [toast.duration, onRemove]);
+  }, [toast.duration]); // stable deps — no more timer resets
 
   return (
     <div
