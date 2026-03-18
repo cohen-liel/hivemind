@@ -206,7 +206,7 @@ Hivemind is built in three layers:
 | **Smart Concurrency Control** | Reader agents run in parallel; writer agents are serialized when their file scopes overlap to prevent conflicts. |
 | **Project Isolation** | Every agent is sandboxed to its project directory. Cross-project file access is blocked at multiple enforcement layers. |
 | **Circuit Breaker** | The SDK client implements a circuit breaker pattern to prevent cascade failures when Claude Code is overloaded. |
-| **Device Authentication** | Zero-password auth. Approve new devices with a one-time code displayed in your terminal. |
+| **Device Authentication** | Zero-password auth. Approve devices with a rotating access code + optional QR scan from your phone. Multiple devices can connect with the same code. |
 
 ---
 
@@ -257,13 +257,13 @@ The web dashboard provides full visibility into what every agent is doing:
 - **Live Agent Output** — Stream each agent's work in real-time via WebSocket
 - **DAG Progress** — Visual task graph showing agent status and dependencies
 - **Agent Cards** — See all 11 agents with their current status (Standby, Working, Done)
+- **Plan View** — Live execution plan with ✓ completion tracking, collapsible completed tasks, and progress bar
 - **Code Browser** — Browse and diff the files agents are creating and modifying
-- **Plan View** — Inspect the TaskGraph the PM agent created
 - **Diff View** — See exactly what changed in each file
 - **Cost Analytics** — Monitor token usage and cost per session over time
 - **Schedules** — Set up recurring tasks with cron expressions
 - **Dark/Light Mode** — Full theme support
-- **Mobile Responsive** — Access from any device, optimized for phone and tablet
+- **Mobile Optimized** — WhatsApp-like auto-expanding input, bottom tab nav, haptic feedback, "New messages" pill for quick scroll-to-bottom
 
 <div align="center">
 
@@ -282,16 +282,26 @@ Access Hivemind from your phone, tablet, or any device:
 DASHBOARD_HOST=0.0.0.0
 ```
 
-Start the server and it will print a public URL:
+Start the server and it prints everything you need — local URL, public URL, access code, and a **QR code** you can scan with your phone:
 
 ```
-============================================
-  PUBLIC ACCESS URL:
-  https://random-name.trycloudflare.com
-============================================
+  ╔══════════════════════════════════════════════════════╗
+  ║              ⚡ Hivemind is running                  ║
+  ╠══════════════════════════════════════════════════════╣
+  ║  🌐 Local:   http://localhost:8080                   ║
+  ║  🏠 Network: http://192.168.1.42:8080                ║
+  ║  🌍 Public:  https://random-name.trycloudflare.com   ║
+  ╠══════════════════════════════════════════════════════╣
+  ║  🔑 Access Code:  A3K7NP2Q                           ║
+  ╠══════════════════════════════════════════════════════╣
+  ║  📱 Scan QR to open on your phone:                   ║
+  ║       ████████████████                               ║
+  ╚══════════════════════════════════════════════════════╝
 ```
 
-When you open the dashboard from a new device, enter the **access code** shown in your terminal. The device is approved permanently — no passwords, no accounts. The code rotates every 24 hours.
+When you open the dashboard from a new device, enter the **access code** shown in your terminal. The device is approved permanently — no passwords, no accounts. The code rotates every 5 minutes and supports **multiple devices** connecting with the same code.
+
+For extra security, set `HIVEMIND_PASSWORD` in `.env` — devices will need both the code and the password.
 
 For a permanent URL, set up a named Cloudflare Tunnel:
 
@@ -337,6 +347,7 @@ All configuration is done via environment variables in `.env`:
 | Variable | Default | Description |
 |---|---|---|
 | `DEVICE_AUTH_ENABLED` | `true` | Enable device-based authentication |
+| `HIVEMIND_PASSWORD` | *(empty)* | Optional password required alongside the access code |
 | `SANDBOX_ENABLED` | `true` | Restrict agents to project directories |
 | `SESSION_EXPIRY_HOURS` | `24` | Session expiry time |
 
@@ -354,8 +365,9 @@ python3 -m pytest tests/ -v
 # Type checking
 cd frontend && npx tsc --noEmit
 
-# Lint
-python3 -m flake8 *.py dashboard/ --max-line-length=120
+# Lint + format
+ruff check .
+ruff format --check .
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
@@ -384,7 +396,8 @@ hivemind/
 │   └── src/               # React + TypeScript + Tailwind UI
 │       ├── pages/         # Dashboard, Settings, Project views
 │       └── components/    # Reusable UI components
-├── tests/                 # 1,164 tests — unit, integration, e2e
+├── terminal_qr.py         # Terminal QR code renderer (zero-dep)
+├── tests/                 # 1,282 tests — unit, integration, e2e
 ├── setup.sh               # One-command setup script
 ├── restart.sh             # Server restart script
 ├── docker-compose.yml     # Docker deployment
@@ -437,7 +450,7 @@ cloudflared --version
 <details>
 <summary><strong>Device authentication code not showing</strong></summary>
 
-Check the terminal where `server.py` is running. The access code is printed on startup. You can also rotate the code from the Settings page in the dashboard.
+Check the terminal where `server.py` is running. The access code and QR code are printed on startup. The code rotates every 5 minutes — if it expired, a new one is generated automatically. You can also rotate the code from the Settings page in the dashboard.
 
 </details>
 
