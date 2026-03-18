@@ -237,9 +237,9 @@ class DeviceAuthManager:
                     (device_id, token_hash, device_name, ip, user_agent, now, now),
                 )
 
-            # Rotate the code after successful use (one-time use)
-            self._rotate_code()
-            self.print_access_code()
+            # The access code stays valid until it expires (5-min window).
+            # This allows multiple devices to connect with the same code
+            # (e.g. laptop + phone) without needing to check the terminal again.
 
             logger.info(
                 "New device approved: %s (%s) from %s",

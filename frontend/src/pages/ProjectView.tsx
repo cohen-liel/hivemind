@@ -30,7 +30,7 @@ import { useDagPersistence } from '../hooks/useDagPersistence';
 import { useProjectWebSocket } from '../hooks/useProjectWebSocket';
 import { useProjectActions } from '../hooks/useProjectActions';
 import { projectReducer, initialProjectState } from '../reducers/projectReducer';
-import type { ProjectMessage, AgentState as AgentStateType } from '../types';
+import type { Project, ProjectMessage, AgentState as AgentStateType } from '../types';
 import type { ActivityEvent } from '../api';
 import {
   messagesToActivities, activityEventsToEntries,
@@ -265,6 +265,97 @@ export default function ProjectView(): React.ReactElement | null {
     () => dispatch({ type: 'CLEAR_PRE_TASK_QUESTION' }), [],
   );
 
+  // ════════════════════════════════════════════════════════════════════════
+  // CONTEXT VALUE — must be above early returns (Rules of Hooks: useMemo
+  // must run on every render, even when we return early below).
+  // ════════════════════════════════════════════════════════════════════════
+
+  // The useMemo hook must run unconditionally (before early returns) to satisfy
+  // Rules of Hooks.  The value is only consumed via Provider after the guards
+  // below, so project/id will always be defined when consumers read the context.
+  const contextValue = useMemo((): ProjectContextValue => {
+    // Computed agent lists — only meaningful when project is loaded
+    const agentList: AgentStateType[] = (project?.agents || []).map(
+      (name) =>
+        agentStates[name] ?? {
+          name,
+          state: 'idle' as const,
+          cost: 0,
+          turns: 0,
+          duration: 0,
+        },
+    );
+    const orch = agentList.find((a) => a.name === 'orchestrator') ?? null;
+    const subs = agentList.filter((a) => a.name !== 'orchestrator');
+
+    return {
+      // Core data — non-null assertion safe: Provider only renders after
+      // the early-return guards that check project !== null && id !== undefined.
+      project: project as Project,
+      projectId: id as string,
+      connected,
+
+      // Agent state
+      orchestratorState: orch,
+      subAgentStates: subs,
+      agentStateList: agentList,
+      agentStates,
+      loopProgress,
+
+      // Activity & content
+      activities,
+      files,
+      sdkCalls,
+      liveAgentStream,
+      agentMetrics,
+
+      // Time & display
+      now,
+      lastTicker,
+
+      // DAG
+      dagGraph,
+      dagTaskStatus,
+      healingEvents,
+
+      // UI view state
+      desktopTab,
+      selectedAgent,
+      mobileView,
+
+      // Messaging
+      hasMoreMessages,
+      message,
+      sending,
+
+      // Callbacks (stable refs)
+      onSetDesktopTab,
+      onSelectAgent,
+      onSetMobileView,
+      onLoadMore: loadEarlierMessages,
+      onPause: actions.handlePause,
+      onResume: actions.handleResume,
+      onStop: actions.handleStop,
+      onSend: actions.handleSend,
+      onMobileSend: actions.handleMobileSend,
+      onShowClearConfirm,
+      onMessageChange: setMessage,
+      pendingQuestion,
+      onClearQuestion,
+    };
+  }, [
+    project, id, connected,
+    agentStates, loopProgress,
+    activities, files, sdkCalls, liveAgentStream, agentMetrics,
+    now, lastTicker,
+    dagGraph, dagTaskStatus, healingEvents,
+    desktopTab, selectedAgent, mobileView,
+    hasMoreMessages, message, sending,
+    onSetDesktopTab, onSelectAgent, onSetMobileView,
+    loadEarlierMessages, actions, onShowClearConfirm, setMessage,
+    pendingQuestion, onClearQuestion,
+  ]);
+
   // ── Error / Loading early returns ──
   if (loadError) {
     return (
@@ -281,93 +372,6 @@ export default function ProjectView(): React.ReactElement | null {
     );
   }
   if (!project || !id) return <ProjectLoadingSkeleton />;
-
-  // ── Computed values ──
-  const agentStateList: AgentStateType[] = (project.agents || []).map(
-    (name) =>
-      agentStates[name] ?? {
-        name,
-        state: 'idle' as const,
-        cost: 0,
-        turns: 0,
-        duration: 0,
-      },
-  );
-  const orchestratorState =
-    agentStateList.find((a) => a.name === 'orchestrator') ?? null;
-  const subAgentStates = agentStateList.filter(
-    (a) => a.name !== 'orchestrator',
-  );
-
-  // ════════════════════════════════════════════════════════════════════════
-  // CONTEXT VALUE — memoised to prevent cascading re-renders in consumers
-  // ════════════════════════════════════════════════════════════════════════
-
-  const contextValue: ProjectContextValue = useMemo(() => ({
-    // Core data
-    project,
-    projectId: id,
-    connected,
-
-    // Agent state
-    orchestratorState,
-    subAgentStates,
-    agentStateList,
-    agentStates,
-    loopProgress,
-
-    // Activity & content
-    activities,
-    files,
-    sdkCalls,
-    liveAgentStream,
-    agentMetrics,
-
-    // Time & display
-    now,
-    lastTicker,
-
-    // DAG
-    dagGraph,
-    dagTaskStatus,
-    healingEvents,
-
-    // UI view state
-    desktopTab,
-    selectedAgent,
-    mobileView,
-
-    // Messaging
-    hasMoreMessages,
-    message,
-    sending,
-
-    // Callbacks (stable refs)
-    onSetDesktopTab,
-    onSelectAgent,
-    onSetMobileView,
-    onLoadMore: loadEarlierMessages,
-    onPause: actions.handlePause,
-    onResume: actions.handleResume,
-    onStop: actions.handleStop,
-    onSend: actions.handleSend,
-    onMobileSend: actions.handleMobileSend,
-    onShowClearConfirm,
-    onMessageChange: setMessage,
-    pendingQuestion,
-    onClearQuestion,
-  }), [
-    project, id, connected,
-    orchestratorState, subAgentStates, agentStateList, agentStates, loopProgress,
-    activities, files, sdkCalls, liveAgentStream, agentMetrics,
-    now, lastTicker,
-    dagGraph, dagTaskStatus, healingEvents,
-    desktopTab, selectedAgent, mobileView,
-    hasMoreMessages, message, sending,
-    onSetDesktopTab, onSelectAgent, onSetMobileView,
-    loadEarlierMessages, actions, onShowClearConfirm, setMessage,
-    pendingQuestion, onClearQuestion,
-  ]);
 
   // ════════════════════════════════════════════════════════════════════════
   // LAYOUT — ProjectContext eliminates prop drilling to layout components
