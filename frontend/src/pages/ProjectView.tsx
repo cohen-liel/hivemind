@@ -15,7 +15,7 @@
  * in components/project/ and components/.
  */
 
-import { useEffect, useReducer, useState, useCallback } from 'react';
+import { useEffect, useReducer, useState, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   getProject, getMessages, getFiles, getLiveState,
@@ -50,6 +50,7 @@ import {
   ProjectContext,
 } from '../components/project';
 import type { ProjectContextValue } from '../components/project';
+import type { DesktopTab, MobileView } from '../reducers/projectReducer';
 
 // ============================================================================
 // Component
@@ -281,10 +282,28 @@ export default function ProjectView(): React.ReactElement | null {
   );
 
   // ════════════════════════════════════════════════════════════════════════
-  // CONTEXT VALUE — memoised callbacks prevent unnecessary re-renders
+  // CONTEXT VALUE — memoised to prevent cascading re-renders in consumers
   // ════════════════════════════════════════════════════════════════════════
 
-  const contextValue: ProjectContextValue = {
+  // Stable callback references — dispatch identity never changes so these
+  // are created once and never cause downstream re-renders.
+  const onSetDesktopTab = useCallback(
+    (tab: DesktopTab) => dispatch({ type: 'SET_DESKTOP_TAB', tab }), [],
+  );
+  const onSelectAgent = useCallback(
+    (agent: string | null) => dispatch({ type: 'SET_SELECTED_AGENT', agent }), [],
+  );
+  const onSetMobileView = useCallback(
+    (view: MobileView) => dispatch({ type: 'SET_MOBILE_VIEW', view }), [],
+  );
+  const onShowClearConfirm = useCallback(
+    () => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: true }), [],
+  );
+  const onClearQuestion = useCallback(
+    () => dispatch({ type: 'CLEAR_PRE_TASK_QUESTION' }), [],
+  );
+
+  const contextValue: ProjectContextValue = useMemo(() => ({
     // Core data
     project,
     projectId: id,
@@ -323,21 +342,32 @@ export default function ProjectView(): React.ReactElement | null {
     message,
     sending,
 
-    // Callbacks
-    onSetDesktopTab: (tab) => dispatch({ type: 'SET_DESKTOP_TAB', tab }),
-    onSelectAgent: (agent) => dispatch({ type: 'SET_SELECTED_AGENT', agent }),
-    onSetMobileView: (view) => dispatch({ type: 'SET_MOBILE_VIEW', view }),
+    // Callbacks (stable refs)
+    onSetDesktopTab,
+    onSelectAgent,
+    onSetMobileView,
     onLoadMore: loadEarlierMessages,
     onPause: actions.handlePause,
     onResume: actions.handleResume,
     onStop: actions.handleStop,
     onSend: actions.handleSend,
     onMobileSend: actions.handleMobileSend,
-    onShowClearConfirm: () => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: true }),
+    onShowClearConfirm,
     onMessageChange: setMessage,
     pendingQuestion,
-    onClearQuestion: () => dispatch({ type: 'CLEAR_PRE_TASK_QUESTION' }),
-  };
+    onClearQuestion,
+  }), [
+    project, id, connected,
+    orchestratorState, subAgentStates, agentStateList, agentStates, loopProgress,
+    activities, files, sdkCalls, liveAgentStream, agentMetrics,
+    now, lastTicker,
+    dagGraph, dagTaskStatus, healingEvents,
+    desktopTab, selectedAgent, mobileView,
+    hasMoreMessages, message, sending,
+    onSetDesktopTab, onSelectAgent, onSetMobileView,
+    loadEarlierMessages, actions, onShowClearConfirm, setMessage,
+    pendingQuestion, onClearQuestion,
+  ]);
 
   // ════════════════════════════════════════════════════════════════════════
   // LAYOUT — ProjectContext eliminates prop drilling to layout components
