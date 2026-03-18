@@ -119,6 +119,7 @@ class DebateEngine:
         self,
         task: TaskInput,
         project_dir: str,
+        sdk=None,
         context: str = "",
     ) -> DebateResult:
         """Run a structured debate for a task.
@@ -132,6 +133,7 @@ class DebateEngine:
         Args:
             task: The task to debate
             project_dir: Project directory for SDK calls
+            sdk: ClaudeSDKManager instance (passed to isolated_query)
             context: Additional context (e.g., architect review)
 
         Returns:
@@ -140,6 +142,9 @@ class DebateEngine:
         # Lazy import to avoid circular dependency
         from isolated_query import isolated_query
         from config import SPECIALIST_PROMPTS, get_agent_turns
+        import state
+
+        _sdk = sdk or state.sdk_client
 
         challenger_role = self.get_challenger_role(task)
         rounds: list[DebateRound] = []
@@ -165,14 +170,15 @@ class DebateEngine:
                 )
 
             proposer_response = await isolated_query(
+                _sdk,
                 prompt=proposer_prompt,
-                system_prompt=SPECIALIST_PROMPTS.get(task.role, ""),
-                project_dir=project_dir,
-                max_turns=get_agent_turns(task.role) // 2,
-                task_id=f"{task.id}_debate_r{round_num}_proposer",
+                system_prompt=SPECIALIST_PROMPTS.get(task.role.value, "You are an expert software engineer."),
+                cwd=project_dir,
+                max_turns=min(get_agent_turns(task.role.value) // 2, 5),
+                max_budget_usd=1.0,
             )
             proposer_text = proposer_response.text if proposer_response else ""
-            total_turns += proposer_response.turns_used if proposer_response else 0
+            total_turns += proposer_response.num_turns if proposer_response else 0
 
             # ── Challenger argues ────────────────────────────────────
             challenger_prompt = (
@@ -185,14 +191,15 @@ class DebateEngine:
             )
 
             challenger_response = await isolated_query(
+                _sdk,
                 prompt=challenger_prompt,
-                system_prompt=SPECIALIST_PROMPTS.get(challenger_role, ""),
-                project_dir=project_dir,
-                max_turns=get_agent_turns(challenger_role) // 2,
-                task_id=f"{task.id}_debate_r{round_num}_challenger",
+                system_prompt=SPECIALIST_PROMPTS.get(challenger_role.value, "You are an expert software engineer."),
+                cwd=project_dir,
+                max_turns=min(get_agent_turns(challenger_role.value) // 2, 5),
+                max_budget_usd=1.0,
             )
             challenger_text = challenger_response.text if challenger_response else ""
-            total_turns += challenger_response.turns_used if challenger_response else 0
+            total_turns += challenger_response.num_turns if challenger_response else 0
 
             rounds.append(DebateRound(
                 round_num=round_num,
@@ -220,14 +227,15 @@ class DebateEngine:
         )
 
         judge_response = await isolated_query(
+            _sdk,
             prompt=judge_prompt,
             system_prompt="You are a senior technical judge. Be objective and thorough.",
-            project_dir=project_dir,
+            cwd=project_dir,
             max_turns=3,
-            task_id=f"{task.id}_debate_judge",
+            max_budget_usd=1.0,
         )
         judge_text = judge_response.text if judge_response else ""
-        total_turns += judge_response.turns_used if judge_response else 0
+        total_turns += judge_response.num_turns if judge_response else 0
 
         # Parse verdict
         verdict, reasoning, approach = self._parse_verdict(judge_text)

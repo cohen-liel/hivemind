@@ -1743,7 +1743,7 @@ class OrchestratorManager:
             # ── Step 1.5: Debate Engine — structured review for critical tasks ──
             try:
                 from debate_engine import DebateEngine
-                _debate = DebateEngine(project_dir=self.project_dir)
+                _debate = DebateEngine()
                 for task in graph.tasks:
                     if _debate.should_debate(task):
                         logger.info(
@@ -1754,12 +1754,18 @@ class OrchestratorManager:
                         )
                         debate_result = await _debate.run_debate(
                             task=task,
-                            graph_vision=graph.vision,
+                            project_dir=self.project_dir,
+                            sdk=self.sdk,
+                            context=graph.vision,
                         )
-                        if debate_result and debate_result.enhanced_goal:
-                            task.goal = debate_result.enhanced_goal
+                        if debate_result and debate_result.merged_approach:
+                            # Enrich the task goal with debate insights
+                            task.goal = (
+                                task.goal + "\n\n"
+                                + _debate.build_debate_context(debate_result)
+                            )
                             logger.info(
-                                f"[{self.project_id}] Debate enhanced goal for {task.id}"
+                                f"[{self.project_id}] Debate enriched goal for {task.id}"
                             )
             except Exception as debate_err:
                 logger.warning(
@@ -1804,28 +1810,29 @@ class OrchestratorManager:
             # ── Step 2.5: Judge Agent — quality evaluation of DAG results ──
             try:
                 from judge_agent import JudgeAgent as _JA
-                _judge = _JA(project_dir=self.project_dir)
+                _judge = _JA()
                 judge_verdict = await _judge.evaluate_dag_results(
                     graph=graph,
                     results={o.task_id: o for o in result.outputs},
                     project_dir=self.project_dir,
                     goal=graph.vision,
+                    sdk=self.sdk,
                 )
                 if judge_verdict:
-                    _score = judge_verdict.overall_score
+                    _score = judge_verdict.weighted_score
                     _pass = judge_verdict.passed
                     logger.info(
                         f"[{self.project_id}] Judge Agent: score={_score:.1f}/10, "
                         f"passed={_pass}"
                     )
-                    _summary = judge_verdict.summary or ('Good quality' if _pass else 'Needs improvement')
+                    _feedback = judge_verdict.overall_feedback or ('Good quality' if _pass else 'Needs improvement')
                     if _score >= 7:
                         await self._notify(
-                            f"✅ **Quality Review:** Score {_score:.1f}/10 — {_summary}"
+                            f"✅ **Quality Review:** Score {_score:.1f}/10 — {_feedback}"
                         )
                     else:
                         await self._notify(
-                            f"⚠️ **Quality Review:** Score {_score:.1f}/10 — {_summary}"
+                            f"⚠️ **Quality Review:** Score {_score:.1f}/10 — {_feedback}"
                         )
             except Exception as judge_err:
                 logger.warning(

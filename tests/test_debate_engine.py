@@ -153,14 +153,14 @@ class TestRunDebate:
         engine = DebateEngine(max_rounds=1)
         task = _make_task()
 
-        mock_response = MagicMock()
+        mock_response = MagicMock(num_turns=2)
         mock_response.text = "VERDICT: original\nREASONING: Good approach.\nAPPROACH: Use PostgreSQL."
-        mock_response.turns_used = 2
 
-        with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=mock_response):
+        mock_sdk = MagicMock()
+        with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=mock_response) as mock_iq:
             with patch("config.SPECIALIST_PROMPTS", {"database_expert": "You are a DB expert", "backend_developer": "You are a backend dev"}):
                 with patch("config.get_agent_turns", return_value=10):
-                    result = await engine.run_debate(task, "/tmp/project")
+                    result = await engine.run_debate(task, "/tmp/project", sdk=mock_sdk)
 
         assert result.task_id == "t1"
         assert len(result.rounds) == 1
@@ -172,14 +172,14 @@ class TestRunDebate:
         engine = DebateEngine(max_rounds=2)
         task = _make_task()
 
-        mock_response = MagicMock()
+        mock_response = MagicMock(num_turns=1)
         mock_response.text = "VERDICT: merged\nREASONING: Both good.\nAPPROACH: Combine."
-        mock_response.turns_used = 1
 
-        with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=mock_response):
+        mock_sdk = MagicMock()
+        with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=mock_response) as mock_iq:
             with patch("config.SPECIALIST_PROMPTS", {}):
                 with patch("config.get_agent_turns", return_value=10):
-                    result = await engine.run_debate(task, "/tmp/project")
+                    result = await engine.run_debate(task, "/tmp/project", sdk=mock_sdk)
 
         assert len(result.rounds) == 2
         assert result.cost_turns == 5  # 1 turn x 5 calls (2 rounds x 2 + judge)
@@ -189,10 +189,11 @@ class TestRunDebate:
         engine = DebateEngine(max_rounds=1)
         task = _make_task()
 
-        with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=None):
+        mock_sdk = MagicMock()
+        with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=None) as mock_iq:
             with patch("config.SPECIALIST_PROMPTS", {}):
                 with patch("config.get_agent_turns", return_value=10):
-                    result = await engine.run_debate(task, "/tmp/project")
+                    result = await engine.run_debate(task, "/tmp/project", sdk=mock_sdk)
 
         assert result.verdict == DebateVerdict.MERGED  # default when no text
         assert result.cost_turns == 0

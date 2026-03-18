@@ -248,9 +248,10 @@ class TestEvaluateDagResults:
             "OVERALL: Solid work\nCRITICAL: NONE"
         )
 
+        mock_sdk = MagicMock()
         with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=mock_response):
             verdict = await judge.evaluate_dag_results(
-                graph, results, "/tmp/project", goal="Build auth system"
+                graph, results, "/tmp/project", goal="Build auth system", sdk=mock_sdk
             )
 
         assert verdict.passed is True
@@ -263,9 +264,10 @@ class TestEvaluateDagResults:
         graph = _make_graph()
         results = _make_results()
 
+        mock_sdk = MagicMock()
         with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=None):
             verdict = await judge.evaluate_dag_results(
-                graph, results, "/tmp/project"
+                graph, results, "/tmp/project", sdk=mock_sdk
             )
 
         # All scores default to 5.0

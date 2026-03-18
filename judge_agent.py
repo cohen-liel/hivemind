@@ -86,6 +86,7 @@ class JudgeAgent:
         results: dict[str, TaskOutput],
         project_dir: str,
         goal: str = "",
+        sdk=None,
     ) -> JudgeVerdict:
         """Evaluate the quality of all completed tasks.
 
@@ -94,6 +95,7 @@ class JudgeAgent:
             results: task_id -> TaskOutput mapping
             project_dir: Project directory for SDK call
             goal: The original user goal
+            sdk: ClaudeSDKManager instance (passed to isolated_query)
 
         Returns:
             JudgeVerdict with pass/fail and detailed scores
@@ -106,17 +108,21 @@ class JudgeAgent:
 
         # Call Claude for evaluation
         from isolated_query import isolated_query
+        import state
+
+        _sdk = sdk or state.sdk_client
 
         response = await isolated_query(
+            _sdk,
             prompt=prompt,
             system_prompt=(
                 "You are a senior code reviewer and quality judge. "
                 "Evaluate the work objectively using the provided rubric. "
                 "Be strict but fair."
             ),
-            project_dir=project_dir,
+            cwd=project_dir,
             max_turns=3,
-            task_id="judge_evaluation",
+            max_budget_usd=1.0,
         )
 
         response_text = response.text if response else ""

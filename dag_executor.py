@@ -41,7 +41,7 @@ from contracts import (
 )
 from git_discipline import commit_single_task, executor_commit
 from isolated_query import isolated_query
-from file_output_manager import ArtifactRegistry, register_task_artifacts, build_artifact_context
+from file_output_manager import ArtifactRegistry
 from dynamic_spawner import DynamicSpawner
 from structured_notes import StructuredNotes, NoteCategory
 from sdk_client import CircuitOpenError
@@ -908,12 +908,10 @@ async def _run_single_task(
 
     # ── Inject file artifact context (JIT Context) ──
     try:
-        artifact_ctx = build_artifact_context(
-            ctx.artifact_registry, task.context_from or []
-        )
-        if artifact_ctx:
-            prompt += f"\n\n{artifact_ctx}"
-            logger.info(f"[DAG] Task {task.id}: injected artifact context ({len(artifact_ctx)} chars)")
+        enhanced_prompt = ctx.artifact_registry.enhance_prompt(task, prompt)
+        if enhanced_prompt != prompt:
+            logger.info(f"[DAG] Task {task.id}: injected artifact context ({len(enhanced_prompt) - len(prompt)} chars)")
+            prompt = enhanced_prompt
     except Exception as exc:
         logger.warning(f"[DAG] Task {task.id}: artifact context injection failed (non-fatal): {exc}")
 
@@ -1257,6 +1255,39 @@ async def _run_single_task(
         if output.is_successful() and output.artifacts:
             output = _validate_artifacts(output, ctx.project_dir)
 
+        # ── Register artifacts for downstream JIT Context ──
+        if output.is_successful():
+            try:
+                n_registered = ctx.artifact_registry.register(output)
+                if n_registered:
+                    logger.info(f"[DAG] Task {task.id}: {n_registered} artifacts registered in registry")
+            except Exception as exc:
+                logger.warning(f"[DAG] Task {task.id}: artifact registration failed (non-fatal): {exc}")
+
+        # ── Record structured notes from task output ──
+        try:
+            if output.is_successful() and output.summary:
+                ctx.structured_notes.add_note(
+                    category=NoteCategory.CONTEXT,
+                    title=f"Task {task.id} completed",
+                    content=output.summary[:500],
+                    author_role=role_name,
+                    author_task_id=task.id,
+                    tags=[task.id, role_name],
+                )
+            if output.issues:
+                for issue in output.issues[:3]:  # Cap to avoid noise
+                    ctx.structured_notes.add_note(
+                        category=NoteCategory.GOTCHA,
+                        title=f"Issue in {task.id}",
+                        content=issue,
+                        author_role=role_name,
+                        author_task_id=task.id,
+                        tags=[task.id, role_name],
+                    )
+        except Exception as exc:
+            logger.warning(f"[DAG] Task {task.id}: notes recording failed (non-fatal): {exc}")
+
         # ── Detect max_turns exhaustion ──
         total_turns = max_turns  # The combined limit
         if output.turns_used >= total_turns and not output.is_successful():
@@ -1392,33 +1423,6 @@ def _validate_artifacts(output: TaskOutput, project_dir: str) -> TaskOutput:
             output.confidence = max(output.confidence - (phantom_ratio * 0.2), 0.1)
     else:
         logger.info(f"[DAG] Task {output.task_id}: all {len(verified)} artifacts verified on disk")
-
-    # ── Register artifacts for downstream JIT Context ──
-    try:
-        register_task_artifacts(ctx.artifact_registry, task, output)
-        logger.info(f"[DAG] Task {output.task_id}: artifacts registered in registry")
-    except Exception as exc:
-        logger.warning(f"[DAG] Task {output.task_id}: artifact registration failed (non-fatal): {exc}")
-
-    # ── Record structured notes from task output ──
-    try:
-        if output.is_successful() and output.summary:
-            ctx.structured_notes.add_note(
-                content=output.summary[:500],
-                category=NoteCategory.CONTEXT,
-                author=role_name,
-                tags=[task.id, role_name],
-            )
-        if output.issues:
-            for issue in output.issues[:3]:  # Cap to avoid noise
-                ctx.structured_notes.add_note(
-                    content=issue,
-                    category=NoteCategory.GOTCHA,
-                    author=role_name,
-                    tags=[task.id, role_name],
-                )
-    except Exception as exc:
-        logger.warning(f"[DAG] Task {output.task_id}: notes recording failed (non-fatal): {exc}")
 
     return output
 
@@ -1703,8 +1707,8 @@ async def _handle_failure(
     # If the failure is likely model-related (e.g. the model got confused),
     # try re-running the same task with a different Claude model.
     try:
-        alt_model = ctx.dynamic_spawner.suggest_alternative_model(
-            task=task, output=output, category=category
+        alt_model = ctx.dynamic_spawner.get_respawn_model(
+            task=task, output=output
         )
         if alt_model:
             logger.info(
