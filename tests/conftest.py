@@ -1,5 +1,35 @@
 """Shared fixtures for the test suite."""
 
+# ── Mock claude_agent_sdk (private package, not available in CI) ─────────────
+import sys
+import types
+from unittest.mock import MagicMock
+
+if "claude_agent_sdk" not in sys.modules:
+    # Create a proper package mock that supports attribute and submodule access
+    _sdk_pkg = types.ModuleType("claude_agent_sdk")
+    _sdk_pkg.__path__ = []  # Make it a package so submodule imports work
+    _sdk_pkg.ClaudeAgentOptions = type("ClaudeAgentOptions", (), {})
+    _sdk_pkg.ClaudeSDKClient = MagicMock()
+
+    _internal = types.ModuleType("claude_agent_sdk._internal")
+    _internal.__path__ = []
+    _internal.message_parser = MagicMock()
+
+    _types = MagicMock()
+    _types.__path__ = []
+    _types.__name__ = "claude_agent_sdk.types"
+
+    _msg_parser = types.ModuleType("claude_agent_sdk._internal.message_parser")
+    _msg_parser.parse_message = MagicMock()
+
+    sys.modules["claude_agent_sdk"] = _sdk_pkg
+    sys.modules["claude_agent_sdk._internal"] = _internal
+    sys.modules["claude_agent_sdk._internal.message_parser"] = _msg_parser
+    sys.modules["claude_agent_sdk.types"] = _types
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 import os
 import sys
 

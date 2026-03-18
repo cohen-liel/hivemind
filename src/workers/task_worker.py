@@ -340,6 +340,13 @@ async def process_message_task(
     except TimeoutError:
         err = f"Agent timed out after {_AGENT_TIMEOUT_SECONDS:.0f}s"
         logger.error("task_worker[%s]: %s", task_id, err)
+        # Stop the orchestrator — asyncio.shield prevents wait_for from
+        # cancelling the future, so we must explicitly stop the manager
+        # to clean up running SDK sessions and the DAG executor.
+        try:
+            await manager.stop()
+        except Exception as stop_err:
+            logger.warning("task_worker[%s]: manager.stop() failed: %s", task_id, stop_err)
         await event_bus.publish(
             {
                 "type": "task_failed",

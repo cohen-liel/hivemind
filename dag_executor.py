@@ -39,10 +39,13 @@ from contracts import (
     task_input_to_prompt,
     validate_artifact_contracts,
 )
+from dynamic_spawner import DynamicSpawner
+from file_output_manager import ArtifactRegistry
 from git_discipline import commit_single_task, executor_commit
 from isolated_query import isolated_query
 from sdk_client import CircuitOpenError
 from skills_registry import build_skill_prompt, select_skills_for_task
+from structured_notes import NoteCategory, StructuredNotes
 
 logger = logging.getLogger(__name__)
 
@@ -743,6 +746,13 @@ class _ExecutionContext:
         # on_event callback for forwarding events to the orchestrator / frontend
         self.on_event: Callable | None = on_event
 
+        # ── Hivemind improvements ──
+        self.artifact_registry: ArtifactRegistry = ArtifactRegistry(project_dir)
+        self.dynamic_spawner: DynamicSpawner = DynamicSpawner()
+        self.structured_notes: StructuredNotes = StructuredNotes(project_dir)
+        self.structured_notes.init_session(graph.vision)
+        self.model_overrides: dict[str, str] = {}  # task_id -> model override
+
 
 # ---------------------------------------------------------------------------
 # Execution Result
@@ -802,6 +812,12 @@ def _build_result(ctx: _ExecutionContext, graph: TaskGraph) -> ExecutionResult:
         f"cost=${ctx.total_cost:.4f} | "
         f"roles={roles_used}"
     )
+    # Save artifact manifest for downstream consumers
+    try:
+        ctx.artifact_registry.save_manifest()
+    except Exception as exc:
+        logger.warning(f"[DAG] Failed to save artifact manifest (non-fatal): {exc}")
+
     return ExecutionResult(
         outputs=all_outputs,
         total_cost=sum(o.cost_usd for o in all_outputs),
@@ -896,6 +912,28 @@ async def _run_single_task(
             system_prompt = system_prompt + build_skill_prompt(skill_names)
     except Exception as exc:
         logger.warning(f"[DAG] Task {task.id}: skill injection failed (non-fatal): {exc}")
+
+    # ── Inject file artifact context (JIT Context) ──
+    try:
+        enhanced_prompt = ctx.artifact_registry.enhance_prompt(task, prompt)
+        if enhanced_prompt != prompt:
+            logger.info(
+                f"[DAG] Task {task.id}: injected artifact context ({len(enhanced_prompt) - len(prompt)} chars)"
+            )
+            prompt = enhanced_prompt
+    except Exception as exc:
+        logger.warning(
+            f"[DAG] Task {task.id}: artifact context injection failed (non-fatal): {exc}"
+        )
+
+    # ── Inject structured notes (shared knowledge base) ──
+    try:
+        notes_ctx = ctx.structured_notes.build_notes_context(role=role_name, task_goal=task.goal)
+        if notes_ctx:
+            prompt += f"\n\n{notes_ctx}"
+            logger.info(f"[DAG] Task {task.id}: injected notes context ({len(notes_ctx)} chars)")
+    except Exception as exc:
+        logger.warning(f"[DAG] Task {task.id}: notes injection failed (non-fatal): {exc}")
 
     # Resume session if available
     session_key = f"{ctx.graph.project_id}:{role_name}:{task.id}"
@@ -1023,6 +1061,11 @@ async def _run_single_task(
         from config import get_agent_timeout as _get_role_timeout
 
         _role_timeout = _get_role_timeout(role_name)
+        # Check for model override from Dynamic Spawner
+        _model_override = ctx.model_overrides.get(task.id)
+        if _model_override:
+            logger.info(f"[DAG] Task {task.id}: using model override: {_model_override}")
+
         response = await isolated_query(
             ctx.sdk,
             prompt=prompt,
@@ -1034,6 +1077,7 @@ async def _run_single_task(
             on_stream=_on_stream,
             on_tool_use=_on_tool_use,
             per_message_timeout=_role_timeout,
+            model=_model_override,
         )
         # Check if the SDK itself timed out (returned error response)
         if response.is_error and "timeout" in response.error_message.lower():
@@ -1219,6 +1263,47 @@ async def _run_single_task(
     try:
         if output.is_successful() and output.artifacts:
             output = _validate_artifacts(output, ctx.project_dir)
+
+        # ── Register artifacts for downstream JIT Context ──
+        if output.is_successful():
+            try:
+                n_registered = ctx.artifact_registry.register(output)
+                if n_registered:
+                    logger.info(
+                        f"[DAG] Task {task.id}: {n_registered} artifacts registered in registry"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    f"[DAG] Task {task.id}: artifact registration failed (non-fatal): {exc}"
+                )
+
+        # ── Record structured notes from task output ──
+        try:
+            if output.is_successful() and output.summary:
+                # Include files changed alongside summary for richer context
+                _files_info = ""
+                if output.artifacts:
+                    _files_info = f"\nFiles changed: {', '.join(output.artifacts[:10])}"
+                ctx.structured_notes.add_note(
+                    category=NoteCategory.CONTEXT,
+                    title=f"Task {task.id} completed",
+                    content=output.summary[:500] + _files_info,
+                    author_role=role_name,
+                    author_task_id=task.id,
+                    tags=[task.id, role_name],
+                )
+            if output.issues:
+                for issue in output.issues[:3]:  # Cap to avoid noise
+                    ctx.structured_notes.add_note(
+                        category=NoteCategory.GOTCHA,
+                        title=f"Issue in {task.id}",
+                        content=issue,
+                        author_role=role_name,
+                        author_task_id=task.id,
+                        tags=[task.id, role_name],
+                    )
+        except Exception as exc:
+            logger.warning(f"[DAG] Task {task.id}: notes recording failed (non-fatal): {exc}")
 
         # ── Detect max_turns exhaustion ──
         total_turns = max_turns  # The combined limit
@@ -1635,7 +1720,37 @@ async def _handle_failure(
         del ctx.completed[task.id]
         return
 
-    # Retries exhausted — try remediation if allowed for this category
+    # Retries exhausted — try dynamic model switch before remediation.
+    # If the failure is likely model-related (e.g. the model got confused),
+    # try re-running the same task with a different Claude model.
+    try:
+        alt_model = ctx.dynamic_spawner.get_respawn_model(task=task, output=output)
+        if alt_model:
+            logger.info(
+                f"[DAG] Task {task.id}: Dynamic Spawner suggests model switch to {alt_model}"
+            )
+            # Re-queue the task with a model override
+            ctx.retries[task.id] = (
+                retry_count  # Don't increment — this is a model switch, not a retry
+            )
+            ctx.total_cost -= output.cost_usd
+            del ctx.completed[task.id]
+            # Store the model override for _run_single_task to pick up
+            ctx.model_overrides[task.id] = alt_model
+            ctx.healing_history.append(
+                {
+                    "task_id": task.id,
+                    "action": "model_switch",
+                    "from_model": "default",
+                    "to_model": alt_model,
+                    "reason": f"Dynamic Spawner: {category.value} failure",
+                }
+            )
+            return
+    except Exception as spawn_err:
+        logger.warning(f"[DAG] Task {task.id}: Dynamic Spawner failed (non-fatal): {spawn_err}")
+
+    # Model switch not applicable — try remediation if allowed for this category
     # NOTE: We intentionally do NOT check ctx.remediation_count here.
     # The cap is enforced atomically inside _create_remediation under
     # graph_lock to prevent a TOCTOU race where two concurrent task

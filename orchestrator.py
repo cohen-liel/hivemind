@@ -1735,6 +1735,36 @@ class OrchestratorManager:
             # Session IDs shared across tasks (agent resume)
             session_id_store: dict[str, str] = {}
 
+            # ── Step 1.5: Debate Engine — structured review for critical tasks ──
+            try:
+                from debate_engine import DebateEngine
+
+                _debate = DebateEngine()
+                for task in graph.tasks:
+                    if _debate.should_debate(task):
+                        logger.info(
+                            f"[{self.project_id}] Debate triggered for task {task.id} ({task.role.value})"
+                        )
+                        await self._notify(
+                            f"🗣️ **Debate Engine** reviewing critical task: {task.goal[:80]}..."
+                        )
+                        debate_result = await _debate.run_debate(
+                            task=task,
+                            project_dir=self.project_dir,
+                            sdk=self.sdk,
+                            context=graph.vision,
+                        )
+                        if debate_result and debate_result.merged_approach:
+                            # Enrich the task goal with debate insights
+                            task.goal = (
+                                task.goal + "\n\n" + _debate.build_debate_context(debate_result)
+                            )
+                            logger.info(f"[{self.project_id}] Debate enriched goal for {task.id}")
+            except Exception as debate_err:
+                logger.warning(
+                    f"[{self.project_id}] Debate Engine failed (non-fatal): {debate_err}"
+                )
+
             # Step 2: DAG Executor
             logger.info(
                 f"[{self.project_id}] Starting DAG execution: "
