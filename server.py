@@ -371,6 +371,13 @@ async def run():
                             logger.info("   Open this link on your phone, laptop,")
                             logger.info("   or any device with internet access.")
                             logger.info("=" * 60)
+                            # Print QR for the tunnel URL (scannable from anywhere)
+                            try:
+                                from terminal_qr import print_qr_for_url
+                                print("  📱 Scan to open on any device:")
+                                print_qr_for_url(url)
+                            except Exception:
+                                pass
                             logger.info("")
                     # suppress verbose cloudflared debug lines
             except FileNotFoundError:
@@ -391,12 +398,14 @@ async def run():
     # Show access URLs
     import socket
 
+    lan_url: str | None = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         lan_ip = s.getsockname()[0]
         s.close()
-        logger.info(f"🏠 LAN access:   http://{lan_ip}:{DASHBOARD_PORT}")
+        lan_url = f"http://{lan_ip}:{DASHBOARD_PORT}"
+        logger.info(f"🏠 LAN access:   {lan_url}")
     except OSError:
         logger.debug("LAN IP detection unavailable", exc_info=True)
 
@@ -409,7 +418,19 @@ async def run():
 
     _auth_mgr = DeviceAuthManager()
     _auth_mgr.print_access_code()
-    # Also print to stdout (not just logger) so it's visible in terminal
+
+    # ── QR code for mobile access ─────────────────────────────────────────────
+    # Print a scannable QR code with the LAN URL so users can quickly open
+    # the dashboard on their phone.  Only the URL is embedded — NO credentials.
+    # The device auth flow (access code → device token) handles authentication.
+    qr_url = lan_url or f"http://localhost:{DASHBOARD_PORT}"
+    try:
+        from terminal_qr import print_qr_for_url
+        print("  📱 Scan to open on your phone:")
+        print_qr_for_url(qr_url)
+    except Exception:
+        pass  # QR is a nice-to-have, never block startup
+
     print(flush=True)
 
     try:

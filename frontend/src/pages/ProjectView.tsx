@@ -247,6 +247,24 @@ export default function ProjectView(): React.ReactElement | null {
   // Each handler guards internally against id being undefined.
   const actions = useProjectActions(id, dispatch, toast, loadProject);
 
+  // Stable callback references — dispatch identity never changes so these
+  // are created once and never cause downstream re-renders.
+  const onSetDesktopTab = useCallback(
+    (tab: DesktopTab) => dispatch({ type: 'SET_DESKTOP_TAB', tab }), [],
+  );
+  const onSelectAgent = useCallback(
+    (agent: string | null) => dispatch({ type: 'SET_SELECTED_AGENT', agent }), [],
+  );
+  const onSetMobileView = useCallback(
+    (view: MobileView) => dispatch({ type: 'SET_MOBILE_VIEW', view }), [],
+  );
+  const onShowClearConfirm = useCallback(
+    () => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: true }), [],
+  );
+  const onClearQuestion = useCallback(
+    () => dispatch({ type: 'CLEAR_PRE_TASK_QUESTION' }), [],
+  );
+
   // ── Error / Loading early returns ──
   if (loadError) {
     return (
@@ -284,24 +302,6 @@ export default function ProjectView(): React.ReactElement | null {
   // ════════════════════════════════════════════════════════════════════════
   // CONTEXT VALUE — memoised to prevent cascading re-renders in consumers
   // ════════════════════════════════════════════════════════════════════════
-
-  // Stable callback references — dispatch identity never changes so these
-  // are created once and never cause downstream re-renders.
-  const onSetDesktopTab = useCallback(
-    (tab: DesktopTab) => dispatch({ type: 'SET_DESKTOP_TAB', tab }), [],
-  );
-  const onSelectAgent = useCallback(
-    (agent: string | null) => dispatch({ type: 'SET_SELECTED_AGENT', agent }), [],
-  );
-  const onSetMobileView = useCallback(
-    (view: MobileView) => dispatch({ type: 'SET_MOBILE_VIEW', view }), [],
-  );
-  const onShowClearConfirm = useCallback(
-    () => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: true }), [],
-  );
-  const onClearQuestion = useCallback(
-    () => dispatch({ type: 'CLEAR_PRE_TASK_QUESTION' }), [],
-  );
 
   const contextValue: ProjectContextValue = useMemo(() => ({
     // Core data
