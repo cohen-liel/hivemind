@@ -205,6 +205,28 @@ export default function NewProjectDialog(): React.ReactElement {
     { value: 3, label: 'Full Team', desc: '+ code reviewer', icon: '🏢' },
   ];
 
+  // Agent roster for the swarm preview
+  const allAgents: Array<{ label: string; color: string }> = [
+    { label: 'PM', color: '#638cff' },
+    { label: 'FE', color: '#3dd68c' },
+    { label: 'BE', color: '#f5a623' },
+    { label: 'DB', color: '#a78bfa' },
+    { label: 'QA', color: '#f472b6' },
+    { label: 'DV', color: '#22d3ee' },
+    { label: 'SE', color: '#fb923c' },
+    { label: 'AI', color: '#818cf8' },
+    { label: 'OPS', color: '#34d399' },
+    { label: 'UX', color: '#e879f9' },
+    { label: 'AR', color: '#fbbf24' },
+    { label: 'RV', color: '#f87171' },
+  ];
+
+  const swarmAgents = agentsCount === 1
+    ? allAgents.slice(0, 1)
+    : agentsCount === 2
+      ? allAgents.slice(0, 5)
+      : allAgents;
+
   const isValid = name.trim() && directory.trim();
 
   // Quick-access paths
@@ -474,6 +496,52 @@ export default function NewProjectDialog(): React.ReactElement {
                   </button>
                 );
               })}
+            </div>
+
+            {/* Swarm Preview — mini agent circle */}
+            <div
+              className="mt-4 flex items-center justify-center"
+              style={{ minHeight: '96px' }}
+            >
+              <div className="relative" style={{ width: '96px', height: '96px' }}>
+                {swarmAgents.map((agent, i) => {
+                  const count = swarmAgents.length;
+                  const angle = count === 1 ? 0 : (2 * Math.PI * i) / count - Math.PI / 2;
+                  const radius = count === 1 ? 0 : 34;
+                  const cx = 48 + radius * Math.cos(angle);
+                  const cy = 48 + radius * Math.sin(angle);
+                  const size = count > 8 ? 22 : 28;
+
+                  return (
+                    <div
+                      key={`${agentsCount}-${agent.label}`}
+                      className="absolute flex items-center justify-center rounded-full stagger-item"
+                      style={{
+                        width: `${size}px`,
+                        height: `${size}px`,
+                        left: `${cx - size / 2}px`,
+                        top: `${cy - size / 2}px`,
+                        background: agent.color,
+                        boxShadow: `0 0 12px ${agent.color}66`,
+                        animationDelay: `${i * 60}ms`,
+                      }}
+                      title={agent.label}
+                    >
+                      <span
+                        className="font-bold select-none"
+                        style={{
+                          fontSize: count > 8 ? '8px' : '9px',
+                          color: '#fff',
+                          fontFamily: 'var(--font-mono)',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {agent.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
 

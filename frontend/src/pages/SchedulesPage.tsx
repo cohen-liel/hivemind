@@ -223,12 +223,77 @@ export default function SchedulesPage() {
 
         {/* Schedules list */}
         {schedules.length === 0 ? (
-          <ErrorState
-            variant="empty"
-            icon="🕐"
-            title="No Schedules Yet"
-            message="Create a schedule to automate recurring tasks for your projects."
-          />
+          <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+            {/* Animated clock SVG illustration */}
+            <div className="relative mb-6" style={{ animation: 'staggerFadeIn 0.4s ease-out forwards' }}>
+              <svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="40" cy="40" r="36" stroke="var(--border-subtle)" strokeWidth="2" fill="var(--bg-elevated)" />
+                <circle cx="40" cy="40" r="36" stroke="var(--accent-blue)" strokeWidth="2" strokeDasharray="226" strokeDashoffset="170" strokeLinecap="round" style={{ animation: 'spin 8s linear infinite' }} />
+                <circle cx="40" cy="40" r="3" fill="var(--accent-blue)" />
+                <line x1="40" y1="40" x2="40" y2="22" stroke="var(--text-primary)" strokeWidth="2.5" strokeLinecap="round" />
+                <line x1="40" y1="40" x2="54" y2="40" stroke="var(--text-secondary)" strokeWidth="2" strokeLinecap="round" />
+                {/* Tick marks */}
+                {[0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].map((deg) => (
+                  <line
+                    key={deg}
+                    x1="40"
+                    y1="8"
+                    x2="40"
+                    y2={deg % 90 === 0 ? '13' : '11'}
+                    stroke={deg % 90 === 0 ? 'var(--text-muted)' : 'var(--border-subtle)'}
+                    strokeWidth={deg % 90 === 0 ? '2' : '1'}
+                    strokeLinecap="round"
+                    transform={`rotate(${deg} 40 40)`}
+                  />
+                ))}
+              </svg>
+            </div>
+
+            <h3
+              className="text-lg font-semibold mb-2"
+              style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)', animation: 'staggerFadeIn 0.4s ease-out 80ms forwards', opacity: 0 }}
+            >
+              No Schedules Yet
+            </h3>
+            <p
+              className="text-sm mb-6 max-w-sm"
+              style={{ color: 'var(--text-muted)', animation: 'staggerFadeIn 0.4s ease-out 140ms forwards', opacity: 0 }}
+            >
+              Automate recurring tasks — code reviews, test runs, dependency checks — on a schedule so your projects stay healthy while you sleep.
+            </p>
+
+            {/* Actionable CTA */}
+            <button
+              onClick={() => {
+                setFormTask('Review all open PRs, check for code quality issues, and summarize findings');
+                setFormTime('09:00');
+                setFormRepeat('daily');
+                setShowForm(true);
+              }}
+              className="flex items-center gap-2 px-5 py-3 text-sm font-semibold rounded-xl transition-all active:scale-95"
+              style={{
+                background: 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)',
+                color: 'white',
+                boxShadow: '0 4px 20px var(--glow-blue)',
+                animation: 'staggerFadeIn 0.4s ease-out 200ms forwards',
+                opacity: 0,
+              }}
+              aria-label="Create your first daily code review schedule"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M8 3v10M3 8h10" />
+              </svg>
+              Create your first daily code review schedule
+            </button>
+
+            {/* Secondary suggestion */}
+            <p
+              className="text-xs mt-4"
+              style={{ color: 'var(--text-muted)', animation: 'staggerFadeIn 0.4s ease-out 260ms forwards', opacity: 0 }}
+            >
+              or click <span style={{ color: 'var(--accent-blue)', fontWeight: 500 }}>+ New Schedule</span> above to configure from scratch
+            </p>
+          </div>
         ) : (
           <div className="space-y-3">
             {schedules.map((s, i) => (
