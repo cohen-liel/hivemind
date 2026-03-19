@@ -59,3 +59,12 @@ hivemind_auth.db-shm
 hivemind_auth.db-wal
 *.db-shm
 *.db-wal
+
+# Orchestration metadata artifacts (plans, tasks, notes)
+*.plan.md
+notes.json
+.notes.json
+NOTES.md
+task_*.json
+plans/
+tasks/

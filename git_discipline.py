@@ -51,6 +51,16 @@ _SENSITIVE_PATTERNS: tuple[str, ...] = (
     "reviews/**",
     "REVIEW_*.md",
     "*.review.md",
+    # Orchestration metadata — plans, tasks, notes
+    "*.plan.md",
+    "notes.json",
+    ".notes.json",
+    "NOTES.md",
+    "task_*.json",
+    "plans/*",
+    "plans/**",
+    "tasks/*",
+    "tasks/**",
 )
 
 
@@ -59,9 +69,11 @@ def _is_sensitive(filepath: str) -> bool:
     from fnmatch import fnmatch
 
     name = Path(filepath).name
-    # Block anything inside .hivemind/ directory entirely
+    # Block anything inside .hivemind/, plans/, or tasks/ directories entirely
     normalized = filepath.replace("\\", "/")
     if normalized.startswith(".hivemind/") or normalized == ".hivemind":
+        return True
+    if normalized.startswith("plans/") or normalized.startswith("tasks/"):
         return True
     # Match against both the full relative path and just the filename
     return any(fnmatch(filepath, pat) or fnmatch(name, pat) for pat in _SENSITIVE_PATTERNS)
@@ -86,12 +98,20 @@ async def commit_single_task(
 
     Returns the short commit hash, or None if there was nothing to commit.
     Uses a per-project lock to prevent concurrent git operations.
+
+    When the task output lists specific artifacts, ONLY those files are
+    staged — preventing unrelated changes from leaking into the commit.
     """
     if not output or not output.is_successful():
         return None
 
+    # Collect the file paths this task claims to have changed
+    scoped_files = [f for f in (output.artifacts or []) if not _is_sensitive(f)] or None
+
     async with _git_lock(project_dir):
-        return await _do_commit(project_dir, [output], task_id=output.task_id)
+        return await _do_commit(
+            project_dir, [output], task_id=output.task_id, scoped_files=scoped_files
+        )
 
 
 async def executor_commit(
@@ -117,8 +137,16 @@ async def _do_commit(
     outputs: list[TaskOutput],
     task_id: str = "",
     round_num: int = 0,
+    scoped_files: list[str] | None = None,
 ) -> str | None:
-    """Internal: perform the actual git add + commit. Caller must hold the lock."""
+    """Internal: perform the actual git add + commit. Caller must hold the lock.
+
+    Args:
+        scoped_files: When provided, ONLY these files are staged instead of
+            ``git add -u``. This keeps single-task commits focused on the
+            files the agent actually changed, preventing unrelated
+            modifications from leaking in.
+    """
 
     proj = Path(project_dir)
     if not (proj / ".git").exists():
@@ -130,12 +158,12 @@ async def _do_commit(
     if not status.strip():
         return None  # Nothing to commit
 
-    # Stage files safely: exclude known-sensitive patterns.
-    # We stage tracked modifications with -u first (always safe), then
-    # add untracked files individually after checking each against the
-    # sensitive-file pattern list.  This prevents secrets, API keys, and
-    # certificates from being committed even if an agent created them.
-    await _stage_files_safely(project_dir)
+    if scoped_files:
+        # Scoped commit: only stage files this task actually changed
+        await _stage_scoped_files(project_dir, scoped_files)
+    else:
+        # Broad commit (round fallback): stage everything safely
+        await _stage_files_safely(project_dir)
 
     # After selective staging, check again — we might have excluded everything
     staged = await _run(["git", "diff", "--cached", "--name-only"], cwd=project_dir)
@@ -157,6 +185,24 @@ async def _do_commit(
     return short_hash
 
 
+async def _stage_scoped_files(project_dir: str, scoped_files: list[str]) -> None:
+    """Stage only the files the task claims to have changed.
+
+    Each file is validated against _SENSITIVE_PATTERNS before staging.
+    Files that don't exist or have no changes are silently skipped by git.
+    """
+    staged = 0
+    for filepath in scoped_files:
+        if _is_sensitive(filepath):
+            logger.warning("[git] Skipping sensitive scoped file: %s", filepath)
+            continue
+        result = await _run(["git", "add", "--", filepath], cwd=project_dir)
+        if result is not None:
+            staged += 1
+    if staged:
+        logger.debug("[git] Scoped staging: %d/%d files staged", staged, len(scoped_files))
+
+
 async def _stage_files_safely(project_dir: str) -> None:
     """Stage project changes while excluding known-sensitive file patterns.
 
@@ -171,6 +217,9 @@ async def _stage_files_safely(project_dir: str) -> None:
     """
     # Step 1: stage tracked changes (modifications + deletions)
     await _run(["git", "add", "-u"], cwd=project_dir)
+
+    # Step 1b: unstage any tracked metadata files that shouldn't be committed
+    await _unstage_metadata_files(project_dir)
 
     # Step 2: enumerate untracked files and add safe ones
     raw = await _run(
@@ -194,6 +243,32 @@ async def _stage_files_safely(project_dir: str) -> None:
             "[git] %d sensitive file(s) excluded from auto-commit: %s",
             len(skipped),
             skipped,
+        )
+
+
+async def _unstage_metadata_files(project_dir: str) -> None:
+    """Unstage any tracked metadata/sensitive files from the index.
+
+    After ``git add -u`` stages all tracked modifications, this function
+    checks the staged diff for files matching _SENSITIVE_PATTERNS and removes
+    them from the index (``git rm --cached``) so they won't be committed.
+    The files remain on disk — only the git index entry is removed.
+    """
+    staged = await _run(["git", "diff", "--cached", "--name-only"], cwd=project_dir)
+    if not staged.strip():
+        return
+    unstaged: list[str] = []
+    for filepath in staged.strip().splitlines():
+        filepath = filepath.strip()
+        if filepath and _is_sensitive(filepath):
+            await _run(["git", "reset", "HEAD", "--", filepath], cwd=project_dir)
+            unstaged.append(filepath)
+            logger.info("[git] Unstaged tracked metadata file: %s", filepath)
+    if unstaged:
+        logger.info(
+            "[git] %d tracked metadata file(s) removed from staging: %s",
+            len(unstaged),
+            unstaged,
         )
 
 
