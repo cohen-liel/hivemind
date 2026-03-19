@@ -295,10 +295,18 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {}, dag
       {showCelebration && <CelebrationOverlay />}
 
       {isDagMode && dagGraph?.vision && (
-        <div className="mb-4 px-3 py-2 rounded-lg text-xs leading-relaxed"
-          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)', color: 'var(--text-secondary)' }}>
-          <span className="font-semibold" style={{ color: 'var(--accent-blue)' }}>🎯 Vision: </span>
-          {dagGraph.vision}
+        <div className="glass-panel glow-border-blue mb-4 px-4 py-3 rounded-xl text-xs leading-relaxed"
+          style={{ color: 'var(--text-secondary)' }}>
+          <div className="flex items-start gap-2">
+            <span className="text-base flex-shrink-0" aria-hidden="true">🎯</span>
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider block mb-1"
+                style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>Vision</span>
+              <span className="text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>
+                {dagGraph.vision}
+              </span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -368,7 +376,7 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {}, dag
 
             return (
               <div key={stepKey}
-                className={`planview-step ${stepStatusClass} ${justStarted ? 'plan-fade-in' : ''} ${justFailed ? 'plan-error-shake' : ''} ${justCompleted ? 'plan-status-slide-in' : ''}`}
+                className={`planview-step ${stepStatusClass} ${justStarted ? 'plan-fade-in' : ''} ${justFailed ? 'plan-error-shake' : ''} ${justCompleted ? 'plan-status-slide-in agent-done-flash' : ''}`}
                 role="listitem"
                 aria-label={`Task ${step.index}: ${step.text} — ${isDone ? 'completed' : isActive ? 'in progress' : isError ? 'failed' : isCancelled ? 'cancelled' : 'pending'}`}>
                 <div className="planview-icon-slot">
