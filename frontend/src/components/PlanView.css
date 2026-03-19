@@ -1,0 +1,181 @@
+/* ============================================================================
+   PlanView Component Styles
+   ============================================================================ */
+
+/* ── Timeline ── */
+
+.planview-timeline-line {
+  position: absolute;
+  left: 13px;
+  top: 16px;
+  bottom: 16px;
+  width: 2px;
+  background: var(--border-subtle);
+}
+
+/* ── Step rows — fixed height to prevent layout shift ── */
+
+.planview-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  position: relative;
+  padding: 10px 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  min-height: 52px; /* prevent layout shift */
+}
+
+.planview-step--pending   { opacity: 1; }
+.planview-step--active    { opacity: 1; }
+.planview-step--done      { opacity: 0.6; }
+.planview-step--error     { opacity: 1; }
+.planview-step--cancelled { opacity: 0.45; }
+
+/* ── Status icon container — fixed size ── */
+
+.planview-icon-slot {
+  position: relative;
+  z-index: 10;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+/* ── Content card ── */
+
+.planview-card {
+  flex: 1;
+  min-width: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  border: 1px solid transparent;
+}
+
+.planview-card--active {
+  box-shadow: 0 0 15px var(--step-glow, transparent);
+}
+
+/* ── Progress ticker ── */
+
+.planview-ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  transition: all 0.3s ease;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-dim);
+}
+
+.planview-ticker--complete {
+  background: rgba(61, 214, 140, 0.12);
+  border-color: rgba(61, 214, 140, 0.25);
+  color: var(--accent-green);
+}
+
+.planview-ticker-count {
+  display: inline-block;
+  min-width: 1.5em;
+  text-align: center;
+}
+
+/* ── Celebration overlay ── */
+
+.planview-celebration {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  padding: 16px;
+  text-align: center;
+  background: linear-gradient(
+    135deg,
+    rgba(61, 214, 140, 0.08),
+    rgba(34, 211, 238, 0.06)
+  );
+  border: 1px solid rgba(61, 214, 140, 0.2);
+}
+
+.planview-celebration-ring {
+  position: absolute;
+  inset: -20px;
+  border-radius: 50%;
+  border: 3px solid var(--accent-green);
+  pointer-events: none;
+}
+
+.planview-celebration-particles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.planview-particle {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  animation: planParticleFloat 1s ease-out forwards;
+}
+
+/* ── Dep line ── */
+
+.plan-dep-line {
+  stroke-dasharray: 4 3;
+  opacity: 0.35;
+  transition: opacity 0.3s;
+}
+
+.planview-step:hover .plan-dep-line {
+  opacity: 0.7;
+}
+
+/* ── Collapse button ── */
+
+.planview-collapse-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  transition: opacity 0.2s;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-dim);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+
+.planview-collapse-btn:hover {
+  opacity: 0.8;
+}
+
+.planview-collapse-chevron {
+  transition: transform 0.2s;
+}
+
+.planview-collapse-chevron--collapsed {
+  transform: rotate(-90deg);
+}
+
+/* ── Failure reason card ── */
+
+.planview-failure {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  background: rgba(245, 71, 91, 0.08);
+  border: 1px solid rgba(245, 71, 91, 0.12);
+  color: var(--accent-red);
+}
