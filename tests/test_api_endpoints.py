@@ -60,6 +60,9 @@ def _make_mock_manager(
     is_paused=False,
     turn_count=0,
     total_cost_usd=0.0,
+    total_input_tokens=0,
+    total_output_tokens=0,
+    total_tokens=0,
 ):
     """Mock OrchestratorManager with realistic attributes."""
     mgr = MagicMock()
@@ -69,6 +72,9 @@ def _make_mock_manager(
     mgr.is_paused = is_paused
     mgr.turn_count = turn_count
     mgr.total_cost_usd = total_cost_usd
+    mgr.total_input_tokens = total_input_tokens
+    mgr.total_output_tokens = total_output_tokens
+    mgr.total_tokens = total_tokens
     mgr.agent_names = ["orchestrator", "developer"]
     mgr.is_multi_agent = True
     mgr.conversation_log = []
@@ -176,7 +182,7 @@ class TestListProjects:
         import state
 
         app, _, _ = _setup_app()
-        mgr = _make_mock_manager(is_running=True, total_cost_usd=0.42)
+        mgr = _make_mock_manager(is_running=True, total_cost_usd=0.42, total_tokens=1500)
         await state.register_manager(0, "active-proj", mgr)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/api/projects")
@@ -184,7 +190,7 @@ class TestListProjects:
             projects = resp.json()["projects"]
             assert len(projects) == 1
             assert projects[0]["status"] == "running"
-            assert projects[0]["total_cost_usd"] == 0.42
+            assert projects[0]["total_tokens"] == 1500
 
 
 # ============================================================
@@ -632,7 +638,7 @@ class TestStats:
             resp = await c.get("/api/stats")
             assert resp.status_code == 200
             data = resp.json()
-            assert data["total_cost_usd"] == 0
+            assert data["total_tokens"] == 0
             assert data["active_projects"] == 0
 
     @pytest.mark.asyncio
@@ -641,15 +647,15 @@ class TestStats:
 
         app, _, _ = _setup_app()
         await state.register_manager(
-            0, "p1", _make_mock_manager(is_running=True, total_cost_usd=1.0)
+            0, "p1", _make_mock_manager(is_running=True, total_tokens=1000)
         )
         await state.register_manager(
-            0, "p2", _make_mock_manager(is_paused=True, total_cost_usd=0.5)
+            0, "p2", _make_mock_manager(is_paused=True, total_tokens=500)
         )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/api/stats")
             data = resp.json()
-            assert data["total_cost_usd"] == 1.5
+            assert data["total_tokens"] == 1500
             assert data["running"] == 1
             assert data["paused"] == 1
 

@@ -541,6 +541,9 @@ def _make_error_response(
     session_id: str = "",
     error_category: ErrorCategory | None = None,
     cost_usd: float = 0.0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    total_tokens: int = 0,
     num_turns: int = 0,
     duration_ms: int = 0,
     retry_count: int = 0,
@@ -557,6 +560,9 @@ def _make_error_response(
         text=text,
         session_id=session_id,
         cost_usd=cost_usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
         duration_ms=duration_ms,
         num_turns=num_turns,
         is_error=True,
@@ -577,7 +583,10 @@ def _make_error_response(
 class SDKResponse:
     text: str
     session_id: str = ""
-    cost_usd: float = 0.0
+    cost_usd: float = 0.0  # Deprecated — kept for backward compat; prefer token fields
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
     duration_ms: int = 0
     num_turns: int = 0
     is_error: bool = False
@@ -609,7 +618,7 @@ class _ConnectionPool:
         self._active_count = 0
         self._total_queries = 0
         self._total_errors = 0
-        self._total_cost = 0.0
+        self._total_tokens = 0
         self._lock = asyncio.Lock()
 
     @property
@@ -624,7 +633,7 @@ class _ConnectionPool:
             "active": self._active_count,
             "total_queries": self._total_queries,
             "total_errors": self._total_errors,
-            "total_cost": self._total_cost,
+            "total_tokens": self._total_tokens,
         }
 
     async def acquire(self):
@@ -634,11 +643,11 @@ class _ConnectionPool:
             self._active_count += 1
             self._total_queries += 1
 
-    async def release(self, cost: float = 0.0, is_error: bool = False):
+    async def release(self, tokens: int = 0, is_error: bool = False):
         """Release a previously acquired semaphore slot."""
         async with self._lock:
             self._active_count -= 1
-            self._total_cost += cost
+            self._total_tokens += tokens
             if is_error:
                 self._total_errors += 1
         self._semaphore.release()
@@ -1291,12 +1300,13 @@ class ClaudeSDKManager:
                     f"[{request_id}] SDK query ERROR ({elapsed:.1f}s): "
                     f"category={result.error_category.value}, "
                     f'msg="{result.error_message[:150]}", '
-                    f"cost=${result.cost_usd:.4f}, turns={result.num_turns}"
+                    f"tokens={result.total_tokens}, turns={result.num_turns}"
                 )
             else:
                 logger.info(
                     f"[{request_id}] SDK query OK ({elapsed:.1f}s): "
-                    f"text_len={len(result.text)}, cost=${result.cost_usd:.4f}, "
+                    f"text_len={len(result.text)}, tokens={result.total_tokens} "
+                    f"(in={result.input_tokens}, out={result.output_tokens}), "
                     f"turns={result.num_turns}, session={result.session_id[:12] + '...' if result.session_id else 'none'}"
                 )
 
@@ -1363,16 +1373,16 @@ class ClaudeSDKManager:
                 _unregister_active_pids(my_pids[0])
             # Always release the pool slot — even on CancelledError.
             # The finally block runs regardless of whether we re-raised.
-            cost = 0.0
+            tokens = 0
             is_err = True
             try:
                 # result may not exist if we hit an exception before assignment
-                cost = result.cost_usd  # type: ignore[possibly-undefined]
+                tokens = result.total_tokens  # type: ignore[possibly-undefined]
                 is_err = result.is_error  # type: ignore[possibly-undefined]
             except (NameError, UnboundLocalError):
                 pass
             try:
-                await self._pool.release(cost=cost, is_error=is_err)
+                await self._pool.release(tokens=tokens, is_error=is_err)
             except Exception as _rel_err:
                 # Pool release must never prevent CancelledError propagation;
                 # log at WARNING so slot leaks are visible in production.
@@ -1405,6 +1415,9 @@ class ClaudeSDKManager:
         text_parts: list[str] = []
         result_session_id = ""
         cost_usd = 0.0
+        input_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
         duration_ms = 0
         num_turns = 0
         observed_turns = 0  # Local turn counter based on ToolUseBlock messages
@@ -1574,6 +1587,12 @@ class ClaudeSDKManager:
                     duration_ms = message.duration_ms or 0
                     num_turns = message.num_turns or 0
 
+                    # Extract token counts from usage dict
+                    usage = message.usage or {}
+                    input_tokens = int(usage.get("input_tokens", 0) or 0)
+                    output_tokens = int(usage.get("output_tokens", 0) or 0)
+                    total_tokens = input_tokens + output_tokens
+
                     # ResultMessage may also carry a result text
                     if message.result and message.result not in text_parts:
                         text_parts.append(message.result)
@@ -1609,6 +1628,9 @@ class ClaudeSDKManager:
                         text=combined,
                         session_id=result_session_id,
                         cost_usd=cost_usd,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
                         duration_ms=duration_ms,
                         num_turns=num_turns,
                         is_error=message.is_error,
@@ -1639,6 +1661,9 @@ class ClaudeSDKManager:
                     error_message="anyio cancel scope error",
                     error_category=ErrorCategory.TRANSIENT,
                     cost_usd=cost_usd,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
                     duration_ms=duration_ms,
                     num_turns=num_turns,
                 )
@@ -1655,6 +1680,9 @@ class ClaudeSDKManager:
                 session_id=result_session_id,
                 error_message=f"Stream error: {e}",
                 cost_usd=cost_usd,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
                 duration_ms=duration_ms,
                 num_turns=num_turns,
             )
@@ -1693,6 +1721,9 @@ class ClaudeSDKManager:
             text=combined or "⚠️ Agent produced no text output (stream ended unexpectedly).",
             session_id=result_session_id,
             cost_usd=cost_usd,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
             duration_ms=duration_ms,
             num_turns=num_turns,
             is_error=is_err,
@@ -1738,6 +1769,9 @@ class ClaudeSDKManager:
         last_response: SDKResponse | None = None
         current_session = session_id
         total_cost = 0.0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_tokens_accum = 0
         current_prompt = prompt
 
         for attempt in range(
@@ -1778,12 +1812,18 @@ class ClaudeSDKManager:
                 on_event=on_event,
             )
 
-            # Accumulate cost across retries
+            # Accumulate cost and tokens across retries
             total_cost += response.cost_usd
+            total_input_tokens += response.input_tokens
+            total_output_tokens += response.output_tokens
+            total_tokens_accum += response.total_tokens
 
             if not response.is_error:
                 response.retry_count = attempt - 1
                 response.cost_usd = total_cost  # Include cost from failed attempts
+                response.input_tokens = total_input_tokens
+                response.output_tokens = total_output_tokens
+                response.total_tokens = total_tokens_accum
                 # Record success with circuit breaker
                 await self._circuit_breaker.record_success()
                 return response
@@ -1811,6 +1851,9 @@ class ClaudeSDKManager:
                     f"SDK non-retryable error ({category.value}, timeout={is_timeout}): {response.error_message}"
                 )
                 response.cost_usd = total_cost
+                response.input_tokens = total_input_tokens
+                response.output_tokens = total_output_tokens
+                response.total_tokens = total_tokens_accum
                 return response
 
             # Check if we have retries left
@@ -1856,16 +1899,22 @@ class ClaudeSDKManager:
         logger.error(
             f"All {max_retries} retry attempts exhausted. "
             f"Last error: {last_response.error_message if last_response else 'none'}, "
-            f"Total cost: ${total_cost:.4f}"
+            f"Total tokens: {total_tokens_accum}"
         )
         if last_response:
             last_response.retry_count = max_retries
             last_response.cost_usd = total_cost
+            last_response.input_tokens = total_input_tokens
+            last_response.output_tokens = total_output_tokens
+            last_response.total_tokens = total_tokens_accum
             return last_response
         return _make_error_response(
             text="Error: All retry attempts failed",
             error_message="All retry attempts failed",
             error_category=ErrorCategory.UNKNOWN,
             cost_usd=total_cost,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            total_tokens=total_tokens_accum,
             retry_count=max_retries,
         )

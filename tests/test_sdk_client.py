@@ -211,25 +211,25 @@ class TestConnectionPool:
         assert stats["active"] == 0
         assert stats["total_queries"] == 0
         assert stats["total_errors"] == 0
-        assert stats["total_cost"] == 0.0
+        assert stats["total_tokens"] == 0
 
     @pytest.mark.asyncio
     async def test_acquire_release(self):
         pool = _ConnectionPool(max_concurrent=2)
         await pool.acquire()
         assert pool.active_count == 1
-        await pool.release(cost=0.1)
+        await pool.release(tokens=100)
         assert pool.active_count == 0
         stats = pool.stats
         assert stats["total_queries"] == 1
-        assert stats["total_cost"] == 0.1
+        assert stats["total_tokens"] == 100
         assert stats["total_errors"] == 0
 
     @pytest.mark.asyncio
     async def test_error_tracking(self):
         pool = _ConnectionPool(max_concurrent=5)
         await pool.acquire()
-        await pool.release(cost=0.0, is_error=True)
+        await pool.release(tokens=0, is_error=True)
         assert pool.stats["total_errors"] == 1
 
     @pytest.mark.asyncio
@@ -272,19 +272,19 @@ class TestConnectionPool:
         pool = _ConnectionPool(max_concurrent=3)
         for i in range(10):
             await pool.acquire()
-            await pool.release(cost=0.01 * i)
+            await pool.release(tokens=10 * i)
         assert pool.active_count == 0
         assert pool.stats["total_queries"] == 10
-        assert pool.stats["total_cost"] == pytest.approx(0.45, abs=0.001)
+        assert pool.stats["total_tokens"] == 450
 
     @pytest.mark.asyncio
-    async def test_cost_accumulation(self):
+    async def test_token_accumulation(self):
         pool = _ConnectionPool(max_concurrent=5)
         await pool.acquire()
-        await pool.release(cost=1.0)
+        await pool.release(tokens=100)
         await pool.acquire()
-        await pool.release(cost=2.5)
-        assert pool.stats["total_cost"] == pytest.approx(3.5)
+        await pool.release(tokens=250)
+        assert pool.stats["total_tokens"] == 350
 
 
 # ============================================================

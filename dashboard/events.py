@@ -642,7 +642,7 @@ class EventBus:
             agent = event.get("agent", "")
             extra = ""
             if event_type == "agent_finished":
-                extra = f" is_error={event.get('is_error')} cost=${event.get('cost', 0):.4f} failure_reason={event.get('failure_reason', '')[:80]}"
+                extra = f" is_error={event.get('is_error')} tokens={event.get('total_tokens', 0)} failure_reason={event.get('failure_reason', '')[:80]}"
             elif event_type == "project_status":
                 extra = f" status={event.get('status')}"
             elif event_type == "agent_started":

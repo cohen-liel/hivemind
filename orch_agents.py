@@ -229,10 +229,13 @@ async def query_agent(
 
 
 def record_response(mgr: OrchestratorManager, agent_name: str, role: str, response: SDKResponse):
-    """Record an agent response in the conversation log and update costs."""
+    """Record an agent response in the conversation log and update token counts."""
     from orchestrator import Message
 
     mgr.total_cost_usd += response.cost_usd
+    mgr.total_input_tokens += response.input_tokens
+    mgr.total_output_tokens += response.output_tokens
+    mgr.total_tokens += response.total_tokens
     mgr._agents_used.add(agent_name)
     mgr.conversation_log.append(
         Message(
@@ -240,6 +243,9 @@ def record_response(mgr: OrchestratorManager, agent_name: str, role: str, respon
             role=role,
             content=response.text,
             cost_usd=response.cost_usd,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            total_tokens=response.total_tokens,
         )
     )
     mgr._create_background_task(
@@ -621,6 +627,7 @@ async def run_sub_agents(
                     turn=mgr.turn_count,
                     max_turns=MAX_TURNS_PER_CYCLE,
                     cost=mgr.total_cost_usd,
+                    total_tokens=mgr.total_tokens,
                     max_budget=MAX_BUDGET_USD,
                 )
 
