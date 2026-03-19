@@ -51,6 +51,7 @@ frontend/dist/
 
 # Hivemind agent metadata (internal project state)
 .hivemind/
+.hivemind_token_secret
 hivemind_*.log
 hivemind_*.tmp
 
