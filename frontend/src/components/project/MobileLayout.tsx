@@ -10,6 +10,7 @@
 import React from 'react';
 import { useProjectContext } from './ProjectContext';
 import { PanelErrorBoundary } from './PanelErrorBoundary';
+import { useScrollPersistence } from '../../hooks/useUIStatePersistence';
 
 // ── Existing components ──
 import ConductorBar from '../ConductorBar';
@@ -32,11 +33,14 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
   const {
     project, projectId, connected, orchestratorState, subAgentStates,
     agentStateList, agentStates, loopProgress, activities, files, sdkCalls,
-    liveAgentStream, now, lastTicker, dagGraph, dagTaskStatus,
+    liveAgentStream, now, lastTicker, dagGraph, dagTaskStatus, dagTaskFailureReasons,
     mobileView, hasMoreMessages, message, sending,
     onSetMobileView, onLoadMore, onPause, onResume, onStop,
     onShowClearConfirm, onMessageChange, onMobileSend,
   } = useProjectContext();
+
+  // ── Scroll persistence for the mobile content area ──
+  const mobileScrollRef = useScrollPersistence(`mobile-${mobileView}`, connected);
 
   return (
     <div
@@ -49,6 +53,8 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
         height: 'var(--app-height, 100vh)',
         background: 'var(--bg-void)',
         paddingTop: 'env(safe-area-inset-top, 0px)',
+        paddingLeft: 'env(safe-area-inset-left, 0px)',
+        paddingRight: 'env(safe-area-inset-right, 0px)',
         touchAction: 'pan-y',
       }}
     >
@@ -59,7 +65,6 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
         connected={connected}
         orchestrator={orchestratorState}
         progress={loopProgress}
-        totalCost={project.total_cost_usd}
         agentSummary={subAgentStates}
         lastTicker={lastTicker}
       />
@@ -71,6 +76,7 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
       />
 
       <div
+        ref={mobileScrollRef}
         className="flex-1 overflow-y-auto min-h-0"
         style={{
           overscrollBehavior: 'none',
@@ -84,7 +90,6 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
               agents={agentStateList}
               progress={loopProgress}
               activities={activities}
-              totalCost={project.total_cost_usd}
               status={project.status}
               messageDraft={message}
             />
@@ -125,6 +130,7 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
               activities={activities}
               dagGraph={dagGraph}
               dagTaskStatus={dagTaskStatus}
+              dagTaskFailureReasons={dagTaskFailureReasons}
             />
           </PanelErrorBoundary>
         )}
