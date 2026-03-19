@@ -105,6 +105,7 @@ export interface WSEvent {
   // agent_started/finished fields
   task?: string;
   task_id?: string;       // DAG task ID (e.g. "task_001") for live plan tracking
+  task_name?: string;     // Human-readable task name/goal from backend
   task_status?: string;   // DAG task status ("completed", "failed", etc.)
   is_remediation?: boolean;
   cost?: number;
