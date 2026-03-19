@@ -7,6 +7,7 @@ import { DashboardSkeleton } from '../components/Skeleton';
 import ErrorState from '../components/ErrorState';
 import { useToast } from '../components/Toast';
 import AgentLogPanel from '../components/AgentLogPanel';
+import WelcomeHero from '../components/WelcomeHero';
 import { usePageTitle } from '../hooks/usePageTitle';
 import { useTheme } from '../ThemeContext';
 import type { Project, WSEvent, TaskHistoryItem } from '../types';
@@ -518,90 +519,11 @@ export default function Dashboard(): React.ReactElement {
       {/* Project cards */}
       <main className="max-w-5xl mx-auto px-3 sm:px-6 py-4 sm:py-6">
         {projects.length === 0 ? (
-          /* ── Welcome empty state ── */
-          <div className="flex items-center justify-center py-12 sm:py-16">
-            <div
-              className="relative max-w-sm w-full rounded-2xl p-6 sm:p-8 text-center glass-panel"
-              style={{
-                boxShadow: '0 0 80px rgba(99, 140, 255, 0.06), 0 25px 50px rgba(0,0,0,0.3)',
-              }}
-              role="region"
-              aria-label="Welcome to Hivemind — no projects yet"
-            >
-              {/* Subtle glow behind the card */}
-              <div className="absolute inset-0 -z-10 rounded-2xl"
-                style={{
-                  background: 'radial-gradient(ellipse at 50% 0%, rgba(99,140,255,0.08) 0%, transparent 70%)',
-                  filter: 'blur(20px)',
-                }} />
-
-              {/* Network constellation SVG illustration */}
-              <svg
-                width="160"
-                height="120"
-                viewBox="0 0 160 120"
-                fill="none"
-                className="mx-auto mb-5"
-                aria-hidden="true"
-              >
-                {/* Connection lines (animated dashes) */}
-                <line x1="80" y1="60" x2="30" y2="28" stroke="var(--accent-blue)" strokeWidth="1" opacity="0.2" strokeDasharray="4 4" className="empty-state-line" />
-                <line x1="80" y1="60" x2="130" y2="25" stroke="var(--accent-purple)" strokeWidth="1" opacity="0.2" strokeDasharray="4 4" className="empty-state-line" />
-                <line x1="80" y1="60" x2="125" y2="95" stroke="var(--accent-green)" strokeWidth="1" opacity="0.2" strokeDasharray="4 4" className="empty-state-line" />
-                <line x1="80" y1="60" x2="35" y2="92" stroke="var(--accent-cyan)" strokeWidth="1" opacity="0.15" strokeDasharray="4 4" className="empty-state-line" />
-                {/* Central hub node */}
-                <circle cx="80" cy="60" r="16" fill="var(--glow-blue)" />
-                <circle cx="80" cy="60" r="16" stroke="var(--accent-blue)" strokeWidth="1.5" fill="none" opacity="0.4" />
-                {/* Lightning bolt icon */}
-                <path d="M83 53L77 61H83L77 69" stroke="var(--accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                {/* Satellite agent nodes */}
-                <circle cx="30" cy="28" r="8" fill="var(--glow-blue)" />
-                <circle cx="30" cy="28" r="8" stroke="var(--accent-blue)" strokeWidth="1" fill="none" opacity="0.3" />
-                <circle cx="130" cy="25" r="7" fill="var(--glow-blue)" />
-                <circle cx="130" cy="25" r="7" stroke="var(--accent-purple)" strokeWidth="1" fill="none" opacity="0.3" />
-                <circle cx="125" cy="95" r="9" fill="var(--glow-green)" />
-                <circle cx="125" cy="95" r="9" stroke="var(--accent-green)" strokeWidth="1" fill="none" opacity="0.3" />
-                <circle cx="35" cy="92" r="6" fill="var(--glow-blue)" />
-                <circle cx="35" cy="92" r="6" stroke="var(--accent-cyan)" strokeWidth="1" fill="none" opacity="0.2" />
-                {/* Tiny agent emojis inside nodes */}
-                <text x="30" y="31" textAnchor="middle" fontSize="8">🎨</text>
-                <text x="130" y="28" textAnchor="middle" fontSize="7">⚡</text>
-                <text x="125" y="98" textAnchor="middle" fontSize="8">🔍</text>
-                <text x="35" y="95" textAnchor="middle" fontSize="6">🧪</text>
-              </svg>
-
-              <h2 className="text-lg font-bold mb-2" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
-                Welcome to Hivemind
-              </h2>
-              <p className="text-sm mb-6 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                Orchestrate multi-agent AI teams to build, review, and ship code.
-                Create your first project to get started.
-              </p>
-
-              <button
-                onClick={() => navigate('/new')}
-                className="px-6 py-3 text-sm font-semibold rounded-xl transition-all duration-200 text-white active:scale-[0.97]"
-                style={{
-                  background: 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)',
-                  boxShadow: '0 4px 20px var(--glow-blue), inset 0 1px 0 rgba(255,255,255,0.12)',
-                }}
-                aria-label="Create a new project"
-                onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 6px 30px rgba(99,140,255,0.4), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-                onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 20px var(--glow-blue), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(0)'; }}
-              >
-                <span className="flex items-center gap-2">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                  </svg>
-                  New Project
-                </span>
-              </button>
-
-              <p className="text-[10px] mt-4" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                ⌘N to quick-create &bull; ? for shortcuts
-              </p>
-            </div>
-          </div>
+          <WelcomeHero
+            onNewProject={() => navigate('/new')}
+            onSelectTemplate={() => navigate('/new')}
+            projectCount={projects.length}
+          />
         ) : filteredProjects.length === 0 ? (
           <div className="text-center py-16" style={{ color: 'var(--text-muted)' }}>
             <p className="text-sm mb-1">No projects match your filter</p>
