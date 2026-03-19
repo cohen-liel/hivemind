@@ -1,0 +1,25 @@
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#8b5cf6', 'primaryTextColor': '#fff', 'primaryBorderColor': '#6d28d9', 'lineColor': '#a78bfa', 'secondaryColor': '#1e1b4b', 'tertiaryColor': '#18181b', 'fontFamily': 'Inter, sans-serif'}}}%%
+graph TD
+    A["🗣️ You: Describe a feature"] --> B["📋 PM Agent<br/>Creates TaskGraph DAG"]
+    B --> C["🔀 DAG Executor<br/>Parallel Orchestration"]
+    C --> D["🎨 Frontend Dev<br/>React, TS, Tailwind"]
+    C --> E["⚙️ Backend Dev<br/>FastAPI, Python"]
+    C --> F["🗄️ Database Expert<br/>Schema and Migrations"]
+    C --> G["🐳 DevOps<br/>Docker, CI/CD"]
+    D --> H["🧪 Test Engineer<br/>pytest, TDD, e2e"]
+    E --> H
+    F --> H
+    G --> H
+    H --> I["👁️ Reviewer<br/>Code Review Gate"]
+    I --> J["✅ Committed and Ready"]
+
+    style A fill:#1e1b4b,stroke:#8b5cf6,stroke-width:2px,color:#fff
+    style B fill:#1e1b4b,stroke:#8b5cf6,stroke-width:2px,color:#fff
+    style C fill:#312e81,stroke:#a78bfa,stroke-width:2px,color:#fff
+    style D fill:#1e3a5f,stroke:#3b82f6,stroke-width:2px,color:#fff
+    style E fill:#1e3a5f,stroke:#3b82f6,stroke-width:2px,color:#fff
+    style F fill:#1e3a5f,stroke:#3b82f6,stroke-width:2px,color:#fff
+    style G fill:#1e3a5f,stroke:#3b82f6,stroke-width:2px,color:#fff
+    style H fill:#1a2e1a,stroke:#22c55e,stroke-width:2px,color:#fff
+    style I fill:#2e1a1a,stroke:#f97316,stroke-width:2px,color:#fff
+    style J fill:#1a2e1a,stroke:#22c55e,stroke-width:3px,color:#fff
