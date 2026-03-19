@@ -69,6 +69,7 @@ _PERSIST_EVENT_TYPES = frozenset(
         "task_error",
         # DAG execution plan — critical for state reconstruction on reconnect
         "task_graph",
+        "dag_task_update",
         "self_healing",
         "stuckness_detected",
         # Granular streaming events (persisted for replay/analytics)

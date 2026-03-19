@@ -713,11 +713,38 @@ class OrchestratorManager:
             # Fallback to on_result
             await self._send_result(text)
 
+    def _get_project_status_metadata(self) -> dict:
+        """Compute structured metadata for project_status events."""
+        active = sum(
+            1 for s in self.agent_states.values()
+            if isinstance(s, dict) and s.get("state") == "working"
+        )
+        total_tasks = 0
+        completed_tasks = 0
+        if self._current_dag_graph:
+            total_tasks = len(self._current_dag_graph.get("tasks", []))
+        if self._dag_task_statuses:
+            completed_tasks = sum(
+                1 for s in self._dag_task_statuses.values() if s == "completed"
+            )
+        progress_pct = round(completed_tasks / total_tasks * 100, 1) if total_tasks > 0 else 0.0
+        return {
+            "is_running": self.is_running,
+            "is_paused": self.is_paused,
+            "agent_count": active,
+            "completed_tasks": completed_tasks,
+            "total_tasks": total_tasks,
+            "progress_percent": progress_pct,
+        }
+
     async def _emit_event(self, event_type: str, **data):
         """Emit a structured event for the dashboard."""
         if self.on_event:
             try:
                 event = {"type": event_type, "timestamp": time.time(), **data}
+                # Auto-enrich project_status events with structured metadata
+                if event_type == "project_status":
+                    event["metadata"] = self._get_project_status_metadata()
                 await self.on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}", exc_info=True)
@@ -2207,10 +2234,12 @@ class OrchestratorManager:
                     if task_id:
                         self._dag_task_statuses[task_id] = final_task_status
                         # Emit dag_task_update so the Plan View updates the task status
+                        _task_name_for_event = agent_state.get("task", "")[:120]
                         await self._emit_event(
                             "dag_task_update",
                             task_id=task_id,
                             status=final_task_status,
+                            task_name=_task_name_for_event,
                             agent=agent_name,
                             failure_reason=_dag_exit_reason if _abnormal_exit else "",
                         )
@@ -2241,6 +2270,7 @@ class OrchestratorManager:
                             "dag_task_update",
                             task_id=tid,
                             status="cancelled",
+                            task_name=(t.get("goal") or "")[:120],
                             agent=t.get("role", "unknown"),
                             failure_reason=f"DAG terminated before task started: {_dag_exit_reason}",
                         )
@@ -2318,7 +2348,13 @@ class OrchestratorManager:
             "last_activity_type": "started",
         }
         self._dag_task_statuses[task.id] = "working"
-        await self._emit_event("dag_task_update", task_id=task.id, status="working")
+        await self._emit_event(
+            "dag_task_update",
+            task_id=task.id,
+            status="working",
+            task_name=task.goal[:120],
+            agent=task.role.value,
+        )
         # Clear any prior silence alert for this agent (it just started)
         self._silence_alerted.discard(task.role.value)
         # activity feed, network trace, elapsed time, and SDK calls correctly.
@@ -2382,7 +2418,12 @@ class OrchestratorManager:
         }
         self._dag_task_statuses[task.id] = "completed" if is_ok else "failed"
         await self._emit_event(
-            "dag_task_update", task_id=task.id, status="completed" if is_ok else "failed"
+            "dag_task_update",
+            task_id=task.id,
+            status="completed" if is_ok else "failed",
+            task_name=task.goal[:120],
+            agent=task.role.value,
+            failure_reason=failure_reason if not is_ok else "",
         )
 
         # Emit agent_finished for Trace + Agent cards
