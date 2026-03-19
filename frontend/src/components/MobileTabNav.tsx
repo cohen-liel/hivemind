@@ -172,6 +172,7 @@ const MobileTabNav = React.memo(function MobileTabNav({
                 className="p-2 rounded-lg min-h-[40px] min-w-[40px] flex items-center justify-center transition-opacity active:opacity-75"
                 style={{ color: 'var(--accent-amber)' }}
                 aria-label="Pause project"
+                title="Pause project"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                   <rect x="4" y="3" width="3" height="10" rx="0.5"/>
@@ -185,6 +186,7 @@ const MobileTabNav = React.memo(function MobileTabNav({
                 className="p-2 rounded-lg min-h-[40px] min-w-[40px] flex items-center justify-center transition-opacity active:opacity-75"
                 style={{ color: 'var(--accent-green)' }}
                 aria-label="Resume project"
+                title="Resume project"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                   <path d="M4 3l9 5-9 5V3z"/>
@@ -196,6 +198,7 @@ const MobileTabNav = React.memo(function MobileTabNav({
               className="p-2 rounded-lg min-h-[40px] min-w-[40px] flex items-center justify-center transition-opacity active:opacity-75"
               style={{ color: 'var(--accent-red)' }}
               aria-label="Stop project"
+              title="Stop project"
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <rect x="3" y="3" width="10" height="10" rx="1"/>
