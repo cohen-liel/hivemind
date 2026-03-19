@@ -84,6 +84,7 @@ export interface ProjectState {
   // DAG visualization
   dagGraph: WSEvent['graph'] | null;
   dagTaskStatus: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
+  dagTaskFailureReasons: Record<string, string>;
   healingEvents: HealingEvent[];
 
   // UI view state
@@ -120,6 +121,7 @@ export const initialProjectState: ProjectState = {
   lastAgentSummaries: {},
   dagGraph: null,
   dagTaskStatus: {},
+  dagTaskFailureReasons: {},
   healingEvents: [],
   mobileView: 'orchestra',
   desktopTab: 'hivemind',
@@ -526,6 +528,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ? { ...state.dagTaskStatus, [event.task_id]: event.is_error ? 'failed' as const : 'completed' as const }
         : state.dagTaskStatus;
 
+      const newDagTaskFailureReasons = (event.task_id && event.is_error && event.failure_reason)
+        ? { ...state.dagTaskFailureReasons, [event.task_id]: event.failure_reason }
+        : state.dagTaskFailureReasons;
+
       // Remove from live stream
       const newLiveStream = { ...state.liveAgentStream };
       delete newLiveStream[event.agent];
@@ -576,6 +582,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ...state,
         activities: newActivities,
         dagTaskStatus: newDagTaskStatus,
+        dagTaskFailureReasons: newDagTaskFailureReasons,
         liveAgentStream: newLiveStream,
         agentStates: {
           ...state.agentStates,
@@ -749,6 +756,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           dagGraph: null,
           healingEvents: [],
           dagTaskStatus: {},
+          dagTaskFailureReasons: {},
           liveAgentStream: {},
           lastAgentSummaries: {},
           lastSequenceId: trackSequence(state, event),
@@ -791,6 +799,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ...state,
         dagGraph: event.graph,
         dagTaskStatus: {},
+        dagTaskFailureReasons: {},
         activities: appendActivities(state.activities, {
           id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
           agent: 'PM',
@@ -886,6 +895,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         messageOffset: 0,
         dagGraph: null,
         dagTaskStatus: {},
+        dagTaskFailureReasons: {},
         healingEvents: [],
         liveAgentStream: {},
         hasMoreMessages: false,
@@ -1014,6 +1024,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         lastAgentSummaries: {},
         dagGraph: null,
         dagTaskStatus: {},
+        dagTaskFailureReasons: {},
         healingEvents: [],
         liveAgentStream: {},
         lastSequenceId: 0,
