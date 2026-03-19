@@ -383,7 +383,7 @@ except OSError:
 DB_VACUUM_INTERVAL_HOURS: int = _get("DB_VACUUM_INTERVAL_HOURS", "168", int)  # Weekly
 
 # User input validation
-MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "4000", int)
+MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "20000", int)
 
 # Request body size limit (bytes)
 MAX_REQUEST_BODY_SIZE: int = _get("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024), int)  # 1MB default
