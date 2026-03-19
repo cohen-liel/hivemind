@@ -82,6 +82,25 @@ body:
       description: Paste any relevant log output (from the terminal where the server runs).
       render: shell
 
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Hivemind is affected?
+      options:
+        - Dashboard UI
+        - DAG Executor
+        - PM Agent
+        - Orchestrator
+        - Agent Runtime
+        - Org Hierarchy
+        - API / Backend
+        - CLI (create-hivemind)
+        - Templates
+        - Other
+    validations:
+      required: true
+
   - type: textarea
     id: screenshots
     attributes:

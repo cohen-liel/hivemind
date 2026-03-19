@@ -1,0 +1,80 @@
+name: New Agent Proposal
+description: Propose a new specialist agent for Hivemind
+title: "[Agent]: "
+labels: ["agent-proposal", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Want to add a new specialist agent to the Hivemind team? Tell us about it!
+
+  - type: input
+    id: name
+    attributes:
+      label: Agent Name
+      description: The internal name for this agent (snake_case)
+      placeholder: "api_designer"
+    validations:
+      required: true
+
+  - type: input
+    id: label
+    attributes:
+      label: Display Label
+      description: Human-readable label for the dashboard
+      placeholder: "API Designer"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Agent Layer
+      description: Which layer does this agent belong to?
+      options:
+        - Brain (planning, coordination, memory)
+        - Execution (writes code, creates files)
+        - Quality (reviews, tests, audits)
+    validations:
+      required: true
+
+  - type: textarea
+    id: responsibilities
+    attributes:
+      label: Responsibilities
+      description: What does this agent do? What tasks should it handle?
+      placeholder: |
+        - Design RESTful API contracts
+        - Generate OpenAPI/Swagger specs
+        - Validate API consistency across endpoints
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Suggested System Prompt
+      description: Draft system prompt for this agent (optional but helpful)
+      render: markdown
+
+  - type: dropdown
+    id: org_position
+    attributes:
+      label: Org Chart Position
+      description: Who should this agent report to?
+      options:
+        - VP Engineering (code-writing agents)
+        - VP Quality (review/test agents)
+        - VP Research (research/analysis agents)
+        - VP Operations (infrastructure agents)
+        - CTO (strategic/planning agents)
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use Case
+      description: When would this agent be useful? Give a concrete example.
+    validations:
+      required: true
