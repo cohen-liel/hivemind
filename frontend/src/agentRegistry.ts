@@ -81,7 +81,19 @@ function hexToRgba(hex: string, alpha: number): string {
 export async function initAgentRegistry(): Promise<void> {
   if (_initialized) return;
   try {
-    const resp = await fetch('/api/agent-registry');
+    // Include auth headers for environments where device auth is enabled.
+    // The endpoint is auth-exempt on the backend, but including the token
+    // ensures compatibility with any future auth changes or proxies.
+    const headers: Record<string, string> = {};
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="hivemind-auth-token"]');
+    const token = meta?.content || (() => {
+      try { return localStorage.getItem('hivemind-auth-token') || ''; } catch { return ''; }
+    })();
+    if (token) {
+      headers['X-API-Key'] = token;
+    }
+
+    const resp = await fetch('/api/agent-registry', { headers });
     if (resp.ok) {
       const data: RegistryResponse = await resp.json();
       _agents = { ...FALLBACK_AGENTS, ...data.agents };

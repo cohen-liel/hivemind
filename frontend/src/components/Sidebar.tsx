@@ -3,7 +3,6 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { getProjects } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useTheme } from '../ThemeContext';
-import { formatCost } from '../hooks/useAnimatedNumber';
 import type { Project, WSEvent } from '../types';
 
 const STATUS_CONFIG: Record<string, { color: string; label: string; pulse: boolean }> = {
@@ -36,11 +35,16 @@ export default function Sidebar({ onProjectsChange }: Props) {
 
   useEffect(() => {
     loadProjects();
-    const interval = setInterval(loadProjects, 5000);
+    const interval = setInterval(loadProjects, 30_000);
     return () => clearInterval(interval);
   }, [loadProjects]);
 
   const handleWSEvent = useCallback((event: WSEvent) => {
+    if (event.type === 'project_status' && (event as any).status === 'deleted') {
+      // Remove locally without re-fetching — API may still return it briefly
+      setProjects(prev => prev.filter(p => p.project_id !== event.project_id));
+      return;
+    }
     if (event.type === 'agent_final' || event.type === 'project_status') {
       loadProjects();
     }
@@ -154,6 +158,8 @@ export default function Sidebar({ onProjectsChange }: Props) {
           style={{ color: 'var(--text-muted)' }}
           onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
           onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+          data-tooltip={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           title={collapsed ? 'Expand' : 'Collapse'}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -179,6 +185,8 @@ export default function Sidebar({ onProjectsChange }: Props) {
           }}
           onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 5px 20px rgba(99,140,255,0.4), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
           onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 3px 12px rgba(99,140,255,0.3), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+          aria-label="New Project"
+          {...(collapsed ? { 'data-tooltip': 'New Project' } : {})}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
@@ -206,6 +214,8 @@ export default function Sidebar({ onProjectsChange }: Props) {
               }}
               onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
               onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; } }}
+              aria-label={item.label}
+              {...(collapsed ? { 'data-tooltip': item.label } : {})}
             >
               {item.icon}
               {!collapsed && <span>{item.label}</span>}
@@ -265,18 +275,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate block font-medium flex-1">{project.project_name}</span>
-                    {/* Live cost badge for running projects */}
-                    {project.status === 'running' && project.total_cost_usd > 0 && (
-                      <span className="cost-badge flex-shrink-0">
-                        {formatCost(project.total_cost_usd)}
-                      </span>
-                    )}
                   </div>
-                  {project.total_cost_usd > 0 && project.status !== 'running' && (
-                    <span className="text-[10px] block mt-0.5" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      {formatCost(project.total_cost_usd)}
-                    </span>
-                  )}
                 </div>
               )}
             </button>
@@ -305,6 +304,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
           onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
           aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
           title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          {...(collapsed ? { 'data-tooltip': theme === 'dark' ? 'Light Mode' : 'Dark Mode' } : {})}
         >
           {theme === 'dark' ? (
             /* Sun icon — shown in dark mode, click to go light */
@@ -334,6 +334,8 @@ export default function Sidebar({ onProjectsChange }: Props) {
           }}
           onMouseEnter={e => { if (location.pathname !== '/settings') { e.currentTarget.style.background = 'var(--bg-card)'; } }}
           onMouseLeave={e => { if (location.pathname !== '/settings') { e.currentTarget.style.background = 'transparent'; } }}
+          aria-label="Settings"
+          {...(collapsed ? { 'data-tooltip': 'Settings' } : {})}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.3"/>

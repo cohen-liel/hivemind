@@ -473,9 +473,12 @@ async def delete_project(
         )
 
     try:
+        logger.info("DELETE /api/projects/%s — starting cascade delete", project_id)
         deleted = await mgr.delete_project(project_id)
         if not deleted:
+            logger.info("DELETE /api/projects/%s — not found (already deleted?)", project_id)
             return _problem(404, f"Project {project_id!r} not found.")
+        logger.info("DELETE /api/projects/%s — cascade delete completed successfully", project_id)
         return {
             "ok": True,
             "project_id": project_id,
