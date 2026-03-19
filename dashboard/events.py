@@ -80,6 +80,9 @@ _PERSIST_EVENT_TYPES = frozenset(
         "agent_activity",
         # Pre-task question surfaced to the user before agent dispatch
         "pre_task_question",
+        # Message ingestion pipeline — queued message acknowledgement
+        "message_queued",
+        "task_queued",
         # NOTE: agent_text_chunk intentionally excluded — too frequent for DB
     }
 )

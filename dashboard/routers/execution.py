@@ -35,7 +35,13 @@ router = APIRouter(tags=["execution"])
 
 @router.post("/api/projects/{project_id}/message")
 async def send_message(project_id: str, req: SendMessageRequest):
-    """Send message to orchestrator via the parallel task queue."""
+    """Send message to orchestrator via the parallel task queue.
+
+    Returns instantly with queue position and estimated wait time so the
+    frontend can show feedback before any agent work starts.  Also emits
+    a MESSAGE_QUEUED WebSocket event via the EventBus.
+    """
+    from src.api.websocket_handler import build_message_queued_event, build_task_queued_event
     from src.workers.task_queue import TaskQueueRegistry
     from src.workers.task_worker import process_message_task
 
@@ -91,20 +97,53 @@ async def send_message(project_id: str, req: SendMessageRequest):
         mode=req.mode,
     )
 
+    queue_position = task_queue.queue_position_of(record.task_id)
+    est_wait = task_queue.estimated_wait_seconds(queue_position)
+
     logger.info(
-        "[%s] Message enqueued as task_id=%s (queue_depth=%d, running=%d/%d)",
+        "[%s] Message enqueued as task_id=%s (queue_depth=%d, running=%d/%d, pos=%d, est_wait=%.1fs)",
         project_id,
         record.task_id,
         task_queue.queue_depth,
         task_queue.running_count,
         task_queue.max_concurrent,
+        queue_position,
+        est_wait,
     )
+
+    # Emit MESSAGE_QUEUED event via EventBus for real-time frontend feedback
+    msg_queued_event = build_message_queued_event(
+        project_id=project_id,
+        task_id=record.task_id,
+        message_preview=req.message,
+        queue_position=queue_position,
+        queue_depth=task_queue.queue_depth,
+        running_count=task_queue.running_count,
+        max_concurrent=task_queue.max_concurrent,
+        estimated_wait_seconds=est_wait,
+    )
+    await event_bus.publish(msg_queued_event)
+
+    # If there are already running tasks, also emit TASK_QUEUED so the
+    # frontend can show the queued indicator immediately
+    if task_queue.running_count > 0 and queue_position > 0:
+        task_queued_event = build_task_queued_event(
+            project_id=project_id,
+            message_preview=req.message,
+            queue_position=queue_position,
+            queue_depth=task_queue.queue_depth,
+            running_graphs=task_queue.running_count,
+            max_concurrent_graphs=task_queue.max_concurrent,
+        )
+        await event_bus.publish(task_queued_event)
 
     return {
         "ok": True,
         "task_id": record.task_id,
         "status": record.status.value,
         "queue_depth": task_queue.queue_depth,
+        "queue_position": queue_position,
+        "estimated_wait_seconds": est_wait,
     }
 
 
@@ -132,11 +171,42 @@ async def enqueue_message(project_id: str, req: SendMessageRequest):
 
 @router.get("/api/projects/{project_id}/queue")
 async def get_queue(project_id: str):
-    """List all messages queued for a project."""
+    """Return structured queue state: pending messages, active tasks, and estimates.
+
+    First checks the task queue (primary source of truth for in-flight work),
+    then falls back to the session manager's persistent queue for messages
+    that haven't been promoted to tasks yet.
+    """
+    from src.workers.task_queue import TaskQueueRegistry
+
+    # Try task queue first — it has richer state
+    registry = TaskQueueRegistry.get_registry()
+    task_queue = await registry.get_queue(project_id)
+    if task_queue:
+        queue_state = await task_queue.get_queue_state()
+        return {"ok": True, "project_id": project_id, **queue_state}
+
+    # Fall back to session manager persistent queue
     if not state.session_mgr:
         return _problem(503, "Session manager unavailable.")
     items = await state.session_mgr.list_queued_messages(project_id)
-    return {"ok": True, "queue": items, "queue_size": len(items)}
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "pending_tasks": [
+            {
+                "message_preview": (item.get("message", "") or "")[:100],
+                "queue_position": idx,
+                "created_at": item.get("created_at"),
+            }
+            for idx, item in enumerate(items, 1)
+        ],
+        "active_tasks": [],
+        "queue_depth": len(items),
+        "running_count": 0,
+        "max_concurrent": 5,
+        "estimated_drain_seconds": 0.0,
+    }
 
 
 @router.delete("/api/projects/{project_id}/queue/{msg_id}")
