@@ -86,7 +86,7 @@ except OSError as e:
 
 # Agent limits
 MAX_TURNS_PER_CYCLE: int = _get("MAX_TURNS_PER_CYCLE", "25", int)
-MAX_BUDGET_USD: float = _get("MAX_BUDGET_USD", "5.0", float)
+MAX_BUDGET_USD: float = _get("MAX_BUDGET_USD", "50.0", float)
 AGENT_TIMEOUT_SECONDS: int = _get("AGENT_TIMEOUT_SECONDS", "300", int)  # 5 min default
 SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "28800", int)  # 8h default
 
