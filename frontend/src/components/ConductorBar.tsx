@@ -38,7 +38,9 @@ export default function ConductorBar({
     <header
       className="relative flex-shrink-0 sticky top-0 z-20 transition-all duration-500"
       style={{
-        background: 'var(--bg-panel)',
+        background: isActive
+          ? 'linear-gradient(180deg, rgba(99, 140, 255, 0.04) 0%, var(--bg-panel) 100%)'
+          : 'var(--bg-panel)',
         borderBottom: '1px solid var(--border-dim)',
         backdropFilter: 'blur(12px)',
         boxShadow: isActive ? '0 4px 30px var(--glow-blue)' : 'none',
@@ -83,7 +85,11 @@ export default function ConductorBar({
               boxShadow: isActive ? '0 0 15px var(--glow-blue)' : 'none',
             }}
           >
-            🎯
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isActive ? 'var(--accent-blue)' : isOrchestratorDone ? 'var(--accent-green)' : 'var(--text-muted)'} strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="10" opacity="0.3"/>
+              <circle cx="12" cy="12" r="6" opacity="0.5"/>
+              <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/>
+            </svg>
           </div>
           {isActive && (
             <div

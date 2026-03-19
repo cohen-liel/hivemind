@@ -195,10 +195,14 @@ export const DesktopTabBar = React.memo(function DesktopTabBar({
           <button
             key={tab.id}
             onClick={() => onSetDesktopTab(tab.id)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--accent-blue)]"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[var(--accent-blue)]"
             style={{
-              background: desktopTab === tab.id ? 'var(--bg-elevated)' : 'transparent',
+              background: desktopTab === tab.id
+                ? 'linear-gradient(135deg, rgba(99,140,255,0.12), rgba(139,92,246,0.08))'
+                : 'transparent',
               color: desktopTab === tab.id ? 'var(--text-primary)' : 'var(--text-muted)',
+              border: desktopTab === tab.id ? '1px solid rgba(99,140,255,0.15)' : '1px solid transparent',
+              boxShadow: desktopTab === tab.id ? '0 1px 4px rgba(99,140,255,0.1)' : 'none',
             }}
             aria-current={desktopTab === tab.id ? 'page' : undefined}
             aria-label={`${tab.label} tab`}
