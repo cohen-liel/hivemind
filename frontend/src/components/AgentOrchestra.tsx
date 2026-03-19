@@ -1,5 +1,5 @@
 import React from 'react';
-import type { AgentState as AgentStateType, LoopProgress, ActivityEntry, WSEvent } from '../types';
+import type { AgentState as AgentStateType, LoopProgress, ActivityEntry } from '../types';
 import type { HealingEvent, DesktopTab } from '../reducers/projectReducer';
 import type { AgentMetric } from '../hooks/useAgentMetrics';
 import ConductorMode from './ConductorMode';
@@ -24,8 +24,6 @@ export interface HivemindTabContentProps {
   activities: ActivityEntry[];
   projectStatus: string;
   messageDraft: string;
-  dagGraph: WSEvent['graph'] | null;
-  dagTaskStatus: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
   healingEvents: HealingEvent[];
 }
 
@@ -243,8 +241,6 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
   activities,
   projectStatus,
   messageDraft,
-  dagGraph,
-  dagTaskStatus,
   healingEvents,
 }: HivemindTabContentProps): React.ReactElement {
   return (

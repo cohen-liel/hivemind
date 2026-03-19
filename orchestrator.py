@@ -2262,8 +2262,15 @@ class OrchestratorManager:
                     )
 
             # Also emit dag_task_update for tasks that never started (still pending)
-            # so the Plan View shows them as cancelled/skipped, not stuck in 'pending'
-            if _abnormal_exit and self._current_dag_graph:
+            # so the Plan View shows them as cancelled/skipped, not stuck in 'pending'.
+            # This applies to BOTH abnormal exits AND normal exits where the graph
+            # didn't fully complete (e.g. budget exhaustion is treated as "normal"
+            # by the DAG executor but leaves tasks unfinished).
+            _has_unfinished = self._current_dag_graph and any(
+                t.get("id") and t["id"] not in self._dag_task_statuses
+                for t in self._current_dag_graph.get("tasks", [])
+            )
+            if (_abnormal_exit or _has_unfinished) and self._current_dag_graph:
                 for t in self._current_dag_graph.get("tasks", []):
                     tid = t.get("id")
                     if tid and tid not in self._dag_task_statuses:
@@ -2275,7 +2282,11 @@ class OrchestratorManager:
                             status="cancelled",
                             task_name=(t.get("goal") or "")[:120],
                             agent=t.get("role", "unknown"),
-                            failure_reason=f"DAG terminated before task started: {_dag_exit_reason}",
+                            failure_reason=(
+                                f"DAG terminated before task started: {_dag_exit_reason}"
+                                if _abnormal_exit
+                                else "Skipped — session ended before this task could run"
+                            ),
                         )
 
             # Emit execution_error event so the frontend can show an error banner

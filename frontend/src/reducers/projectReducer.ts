@@ -800,6 +800,9 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         dagGraph: event.graph,
         dagTaskStatus: {},
         dagTaskFailureReasons: {},
+        // Auto-switch to Plan tab so user sees execution progress
+        desktopTab: 'plan',
+        mobileView: 'plan',
         activities: appendActivities(state.activities, {
           id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
           agent: 'PM',
@@ -823,9 +826,15 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         status === 'cancelled' ? 'cancelled' as const :
         'pending' as const;
 
+      // Capture failure reasons for failed/cancelled tasks
+      const newFailureReasons = event.failure_reason
+        ? { ...state.dagTaskFailureReasons, [taskId]: event.failure_reason as string }
+        : state.dagTaskFailureReasons;
+
       return {
         ...state,
         dagTaskStatus: { ...state.dagTaskStatus, [taskId]: mappedStatus },
+        dagTaskFailureReasons: newFailureReasons,
       };
     }
 

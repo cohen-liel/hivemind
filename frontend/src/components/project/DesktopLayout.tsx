@@ -118,8 +118,6 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
                 activities={activities}
                 projectStatus={project.status}
                 messageDraft={message}
-                dagGraph={dagGraph}
-                dagTaskStatus={dagTaskStatus}
                 healingEvents={healingEvents}
               />
             </PanelErrorBoundary>
