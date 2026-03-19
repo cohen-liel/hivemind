@@ -58,32 +58,32 @@ const DESKTOP_TAB_ITEMS: DesktopTabItem[] = [
   {
     id: 'hivemind',
     label: 'Hivemind',
-    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>,
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" /></svg>,
   },
   {
     id: 'agents',
     label: 'Agents',
-    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>,
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
   },
   {
     id: 'plan',
     label: 'Plan',
-    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>,
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>,
   },
   {
     id: 'code',
     label: 'Code',
-    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>,
   },
   {
     id: 'diff',
     label: 'Diff',
-    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3v18M3 12h18"/></svg>,
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3v18M3 12h18" /></svg>,
   },
   {
     id: 'trace',
     label: 'Trace',
-    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>,
   },
 ];
 
@@ -224,7 +224,7 @@ export const DesktopTabBar = React.memo(function DesktopTabBar({
           <button onClick={onShowClearConfirm} className="ml-auto p-1.5 rounded-lg transition-all hover:bg-[var(--bg-elevated)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-red)]"
             style={{ color: 'var(--text-muted)' }} title="Clear history" aria-label="Clear history">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-              <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4"/>
+              <path d="M3 4h10M5.5 4V3a1 1 0 011-1h3a1 1 0 011 1v1M6 7v4M10 7v4M4 4l.8 8.5a1 1 0 001 .9h4.4a1 1 0 001-.9L12 4" />
             </svg>
           </button>
         )}
@@ -256,63 +256,6 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
         status={projectStatus}
         messageDraft={messageDraft}
       />
-      {/* DAG Visualization */}
-      {dagGraph && dagGraph.tasks && dagGraph.tasks.length > 0 && (
-        <div className="px-6 pb-4">
-          <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-dim)' }}>
-            <h3 className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-              DAG Execution Plan
-            </h3>
-            <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>{dagGraph.vision}</p>
-            <div className="space-y-2">
-              {dagGraph.tasks.map(task => {
-                const taskStatus = dagTaskStatus[task.id] ?? 'pending';
-                const stateColor = taskStatus === 'completed' ? 'var(--accent-green)'
-                  : taskStatus === 'working' ? 'var(--accent-blue)'
-                  : taskStatus === 'failed' ? 'var(--accent-red)'
-                  : taskStatus === 'cancelled' ? 'var(--text-muted)'
-                  : 'var(--text-muted)';
-                const stateIcon = taskStatus === 'completed' ? '✅'
-                  : taskStatus === 'working' ? '🔄'
-                  : taskStatus === 'failed' ? '❌'
-                  : taskStatus === 'cancelled' ? '⛔'
-                  : task.is_remediation ? '🔧' : '⏸️';
-                const agentEmoji = AGENT_ICONS[task.role] || '🤖';
-                const borderColor = taskStatus === 'working' ? 'rgba(0,149,255,0.35)'
-                  : taskStatus === 'completed' ? 'rgba(61,214,140,0.25)'
-                  : taskStatus === 'failed' ? 'rgba(245,71,91,0.25)'
-                  : taskStatus === 'cancelled' ? 'rgba(160,160,160,0.2)'
-                  : 'var(--border-dim)';
-                const bgColor = taskStatus === 'working' ? 'rgba(0,149,255,0.06)'
-                  : taskStatus === 'completed' ? 'rgba(61,214,140,0.04)'
-                  : taskStatus === 'cancelled' ? 'rgba(160,160,160,0.03)'
-                  : 'var(--bg-elevated)';
-                return (
-                  <div key={task.id} className="flex items-start gap-2 p-2.5 rounded-lg transition-all" style={{ background: bgColor, border: `1px solid ${borderColor}`, boxShadow: taskStatus === 'working' ? '0 0 10px rgba(0,149,255,0.06)' : 'none' }}>
-                    <span className="text-sm flex-shrink-0 mt-0.5">{stateIcon}</span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-mono font-semibold" style={{ color: stateColor }}>{agentEmoji} {task.role}</span>
-                        <span className="text-[10px] font-mono opacity-50" style={{ color: 'var(--text-muted)' }}>{task.id}</span>
-                        {task.is_remediation && <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'var(--glow-amber)', color: 'var(--accent-amber)' }}>fix</span>}
-                        {task.depends_on && task.depends_on.length > 0 && (
-                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                            ← {task.depends_on.join(', ')}
-                          </span>
-                        )}
-                        {taskStatus === 'working' && (
-                          <span className="text-[10px] animate-pulse font-medium" style={{ color: 'var(--accent-blue)' }}>running...</span>
-                        )}
-                      </div>
-                      <p className="text-xs mt-0.5 leading-relaxed" style={{ color: 'var(--text-secondary)', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{task.goal}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
       {/* Self-Healing Events */}
       {healingEvents.length > 0 && (
         <div className="px-6 pb-4">
