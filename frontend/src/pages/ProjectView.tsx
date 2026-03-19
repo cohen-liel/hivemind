@@ -30,6 +30,12 @@ import { useDagPersistence } from '../hooks/useDagPersistence';
 import { useProjectWebSocket } from '../hooks/useProjectWebSocket';
 import { useProjectActions } from '../hooks/useProjectActions';
 import { projectReducer, initialProjectState } from '../reducers/projectReducer';
+import {
+  getPersistedDesktopTab,
+  getPersistedMobileView,
+  setPersistedDesktopTab,
+  setPersistedMobileView,
+} from '../hooks/useUIStatePersistence';
 import type { Project, ProjectMessage, AgentState as AgentStateType } from '../types';
 import type { ActivityEvent } from '../api';
 import {
@@ -61,10 +67,15 @@ export default function ProjectView(): React.ReactElement | null {
   const toast = useToast();
 
   // ── Single useReducer replaces 21 individual useState hooks ──
-  const [state, dispatch] = useReducer(projectReducer, initialProjectState);
+  // Initialize with persisted tab/view selections from localStorage
+  const [state, dispatch] = useReducer(projectReducer, {
+    ...initialProjectState,
+    desktopTab: getPersistedDesktopTab(),
+    mobileView: getPersistedMobileView(),
+  });
   const {
     project, activities, agentStates, loopProgress, files, loadError,
-    sdkCalls, liveAgentStream, lastTicker, dagGraph, dagTaskStatus,
+    sdkCalls, liveAgentStream, lastTicker, dagGraph, dagTaskStatus, dagTaskFailureReasons,
     healingEvents, mobileView, desktopTab, selectedAgent, showClearConfirm,
     sending, messageOffset, hasMoreMessages, approvalRequest, pendingQuestion,
   } = state;
@@ -250,14 +261,21 @@ export default function ProjectView(): React.ReactElement | null {
 
   // Stable callback references — dispatch identity never changes so these
   // are created once and never cause downstream re-renders.
+  // Tab/view changes are also persisted to localStorage for cross-reload retention.
   const onSetDesktopTab = useCallback(
-    (tab: DesktopTab) => dispatch({ type: 'SET_DESKTOP_TAB', tab }), [],
+    (tab: DesktopTab) => {
+      dispatch({ type: 'SET_DESKTOP_TAB', tab });
+      setPersistedDesktopTab(tab);
+    }, [],
   );
   const onSelectAgent = useCallback(
     (agent: string | null) => dispatch({ type: 'SET_SELECTED_AGENT', agent }), [],
   );
   const onSetMobileView = useCallback(
-    (view: MobileView) => dispatch({ type: 'SET_MOBILE_VIEW', view }), [],
+    (view: MobileView) => {
+      dispatch({ type: 'SET_MOBILE_VIEW', view });
+      setPersistedMobileView(view);
+    }, [],
   );
   const onShowClearConfirm = useCallback(
     () => dispatch({ type: 'SET_SHOW_CLEAR_CONFIRM', show: true }), [],
@@ -317,6 +335,7 @@ export default function ProjectView(): React.ReactElement | null {
       // DAG
       dagGraph,
       dagTaskStatus,
+      dagTaskFailureReasons,
       healingEvents,
 
       // UI view state
@@ -349,7 +368,7 @@ export default function ProjectView(): React.ReactElement | null {
     agentStates, loopProgress,
     activities, files, sdkCalls, liveAgentStream, agentMetrics,
     now, lastTicker,
-    dagGraph, dagTaskStatus, healingEvents,
+    dagGraph, dagTaskStatus, dagTaskFailureReasons, healingEvents,
     desktopTab, selectedAgent, mobileView,
     hasMoreMessages, message, sending,
     onSetDesktopTab, onSelectAgent, onSetMobileView,

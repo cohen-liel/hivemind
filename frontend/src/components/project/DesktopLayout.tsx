@@ -5,12 +5,20 @@
  * tab content on the left, and activity panel on the right.
  * Each tab panel is wrapped in an error boundary for resilience.
  *
+ * Features:
+ * - Resizable split panel (drag divider) with localStorage persistence
+ * - Scroll position persistence across reconnections
+ *
  * STATE-01 fix: Consumes ProjectContext instead of receiving 20+ props.
  */
 
-import React from 'react';
+import React, { useRef } from 'react';
 import { useProjectContext } from './ProjectContext';
 import { PanelErrorBoundary } from './PanelErrorBoundary';
+import {
+  useResizablePanel,
+  useScrollPersistence,
+} from '../../hooks/useUIStatePersistence';
 
 // ── Existing components ──
 import ConductorBar from '../ConductorBar';
@@ -35,11 +43,18 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
   const {
     project, projectId, connected, orchestratorState, subAgentStates,
     agentStateList, agentStates, loopProgress, activities, files, sdkCalls,
-    liveAgentStream, now, lastTicker, dagGraph, dagTaskStatus, healingEvents,
+    liveAgentStream, now, lastTicker, dagGraph, dagTaskStatus, dagTaskFailureReasons, healingEvents,
     desktopTab, selectedAgent, hasMoreMessages, message, agentMetrics,
     onSetDesktopTab, onSelectAgent, onLoadMore, onPause, onResume, onStop,
     onSend, onShowClearConfirm,
   } = useProjectContext();
+
+  // ── Resizable split panel ──
+  const splitContainerRef = useRef<HTMLDivElement | null>(null);
+  const { panelWidth, isDragging, dragHandleProps } = useResizablePanel(splitContainerRef);
+
+  // ── Scroll persistence for the left content panel ──
+  const leftScrollRef = useScrollPersistence(`desktop-left-${desktopTab}`, connected);
 
   return (
     <div className="hidden lg:flex flex-col h-full w-full overflow-hidden">
@@ -50,7 +65,6 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
         connected={connected}
         orchestrator={orchestratorState}
         progress={loopProgress}
-        totalCost={project.total_cost_usd}
         agentSummary={subAgentStates}
         lastTicker={lastTicker}
       />
@@ -76,14 +90,25 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
         lastTicker={lastTicker}
       />
 
-      {/* Split view: tab content (left) + activity log (right) */}
+      {/* Split view: tab content (left) + drag handle + activity log (right) */}
       <div
+        ref={splitContainerRef}
         className="flex-1 flex min-h-0 overflow-hidden"
-        style={{ width: '100%' }}
+        style={{
+          width: '100%',
+          // Prevent text selection while dragging the divider
+          userSelect: isDragging ? 'none' : undefined,
+        }}
       >
+        {/* Left panel — tab content */}
         <div
+          ref={leftScrollRef}
           className="overflow-y-auto overflow-x-hidden min-w-0"
-          style={{ width: '65%', maxWidth: '65%', flexShrink: 0 }}
+          style={{
+            width: `${panelWidth}%`,
+            maxWidth: `${panelWidth}%`,
+            flexShrink: 0,
+          }}
         >
           {desktopTab === 'hivemind' && (
             <PanelErrorBoundary panelName="Hivemind">
@@ -91,7 +116,6 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
                 agentStateList={agentStateList}
                 loopProgress={loopProgress}
                 activities={activities}
-                totalCost={project.total_cost_usd}
                 projectStatus={project.status}
                 messageDraft={message}
                 dagGraph={dagGraph}
@@ -116,6 +140,7 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
                 activities={activities}
                 dagGraph={dagGraph}
                 dagTaskStatus={dagTaskStatus}
+                dagTaskFailureReasons={dagTaskFailureReasons}
               />
             </PanelErrorBoundary>
           )}
@@ -136,6 +161,63 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
           )}
         </div>
 
+        {/* ── Drag handle / divider ── */}
+        <div
+          {...dragHandleProps}
+          className="group relative flex-shrink-0"
+          style={{
+            ...dragHandleProps.style,
+            width: '8px',
+          }}
+        >
+          {/* Visual indicator line */}
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              left: '3px',
+              width: '2px',
+              background: isDragging
+                ? 'var(--accent-blue, #6366f1)'
+                : 'var(--border-dim, #27272a)',
+              transition: isDragging ? 'none' : 'background 0.15s ease',
+              borderRadius: '1px',
+            }}
+          />
+          {/* Hover hit area — visible dots on hover */}
+          <div
+            aria-hidden="true"
+            className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '3px',
+              transition: 'opacity 0.15s ease',
+            }}
+          >
+            {[0, 1, 2].map(i => (
+              <div
+                key={i}
+                style={{
+                  width: '3px',
+                  height: '3px',
+                  borderRadius: '50%',
+                  background: isDragging
+                    ? 'var(--accent-blue, #6366f1)'
+                    : 'var(--text-muted, #71717a)',
+                }}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Right panel — activity */}
         <PanelErrorBoundary panelName="Activity">
           <ActivityPanel
             projectId={projectId}
