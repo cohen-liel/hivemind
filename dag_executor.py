@@ -753,6 +753,11 @@ class _ExecutionContext:
         self.structured_notes.init_session(graph.vision)
         self.model_overrides: dict[str, str] = {}  # task_id -> model override
 
+        # ── Blackboard: enhanced cross-agent context layer ──
+        from blackboard import Blackboard
+
+        self.blackboard: Blackboard = Blackboard(self.structured_notes)
+
 
 # ---------------------------------------------------------------------------
 # Execution Result
@@ -926,14 +931,29 @@ async def _run_single_task(
             f"[DAG] Task {task.id}: artifact context injection failed (non-fatal): {exc}"
         )
 
-    # ── Inject structured notes (shared knowledge base) ──
+    # ── Inject Blackboard context (enhanced shared knowledge base) ──
     try:
-        notes_ctx = ctx.structured_notes.build_notes_context(role=role_name, task_goal=task.goal)
-        if notes_ctx:
-            prompt += f"\n\n{notes_ctx}"
-            logger.info(f"[DAG] Task {task.id}: injected notes context ({len(notes_ctx)} chars)")
+        bb_ctx = ctx.blackboard.build_smart_context(
+            role=role_name,
+            task_goal=task.goal,
+            context_from=task.context_from,
+        )
+        if bb_ctx:
+            prompt += f"\n\n{bb_ctx}"
+            logger.info(f"[DAG] Task {task.id}: injected Blackboard context ({len(bb_ctx)} chars)")
     except Exception as exc:
-        logger.warning(f"[DAG] Task {task.id}: notes injection failed (non-fatal): {exc}")
+        # Fallback to basic notes if Blackboard fails
+        logger.warning(
+            f"[DAG] Task {task.id}: Blackboard context failed ({exc}), falling back to basic notes"
+        )
+        try:
+            notes_ctx = ctx.structured_notes.build_notes_context(
+                role=role_name, task_goal=task.goal
+            )
+            if notes_ctx:
+                prompt += f"\n\n{notes_ctx}"
+        except Exception:
+            pass  # Both layers failed — proceed without shared context
 
     # Resume session if available
     session_key = f"{ctx.graph.project_id}:{role_name}:{task.id}"
@@ -1276,6 +1296,58 @@ async def _run_single_task(
                 logger.warning(
                     f"[DAG] Task {task.id}: artifact registration failed (non-fatal): {exc}"
                 )
+
+        # ── Blackboard: register file ownership for conflict detection ──
+        if output.is_successful() and output.artifacts:
+            try:
+                for artifact_path in output.artifacts:
+                    conflict = ctx.blackboard.register_file_ownership(artifact_path, task.id)
+                    if conflict:
+                        logger.warning(
+                            "[DAG] Task %s: Blackboard detected file conflict: %s",
+                            task.id,
+                            conflict.description,
+                        )
+            except Exception as exc:
+                logger.warning(
+                    f"[DAG] Task {task.id}: Blackboard file tracking failed (non-fatal): {exc}"
+                )
+
+        # ── Reflexion: self-critique before accepting output ──
+        try:
+            from reflexion import run_reflexion, should_reflect
+
+            if should_reflect(task, output):
+                logger.info(
+                    "[DAG] Task %s: entering Reflexion phase (confidence=%.2f)",
+                    task.id,
+                    output.confidence,
+                )
+                output, verdict = await run_reflexion(
+                    task=task,
+                    output=output,
+                    session_id=ctx.session_ids.get(session_key),
+                    system_prompt=system_prompt,
+                    project_dir=ctx.project_dir,
+                    sdk=ctx.sdk,
+                )
+                logger.info(
+                    "[DAG] Task %s: Reflexion complete — %s (cost=$%.4f)",
+                    task.id,
+                    verdict.summary(),
+                    verdict.critique_cost_usd,
+                )
+                # Record reflexion outcome in structured notes
+                ctx.structured_notes.add_note(
+                    category=NoteCategory.CONTEXT,
+                    title=f"Reflexion for {task.id}",
+                    content=verdict.summary(),
+                    author_role=role_name,
+                    author_task_id=task.id,
+                    tags=[task.id, "reflexion"],
+                )
+        except Exception as exc:
+            logger.warning(f"[DAG] Task {task.id}: Reflexion failed (non-fatal): {exc}")
 
         # ── Record structured notes from task output ──
         try:
