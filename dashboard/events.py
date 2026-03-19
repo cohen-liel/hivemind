@@ -83,6 +83,9 @@ _PERSIST_EVENT_TYPES = frozenset(
         # Message ingestion pipeline — queued message acknowledgement
         "message_queued",
         "task_queued",
+        # Granular DAG progress — task milestones and aggregate completion
+        "task_progress",
+        "dag_progress",
         # NOTE: agent_text_chunk intentionally excluded — too frequent for DB
     }
 )
@@ -277,6 +280,9 @@ class EventThrottler:
 
 # Module-level throttler for text chunk events (max 4 per second per agent)
 text_chunk_throttler = EventThrottler(max_per_second=4.0)
+
+# Module-level throttler for task progress events (max 2 per second per task)
+task_progress_throttler = EventThrottler(max_per_second=2.0)
 
 
 class EventBus:
