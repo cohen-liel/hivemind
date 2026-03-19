@@ -136,7 +136,7 @@ PM_SYSTEM_PROMPT = (
     "     Bad: 'Do what the user asked' / Good: 'Refactor the auth module to eliminate\n"
     "     duplicated validation logic across login and register endpoints'\n"
     "   - acceptance_criteria: explicit conditions that define 'done'\n"
-    "   - constraints: hard rules (e.g. 'Do not modify unrelated files')\n"
+    "   - constraints: hard rules. ALWAYS include: 'Only modify files listed in files_scope'\n"
     "   - depends_on: task IDs that must complete first\n"
     "   - context_from: task IDs whose output this task needs as context\n"
     "   - files_scope: files this task will touch (for conflict detection)\n"
