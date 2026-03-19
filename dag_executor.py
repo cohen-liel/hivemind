@@ -220,6 +220,7 @@ async def execute_graph(
     max_budget_usd: float = 50.0,
     session_id_store: dict[str, str] | None = None,
     max_concurrent_tasks: int | None = None,
+    commit_approval_callback: Callable[[str], Awaitable[bool]] | None = None,
 ) -> ExecutionResult:
     """
     Execute a TaskGraph to completion with self-healing.
@@ -279,6 +280,7 @@ async def execute_graph(
         on_agent_tool_use=on_agent_tool_use,
         on_event=on_event,
         max_concurrent_tasks=_concurrency,
+        commit_approval_callback=commit_approval_callback,
     )
 
     logger.info(
@@ -669,21 +671,60 @@ async def _execute_graph_inner(
 
                 # Per-task commit: one focused commit per completed task
                 if output.is_successful():
-                    try:
-                        committed = await commit_single_task(ctx.project_dir, output)
-                        if committed:
-                            logger.info(f"[DAG] Task {task.id} committed: {committed}")
-                    except Exception as exc:
-                        logger.warning(f"[DAG] Per-task commit failed (non-fatal): {exc}")
+                    # ── Approval Gate ──────────────────────────────────────
+                    # If a commit_approval_callback is configured (e.g. in
+                    # interactive mode), ask the user before committing.
+                    _commit_approved = True
+                    if ctx.commit_approval_callback:
+                        try:
+                            _approval_desc = (
+                                f"Task **{task.id}** ({task.role.value}) completed.\n"
+                                f"Summary: {output.summary[:200]}\n"
+                                f"Files: {', '.join(output.artifacts[:5]) if output.artifacts else 'none'}\n\n"
+                                f"Commit these changes?"
+                            )
+                            _commit_approved = await ctx.commit_approval_callback(_approval_desc)
+                            if not _commit_approved:
+                                logger.info(f"[DAG] Task {task.id} commit rejected by user")
+                        except Exception as approval_exc:
+                            logger.warning(
+                                f"[DAG] Approval callback failed (auto-approving): {approval_exc}"
+                            )
+                            _commit_approved = True
+
+                    if _commit_approved:
+                        try:
+                            committed = await commit_single_task(ctx.project_dir, output)
+                            if committed:
+                                logger.info(f"[DAG] Task {task.id} committed: {committed}")
+                        except Exception as exc:
+                            logger.warning(f"[DAG] Per-task commit failed (non-fatal): {exc}")
 
         # Fallback: commit anything remaining that wasn't caught by per-task commits
-        try:
-            round_outputs = [ctx.completed[t.id] for t in ready if t.id in ctx.completed]
-            committed = await executor_commit(ctx.project_dir, round_outputs, round_num)
-            if committed:
-                logger.info(f"[DAG] Round {round_num} fallback commit: {committed}")
-        except Exception as exc:
-            logger.warning(f"[DAG] Auto-commit failed (non-fatal): {exc}")
+        _round_commit_approved = True
+        if ctx.commit_approval_callback:
+            try:
+                _round_desc = (
+                    f"Round {round_num} completed. Commit remaining changes?\n"
+                    f"Tasks: {', '.join(t.id for t in ready if t.id in ctx.completed)}"
+                )
+                _round_commit_approved = await ctx.commit_approval_callback(_round_desc)
+                if not _round_commit_approved:
+                    logger.info(f"[DAG] Round {round_num} fallback commit rejected by user")
+            except Exception as approval_exc:
+                logger.warning(
+                    f"[DAG] Round approval callback failed (auto-approving): {approval_exc}"
+                )
+                _round_commit_approved = True
+
+        if _round_commit_approved:
+            try:
+                round_outputs = [ctx.completed[t.id] for t in ready if t.id in ctx.completed]
+                committed = await executor_commit(ctx.project_dir, round_outputs, round_num)
+                if committed:
+                    logger.info(f"[DAG] Round {round_num} fallback commit: {committed}")
+            except Exception as exc:
+                logger.warning(f"[DAG] Auto-commit failed (non-fatal): {exc}")
 
     return _build_result(ctx, graph)
 
@@ -711,7 +752,9 @@ class _ExecutionContext:
         on_agent_tool_use: Callable | None = None,
         on_event: Callable | None = None,
         max_concurrent_tasks: int = 4,
+        commit_approval_callback: Callable[[str], Awaitable[bool]] | None = None,
     ):
+        self.commit_approval_callback = commit_approval_callback
         self.graph = graph
         self.project_dir = project_dir
         self.specialist_prompts = specialist_prompts

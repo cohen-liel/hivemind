@@ -1771,6 +1771,12 @@ class OrchestratorManager:
                 f"{len(graph.tasks)} tasks, budget=${self._effective_budget:.2f}"
             )
             _dag_start = _pm_time.time()
+            # In interactive mode, wire the commit approval callback so the
+            # user can approve/reject each commit before it lands.
+            _commit_cb = None
+            if self.mode == "interactive":
+                _commit_cb = self.request_approval
+
             result: ExecutionResult = await execute_graph(
                 graph=graph,
                 project_dir=self.project_dir,
@@ -1784,6 +1790,7 @@ class OrchestratorManager:
                 on_event=self.on_event,
                 max_budget_usd=self._effective_budget,
                 session_id_store=session_id_store,
+                commit_approval_callback=_commit_cb,
             )
 
             _dag_elapsed = _pm_time.time() - _dag_start
