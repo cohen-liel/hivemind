@@ -433,7 +433,6 @@ const AgentStartedBubble = memo(function AgentStartedBubble({ entry, showAvatar 
 const AgentFinishedBubble = memo(function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   const isError = entry.is_error;
   const stats: string[] = [];
-  if (entry.cost !== undefined) stats.push(`$${entry.cost.toFixed(4)}`);
   if (entry.turns !== undefined) stats.push(`${entry.turns} turns`);
   if (entry.duration !== undefined) stats.push(`${entry.duration}s`);
 
@@ -507,7 +506,6 @@ const LoopProgressBubble = memo(function LoopProgressBubble({ entry }: { entry: 
   const maxLoops = entry.max_loops ?? 0;
   const turn = entry.turn ?? 0;
   const maxTurns = entry.max_turns ?? 0;
-  const cost = entry.cost ?? 0;
 
   const turnPct = maxTurns > 0 ? Math.min((turn / maxTurns) * 100, 100) : 0;
 
@@ -525,9 +523,6 @@ const LoopProgressBubble = memo(function LoopProgressBubble({ entry }: { entry: 
         )}
         {maxTurns > 0 && (
           <span style={{ color: 'var(--accent-blue)' }}>Turn {turn}/{maxTurns}</span>
-        )}
-        {cost > 0 && (
-          <span style={{ color: 'var(--accent-green)' }}>${cost.toFixed(3)}</span>
         )}
         {turnPct > 0 && (
           <div className="w-12 h-1 rounded-full overflow-hidden" style={{ background: 'var(--border-dim)' }}>

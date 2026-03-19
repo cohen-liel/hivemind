@@ -352,20 +352,6 @@ export interface AgentPerformanceEntry {
   created_at: number;
 }
 
-/** Per-project cost summary entry, returned by /api/cost-summary. */
-export interface ProjectCostSummary {
-  /** Unique project identifier */
-  project_id: string;
-  /** Human-readable project name */
-  project_name: string;
-  /** Cumulative cost in USD across all agent runs */
-  total_cost: number;
-  /** Total number of agent runs for this project */
-  total_runs: number;
-  /** Unix timestamp (seconds) of the most recent agent activity */
-  last_activity: number;
-}
-
 // ============================================================================
 // Settings — utility type for numeric-only keys
 // ============================================================================

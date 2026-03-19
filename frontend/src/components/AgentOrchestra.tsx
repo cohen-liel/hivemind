@@ -22,7 +22,6 @@ export interface HivemindTabContentProps {
   agentStateList: AgentStateType[];
   loopProgress: LoopProgress | null;
   activities: ActivityEntry[];
-  totalCost: number;
   projectStatus: string;
   messageDraft: string;
   dagGraph: WSEvent['graph'] | null;
@@ -242,7 +241,6 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
   agentStateList,
   loopProgress,
   activities,
-  totalCost,
   projectStatus,
   messageDraft,
   dagGraph,
@@ -255,7 +253,6 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
         agents={agentStateList}
         progress={loopProgress}
         activities={activities}
-        totalCost={totalCost}
         status={projectStatus}
         messageDraft={messageDraft}
       />
