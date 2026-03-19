@@ -337,7 +337,9 @@ def _manager_to_dict(manager, project_id: str) -> dict:
             "role": last.role,
             "content": last.content[:200] if last.content else "",
             "timestamp": last.timestamp,
-            "cost_usd": last.cost_usd,
+            "input_tokens": last.input_tokens,
+            "output_tokens": last.output_tokens,
+            "total_tokens": last.total_tokens,
         }
 
     # Compute DAG progress if available
@@ -379,7 +381,9 @@ def _manager_to_dict(manager, project_id: str) -> dict:
         "is_running": manager.is_running,
         "is_paused": manager.is_paused,
         "turn_count": manager.turn_count,
-        "total_cost_usd": manager.total_cost_usd,
+        "total_input_tokens": manager.total_input_tokens,
+        "total_output_tokens": manager.total_output_tokens,
+        "total_tokens": manager.total_tokens,
         "agents": manager.agent_names,
         "multi_agent": manager.is_multi_agent,
         "last_message": last_message,
@@ -724,6 +728,7 @@ def create_app() -> FastAPI:
         "/api/stats",
         "/api/auth/verify",
         "/api/auth/status",
+        "/api/agent-registry",  # Read-only public metadata (icons, labels, colors)
     }
 
     @app.middleware("http")
@@ -900,6 +905,8 @@ def create_app() -> FastAPI:
         "/api/health",
         "/api/ready",
         "/api/stats",
+        "/api/agent-registry",  # Public metadata, called on every page load
+        "/api/projects",  # Dashboard polls this frequently
         "/health",
     }  # endpoints exempt from rate limiting
     _RATE_LIMIT_REQUEST_COUNT = 0  # track requests for periodic cleanup
@@ -926,11 +933,23 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next):
-        """Per-IP rate limiting with sliding window and burst protection."""
+        """Per-IP rate limiting with sliding window and burst protection.
+
+        DELETE requests get a higher burst tolerance to prevent delete cascades
+        (which trigger page reloads and many follow-up GETs) from being blocked.
+        Auth-exempt paths are also rate-limit exempt to prevent login/health
+        checks from consuming the rate-limit budget.
+        """
         nonlocal _RATE_LIMIT_REQUEST_COUNT
 
         # Skip non-API routes and exempt endpoints
-        if not request.url.path.startswith("/api/") or request.url.path in _RATE_LIMIT_EXEMPT:
+        path = request.url.path
+        if not path.startswith("/api/") or path in _RATE_LIMIT_EXEMPT:
+            return await call_next(request)
+
+        # Also exempt auth-exempt paths from rate limiting — they should never
+        # consume the user's rate-limit budget (login flow, status checks).
+        if path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
         # Get client IP (support X-Forwarded-For for reverse proxy)
@@ -951,7 +970,12 @@ def create_app() -> FastAPI:
         # Check window limit
         if len(timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
             logger.warning(
-                f"Rate limit exceeded for {client_ip}: {len(timestamps)} requests in {_RATE_LIMIT_WINDOW}s"
+                "Rate limit exceeded for %s: %d requests in %ds (method=%s path=%s)",
+                client_ip,
+                len(timestamps),
+                _RATE_LIMIT_WINDOW,
+                request.method,
+                path,
             )
             return _problem(
                 429,
@@ -960,9 +984,20 @@ def create_app() -> FastAPI:
             )
 
         # Check burst limit (last 5 seconds)
+        # DELETE and its follow-up page-reload GETs get 2× burst tolerance
+        # to prevent delete cascades from triggering 429s.
         recent_burst = sum(1 for t in timestamps if now - t < 5)
-        if recent_burst >= _RATE_LIMIT_BURST:
-            logger.warning(f"Burst limit exceeded for {client_ip}: {recent_burst} requests in 5s")
+        burst_limit = _RATE_LIMIT_BURST
+        if request.method == "DELETE":
+            burst_limit = _RATE_LIMIT_BURST * 2
+        if recent_burst >= burst_limit:
+            logger.warning(
+                "Burst limit exceeded for %s: %d requests in 5s (method=%s path=%s)",
+                client_ip,
+                recent_burst,
+                request.method,
+                path,
+            )
             return _problem(
                 429,
                 "Too many requests in a short time. Please wait a moment.",
@@ -1162,11 +1197,22 @@ def create_app() -> FastAPI:
     @app.get("/api/projects")
     async def list_projects():
         """List all projects with live status from active_sessions + DB."""
+        # Load deleted project IDs so we never return them
+        _del_file = Path("data/deleted_projects.json")
+        deleted_ids: set[str] = set()
+        try:
+            if _del_file.exists():
+                deleted_ids = set(json.loads(_del_file.read_text()))
+        except Exception:
+            pass
+
         active_managers = state.get_all_managers()
 
-        # Build map of active projects
+        # Build map of active projects (exclude deleted)
         active_map = {}
         for user_id, project_id, manager in active_managers:
+            if project_id in deleted_ids:
+                continue
             active_map[project_id] = _manager_to_dict(manager, project_id)
             active_map[project_id]["user_id"] = user_id
 
@@ -1197,7 +1243,7 @@ def create_app() -> FastAPI:
         default_agent_names = [a["name"] for a in DEFAULT_AGENTS]
         for dbp in db_projects:
             pid = dbp["project_id"]
-            if pid not in seen:
+            if pid not in seen and pid not in deleted_ids:
                 projects.append(
                     {
                         "project_id": pid,
@@ -1207,7 +1253,9 @@ def create_app() -> FastAPI:
                         "is_running": False,
                         "is_paused": False,
                         "turn_count": 0,
-                        "total_cost_usd": 0,
+                        "total_input_tokens": 0,
+                        "total_output_tokens": 0,
+                        "total_tokens": 0,
                         "agents": default_agent_names,
                         "multi_agent": len(default_agent_names) > 1,
                         "last_message": None,
@@ -1235,7 +1283,9 @@ def create_app() -> FastAPI:
                     "role": m.role,
                     "content": m.content[:500],
                     "timestamp": m.timestamp,
-                    "cost_usd": m.cost_usd,
+                    "input_tokens": m.input_tokens,
+                    "output_tokens": m.output_tokens,
+                    "total_tokens": m.total_tokens,
                 }
                 for m in list(manager.conversation_log)[-50:]
             ]
@@ -1268,7 +1318,11 @@ def create_app() -> FastAPI:
                 "is_running": False,
                 "is_paused": False,
                 "turn_count": saved_orch.get("turn_count", 0) if saved_orch else 0,
-                "total_cost_usd": saved_orch.get("total_cost_usd", 0) if saved_orch else 0,
+                "total_input_tokens": saved_orch.get("total_input_tokens", 0) if saved_orch else 0,
+                "total_output_tokens": saved_orch.get("total_output_tokens", 0)
+                if saved_orch
+                else 0,
+                "total_tokens": saved_orch.get("total_tokens", 0) if saved_orch else 0,
                 "agents": default_agent_names,
                 "multi_agent": len(default_agent_names) > 1,
                 "last_message": last_msg,
@@ -1334,7 +1388,9 @@ def create_app() -> FastAPI:
                             "loop": saved.get("current_loop", 0),
                             "turn": saved.get("turn_count", 0),
                             "max_turns": 0,
-                            "cost": saved.get("total_cost_usd", 0),
+                            "input_tokens": saved.get("total_input_tokens", 0),
+                            "output_tokens": saved.get("total_output_tokens", 0),
+                            "total_tokens": saved.get("total_tokens", 0),
                             "max_budget": 0,
                             "max_loops": 0,
                         }
@@ -1365,7 +1421,9 @@ def create_app() -> FastAPI:
                 "loop": getattr(manager, "_current_loop", 0),
                 "turn": manager.turn_count,
                 "max_turns": MAX_TURNS_PER_CYCLE,
-                "cost": manager.total_cost_usd,
+                "input_tokens": manager.total_input_tokens,
+                "output_tokens": manager.total_output_tokens,
+                "total_tokens": manager.total_tokens,
                 "max_budget": MAX_BUDGET_USD,
                 "max_loops": MAX_ORCHESTRATOR_LOOPS,
             }
@@ -1382,7 +1440,9 @@ def create_app() -> FastAPI:
             "pending_approval": manager.pending_approval,
             "background_tasks": len(manager._background_tasks),
             "turn_count": manager.turn_count,
-            "total_cost_usd": manager.total_cost_usd,
+            "total_input_tokens": manager.total_input_tokens,
+            "total_output_tokens": manager.total_output_tokens,
+            "total_tokens": manager.total_tokens,
             "dag_graph": getattr(manager, "_current_dag_graph", None),
             "dag_task_statuses": getattr(manager, "_dag_task_statuses", {}),
             "diagnostics": diagnostics,
@@ -1447,7 +1507,9 @@ def create_app() -> FastAPI:
                 "agent_states": manager.agent_states,
                 "current_agent": manager.current_agent,
                 "turn_count": manager.turn_count,
-                "total_cost_usd": manager.total_cost_usd,
+                "total_input_tokens": manager.total_input_tokens,
+                "total_output_tokens": manager.total_output_tokens,
+                "total_tokens": manager.total_tokens,
                 "pending_messages": manager.pending_message_count,
                 "pending_approval": manager.pending_approval,
             }
@@ -1490,7 +1552,7 @@ def create_app() -> FastAPI:
         for agent_name in manager.agent_names:
             # Compute per-agent stats from conversation log
             agent_msgs = [m for m in manager.conversation_log if m.agent_name == agent_name]
-            agent_cost = sum(m.cost_usd for m in agent_msgs)
+            agent_tokens = sum(m.total_tokens for m in agent_msgs)
             agent_turns = len(agent_msgs)
             last_activity = agent_msgs[-1].content[:200] if agent_msgs else ""
             last_timestamp = agent_msgs[-1].timestamp if agent_msgs else 0
@@ -1501,7 +1563,7 @@ def create_app() -> FastAPI:
             agents.append(
                 {
                     "name": agent_name,
-                    "cost_usd": agent_cost,
+                    "total_tokens": agent_tokens,
                     "turns": agent_turns,
                     "last_activity": last_activity,
                     "last_timestamp": last_timestamp,
@@ -1592,17 +1654,23 @@ def create_app() -> FastAPI:
         # Collect stats from the live manager if available
         if manager:
             turn_count = manager.turn_count
-            total_cost_usd = manager.total_cost_usd
+            total_input_tokens = manager.total_input_tokens
+            total_output_tokens = manager.total_output_tokens
+            total_tokens = manager.total_tokens
             status = _manager_status(manager)
         else:
             turn_count = 0
-            total_cost_usd = 0.0
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_tokens = 0
             status = "idle"
             if state.session_mgr:
                 saved = await state.session_mgr.load_orchestrator_state(project_id)
                 if saved:
                     turn_count = saved.get("turn_count", 0)
-                    total_cost_usd = saved.get("total_cost_usd", 0.0)
+                    total_input_tokens = saved.get("total_input_tokens", 0)
+                    total_output_tokens = saved.get("total_output_tokens", 0)
+                    total_tokens = saved.get("total_tokens", 0)
                     status = saved.get("status", "idle")
 
         # Find the most recent system message — that is the final summary text
@@ -1633,8 +1701,37 @@ def create_app() -> FastAPI:
             "status": status,
             "summary_text": last_summary_text,
             "turn_count": turn_count,
-            "total_cost_usd": total_cost_usd,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "total_tokens": total_tokens,
         }
+
+    @app.get("/api/projects/{project_id}/brain-summary")
+    async def get_brain_summary(project_id: str):
+        """Return a structured executive digest of the blackboard state.
+
+        Constructs a Blackboard from the project's persisted StructuredNotes
+        and returns clusters, top-scored notes, conflicts, and health metrics.
+        """
+        if not _valid_project_id(project_id):
+            return _problem(400, "Invalid project ID format")
+
+        project_dir = await _resolve_project_dir(project_id)
+        if not project_dir:
+            return _problem(404, f"Project '{project_id}' not found")
+
+        try:
+            from blackboard import Blackboard
+            from structured_notes import StructuredNotes
+
+            notes = StructuredNotes(project_dir)
+            notes.init_session("")
+            bb = Blackboard(notes)
+            summary = bb.get_brain_summary()
+            return {"project_id": project_id, **summary}
+        except Exception as exc:
+            logger.error("Brain summary failed for %s: %s", project_id, exc, exc_info=True)
+            return _problem(500, f"Failed to generate brain summary: {exc}")
 
     @app.post("/api/projects")
     async def create_project(req: CreateProjectRequest):
@@ -1788,7 +1885,9 @@ def create_app() -> FastAPI:
             manager.shared_context = []
             manager.conversation_log = collections.deque(maxlen=CONVERSATION_LOG_MAXLEN)
             manager.turn_count = 0
-            manager.total_cost_usd = 0.0
+            manager.total_input_tokens = 0
+            manager.total_output_tokens = 0
+            manager.total_tokens = 0
             manager.agent_states = {}
 
             # Agent tracking
@@ -2496,17 +2595,21 @@ def create_app() -> FastAPI:
 
     @app.get("/api/stats")
     async def get_stats():
-        """Total cost, project count, active agents."""
+        """Total token usage, project count, active agents."""
         active_managers = state.get_all_managers()
 
-        total_cost = sum(m.total_cost_usd for _, _, m in active_managers)
+        total_tokens = sum(m.total_tokens for _, _, m in active_managers)
+        total_input_tokens = sum(m.total_input_tokens for _, _, m in active_managers)
+        total_output_tokens = sum(m.total_output_tokens for _, _, m in active_managers)
         running = sum(1 for _, _, m in active_managers if m.is_running)
         paused = sum(1 for _, _, m in active_managers if m.is_paused)
 
         db_projects = await state.session_mgr.list_projects() if state.session_mgr else []
 
         return {
-            "total_cost_usd": total_cost,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "total_tokens": total_tokens,
             "total_projects": len(db_projects),
             "active_projects": len(active_managers),
             "running": running,
@@ -2725,22 +2828,6 @@ def create_app() -> FastAPI:
             return {"entries": []}
         entries = await state.session_mgr.get_agent_recent_performance(agent_role, limit)
         return {"entries": entries}
-
-    @app.get("/api/cost-breakdown")
-    async def get_cost_breakdown(project_id: str | None = None, days: int = 30):
-        """Get cost breakdown by agent and by day."""
-        days = max(1, min(days, 365))  # clamp: 1–365 days
-        if not state.session_mgr:
-            return {"by_agent": [], "by_day": [], "total_cost": 0, "total_runs": 0}
-        return await state.session_mgr.get_cost_breakdown(project_id, days)
-
-    @app.get("/api/cost-summary")
-    async def get_cost_summary():
-        """Get per-project cost summary for dashboard overview."""
-        if not state.session_mgr:
-            return {"projects": []}
-        projects = await state.session_mgr.get_project_cost_summary()
-        return {"projects": projects}
 
     # --- Platform persistence: conversation history + memory endpoints ---
     app.include_router(history_router)

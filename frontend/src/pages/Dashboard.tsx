@@ -6,9 +6,7 @@ import { AGENT_ICONS } from '../constants';
 import { DashboardSkeleton } from '../components/Skeleton';
 import ErrorState from '../components/ErrorState';
 import { useToast } from '../components/Toast';
-import CostChart from '../components/CostChart';
 import AgentLogPanel from '../components/AgentLogPanel';
-import { useAnimatedNumber, formatCost } from '../hooks/useAnimatedNumber';
 import { usePageTitle } from '../hooks/usePageTitle';
 import { useTheme } from '../ThemeContext';
 import type { Project, WSEvent, TaskHistoryItem } from '../types';
@@ -54,7 +52,6 @@ interface DashboardState {
   logExpandedId: string | null;
   loading: boolean;
   error: string | null;
-  costExpanded: boolean;
 }
 
 const initialDashboardState: DashboardState = {
@@ -65,7 +62,6 @@ const initialDashboardState: DashboardState = {
   logExpandedId: null,
   loading: true,
   error: null,
-  costExpanded: false,
 };
 
 type DashboardAction =
@@ -75,7 +71,6 @@ type DashboardAction =
   | { type: 'SET_SEARCH'; query: string }
   | { type: 'SET_STATUS_FILTER'; filter: string }
   | { type: 'TOGGLE_LOG'; projectId: string }
-  | { type: 'TOGGLE_COST_PANEL' }
   | { type: 'SET_PROJECT_STATUS'; projectId: string; status: Project['status'] }
   | { type: 'SET_LIVE_STATE'; projectId: string; liveState: DashboardLiveState }
   | { type: 'CLEAR_LIVE_STATE'; projectId: string }
@@ -110,8 +105,6 @@ function dashboardReducer(state: DashboardState, action: DashboardAction): Dashb
         ...state,
         logExpandedId: state.logExpandedId === action.projectId ? null : action.projectId,
       };
-    case 'TOGGLE_COST_PANEL':
-      return { ...state, costExpanded: !state.costExpanded };
     case 'SET_PROJECT_STATUS':
       return {
         ...state,
@@ -194,7 +187,7 @@ export default function Dashboard(): React.ReactElement {
   const [state, dispatch] = useReducer(dashboardReducer, initialDashboardState);
   const {
     projects, liveStates, searchQuery, statusFilter,
-    logExpandedId, loading, error, costExpanded,
+    logExpandedId, loading, error,
   } = state;
 
   const navigate = useNavigate();
@@ -286,13 +279,14 @@ export default function Dashboard(): React.ReactElement {
       });
     } else if (event.type === 'project_status' && event.status) {
       if (event.status === 'deleted') {
-        // Remove the project from the list immediately
+        // Remove the project from the list immediately — do NOT reload
+        // because the API may still return it before cleanup finishes.
         dispatch({ type: 'REMOVE_PROJECT', projectId: pid });
         dispatch({ type: 'CLEAR_LIVE_STATE', projectId: pid });
       } else {
         dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: event.status as Project['status'] });
+        loadData();
       }
-      loadData();
     } else if (event.type === 'agent_final') {
       loadData();
       dispatch({ type: 'CLEAR_LIVE_STATE', projectId: pid });
@@ -361,10 +355,6 @@ export default function Dashboard(): React.ReactElement {
   }, []);  // statusConfig has no external deps — stable reference
 
   const runningCount = useMemo(() => projects.filter(p => p.status === 'running').length, [projects]);
-  const totalCost = useMemo(() => projects.reduce((sum, p) => sum + (p.total_cost_usd || 0), 0), [projects]);
-
-  // Animated stat values
-  const animatedCost = useAnimatedNumber(totalCost, 700, totalCost < 1 ? 3 : 2);
 
   // Loading state
   if (loading && projects.length === 0) {
@@ -421,11 +411,6 @@ export default function Dashboard(): React.ReactElement {
                       {runningCount} active
                     </span>
                   </div>
-                )}
-                {totalCost > 0 && (
-                  <span className="telemetry" style={{ color: 'var(--text-muted)' }}>
-                    Total: ${animatedCost}
-                  </span>
                 )}
               </div>
 
@@ -895,11 +880,6 @@ export default function Dashboard(): React.ReactElement {
 
                     {/* Stats row */}
                     <div className="flex items-center gap-2 sm:gap-3 flex-wrap pt-2" style={{ borderTop: '1px solid var(--border-dim)' }}>
-                      {project.total_cost_usd > 0 && (
-                        <span className="telemetry stat-item" style={{ color: 'var(--accent-green)' }}>
-                          {formatCost(project.total_cost_usd)}
-                        </span>
-                      )}
                       {project.turn_count > 0 && (
                         <span className="telemetry stat-item">{project.turn_count} turns</span>
                       )}
@@ -997,58 +977,6 @@ export default function Dashboard(): React.ReactElement {
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {/* ── Cost Analytics (collapsible) ── */}
-        {projects.length > 0 && (
-          <div
-            className="mt-6 rounded-2xl overflow-hidden transition-all duration-300 glass-panel"
-          >
-            <button
-              onClick={() => dispatch({ type: 'TOGGLE_COST_PANEL' })}
-              aria-expanded={costExpanded}
-              aria-label="Toggle cost analytics panel"
-              className="w-full flex items-center justify-between px-5 py-4 transition-colors"
-              style={{ color: 'var(--text-primary)' }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-sm"
-                  style={{ background: 'var(--glow-green)' }}
-                >
-                  💰
-                </div>
-                <div className="text-left">
-                  <h3 className="text-sm font-bold" style={{ fontFamily: 'var(--font-display)' }}>
-                    Cost Analytics
-                  </h3>
-                  <p className="text-[10px]" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                    Last 7 days
-                  </p>
-                </div>
-              </div>
-              <svg
-                className={`w-4 h-4 transition-transform duration-300 ${costExpanded ? 'rotate-180' : ''}`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth="2"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-            {costExpanded && (
-              <div
-                className="px-5 pb-5 animate-[fadeSlideIn_0.25s_ease-out]"
-                style={{ borderTop: '1px solid var(--border-dim)' }}
-              >
-                <CostChart />
-              </div>
-            )}
           </div>
         )}
       </main>
