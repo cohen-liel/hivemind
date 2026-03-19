@@ -385,9 +385,9 @@ export default function Dashboard(): React.ReactElement {
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-3 mb-1">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
-                  style={{ background: 'var(--glow-blue)', boxShadow: '0 0 20px var(--glow-blue)' }}>
-                  ⚡
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                  style={{ boxShadow: '0 0 20px var(--glow-blue)' }}>
+                  <img src="/favicon-32x32.png" alt="Hivemind" width="36" height="36" style={{ borderRadius: '8px' }} />
                 </div>
                 <div>
                   <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
