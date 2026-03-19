@@ -251,6 +251,18 @@ class Project(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
+    execution_sessions: Mapped[list[ExecutionSession]] = relationship(
+        "ExecutionSession",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    execution_runs: Mapped[list[ExecutionRun]] = relationship(
+        "ExecutionRun",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Project id={self.id!r} name={self.name!r}>"
@@ -441,7 +453,7 @@ class Message(Base):
         nullable=True,
         doc=(
             "Optional metadata blob. Keys: model, input_tokens, output_tokens, "
-            "cost_usd, stop_reason, tool_use_id."
+            "total_tokens, stop_reason, tool_use_id."
         ),
     )
 
@@ -567,10 +579,27 @@ class AgentAction(Base):
         Float,
         nullable=True,
         doc=(
-            "USD cost of the API call associated with this action. "
-            "Computed from input/output token counts × model pricing. "
-            "Null for non-API actions (tool calls with no LLM cost)."
+            "Deprecated — kept for backward compat with existing rows. "
+            "Prefer input_tokens/output_tokens/total_tokens columns."
         ),
+    )
+    input_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        default=0,
+        doc="Number of input (prompt) tokens consumed by this action's API call.",
+    )
+    output_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        default=0,
+        doc="Number of output (completion) tokens produced by this action's API call.",
+    )
+    total_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        default=0,
+        doc="Total tokens (input + output) consumed by this action.",
     )
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -683,6 +712,16 @@ class Memory(Base):
         onupdate=_utcnow,
         doc="UTC timestamp of the last write to this memory entry.",
     )
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        doc=(
+            "Optimistic lock version counter. Incremented on every write. "
+            "Concurrent writers must include version in their WHERE clause "
+            "and retry on zero-rows-affected (stale read)."
+        ),
+    )
 
     # ── Relationships ──────────────────────────────────────────────────────
     project: Mapped[Project] = relationship(
@@ -705,6 +744,336 @@ class Memory(Base):
 
 
 # ---------------------------------------------------------------------------
+# Model: execution_sessions
+# ---------------------------------------------------------------------------
+
+
+class ExecutionSession(Base):
+    """Represents a single DAG execution run within a project.
+
+    An execution session groups all agent actions, conversations, and artifacts
+    produced during one orchestration run (e.g. "Add JWT auth"). It provides
+    the top-level grouping for project history — each time the user starts the
+    orchestrator, a new ExecutionSession is created.
+
+    Columns:
+        id           - UUID primary key.
+        project_id   - FK → projects.id (CASCADE DELETE).
+        title        - Human-readable title (typically the user's prompt).
+        status       - 'running' | 'completed' | 'failed' | 'cancelled'.
+        prompt       - The original user prompt that initiated this session.
+        plan_json    - The DAG plan as JSON (tasks, dependencies, etc.).
+        summary      - Auto-generated summary of what was accomplished.
+        total_tasks  - Total number of tasks in the plan.
+        completed_tasks - Number of tasks that completed successfully.
+        failed_tasks - Number of tasks that failed.
+        total_input_tokens  - Aggregate input tokens across all agents.
+        total_output_tokens - Aggregate output tokens across all agents.
+        total_tokens - Aggregate total tokens across all agents.
+        started_at   - UTC timestamp when execution began.
+        completed_at - UTC timestamp when execution finished (null if running).
+        created_at   - UTC timestamp when the record was created.
+
+    Indexes:
+        idx_exec_sessions_project_started - (project_id, started_at DESC)
+            Hot path: fetch all sessions for a project sorted by recency.
+    """
+
+    __tablename__ = "execution_sessions"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → projects.id. Deleting a project deletes all its execution sessions.",
+    )
+    title: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        doc="Human-readable title derived from the user prompt.",
+    )
+    status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="running",
+        doc="Session status: 'running' | 'completed' | 'failed' | 'cancelled'.",
+    )
+    prompt: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc="The original user prompt that initiated this execution.",
+    )
+    plan_json: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        doc="The DAG execution plan as a JSON blob (tasks, deps, roles, etc.).",
+    )
+    summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc="Auto-generated summary of what was accomplished in this session.",
+    )
+    total_tasks: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Total number of tasks in the execution plan.",
+    )
+    completed_tasks: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Number of tasks that completed successfully.",
+    )
+    failed_tasks: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Number of tasks that failed.",
+    )
+    total_input_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Aggregate input tokens consumed across all agents in this session.",
+    )
+    total_output_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Aggregate output tokens produced across all agents in this session.",
+    )
+    total_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Aggregate total tokens consumed across all agents in this session.",
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when the execution started.",
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="UTC timestamp when the execution finished. Null if still running.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when this record was created.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    project: Mapped[Project] = relationship(
+        "Project",
+        back_populates="execution_sessions",
+    )
+    runs: Mapped[list[ExecutionRun]] = relationship(
+        "ExecutionRun",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ExecutionRun.started_at",
+        lazy="select",
+    )
+
+    # ── Indexes ────────────────────────────────────────────────────────────
+    __table_args__ = (
+        Index(
+            "idx_exec_sessions_project_started",
+            "project_id",
+            "started_at",
+        ),
+        Index(
+            "idx_exec_sessions_project_status",
+            "project_id",
+            "status",
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"<ExecutionSession id={self.id!r} project_id={self.project_id!r} "
+            f"status={self.status!r}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Model: execution_runs
+# ---------------------------------------------------------------------------
+
+
+class ExecutionRun(Base):
+    """Tracks an individual task execution within a DAG execution session.
+
+    Each row represents one task's lifecycle within a broader DAG run. This
+    provides fine-grained history for the dashboard — which tasks ran, in what
+    order, what artifacts they produced, and how they completed.
+
+    Columns:
+        id             - UUID primary key.
+        session_id     - FK → execution_sessions.id (CASCADE DELETE).
+        project_id     - FK → projects.id (CASCADE DELETE). Denormalized for
+                         direct project-scoped queries without joining sessions.
+        task_id        - DAG task identifier (e.g. 'task_003').
+        task_name      - Human-readable task name / goal summary.
+        role           - Agent role assigned to this task (e.g. 'backend_developer').
+        status         - 'pending' | 'running' | 'completed' | 'failed' | 'skipped'.
+        depends_on_json- List of task_ids this task depends on.
+        artifacts_json - Artifacts produced by this task (files, schemas, etc.).
+        error_message  - Error details if the task failed.
+        input_tokens   - Prompt tokens consumed by this task.
+        output_tokens  - Completion tokens produced by this task.
+        total_tokens   - Total tokens consumed by this task.
+        started_at     - UTC timestamp when this task began execution.
+        completed_at   - UTC timestamp when this task finished. Null if running.
+        created_at     - UTC timestamp when the record was created.
+
+    Indexes:
+        idx_exec_runs_session_id      - (session_id) for session lookups.
+        idx_exec_runs_project_status  - (project_id, status) for concurrent queries.
+        idx_exec_runs_session_status  - (session_id, status) for in-session filtering.
+    """
+
+    __tablename__ = "execution_runs"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("execution_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → execution_sessions.id. Deleting a session deletes all its runs.",
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        doc=(
+            "FK → projects.id. Denormalized from session for direct "
+            "project-scoped queries without joining execution_sessions."
+        ),
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        doc="DAG task identifier (e.g. 'task_003').",
+    )
+    task_name: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        doc="Human-readable task name or goal summary.",
+    )
+    role: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        doc="Agent role assigned to this task (e.g. 'backend_developer', 'pm').",
+    )
+    status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="pending",
+        doc="Task status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'.",
+    )
+    depends_on_json: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+        doc="List of task_ids this task depends on in the DAG.",
+    )
+    artifacts_json: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        doc=(
+            "Artifacts produced by this task. Structure: "
+            "{'files': [...], 'schemas': [...], 'type': 'code'|'schema'|'plan'|...}"
+        ),
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc="Error details if the task failed. Null on success.",
+    )
+    input_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Input (prompt) tokens consumed by this task's agent.",
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Output (completion) tokens produced by this task's agent.",
+    )
+    total_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        doc="Total tokens consumed by this task.",
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="UTC timestamp when this task began execution. Null if pending.",
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="UTC timestamp when this task finished. Null if still running/pending.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when this record was created.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    session: Mapped[ExecutionSession] = relationship(
+        "ExecutionSession",
+        back_populates="runs",
+    )
+    project: Mapped[Project] = relationship(
+        "Project",
+        back_populates="execution_runs",
+    )
+
+    # ── Indexes ────────────────────────────────────────────────────────────
+    __table_args__ = (
+        Index(
+            "idx_exec_runs_session_id",
+            "session_id",
+        ),
+        Index(
+            "idx_exec_runs_project_status",
+            "project_id",
+            "status",
+        ),
+        Index(
+            "idx_exec_runs_session_status",
+            "session_id",
+            "status",
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<ExecutionRun id={self.id!r} task_id={self.task_id!r} status={self.status!r}>"
+
+
+# ---------------------------------------------------------------------------
 # Convenience exports
 # ---------------------------------------------------------------------------
 
@@ -712,6 +1081,8 @@ __all__ = [
     "AgentAction",
     "Base",
     "Conversation",
+    "ExecutionRun",
+    "ExecutionSession",
     "Memory",
     "Message",
     "Project",
