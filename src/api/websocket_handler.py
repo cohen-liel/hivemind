@@ -255,6 +255,49 @@ def build_task_queued_event(
     }
 
 
+def build_message_queued_event(
+    project_id: str,
+    task_id: str,
+    message_preview: str,
+    queue_position: int,
+    queue_depth: int,
+    running_count: int,
+    max_concurrent: int,
+    estimated_wait_seconds: float,
+) -> dict[str, Any]:
+    """Build a ``message_queued`` WebSocket event for instant feedback.
+
+    Emitted immediately when a user message is enqueued via the REST API,
+    so the frontend can show queue position and estimated wait time before
+    any agent work starts.
+
+    Args:
+        project_id:            UUID of the project.
+        task_id:               UUID of the newly created task.
+        message_preview:       First ≤100 characters of the user message.
+        queue_position:        1-indexed position in the queue (0 if running immediately).
+        queue_depth:           Total pending items in the queue.
+        running_count:         Number of tasks currently executing.
+        max_concurrent:        Concurrency limit.
+        estimated_wait_seconds: Estimated seconds until this task starts.
+
+    Returns:
+        Dict ready to be serialised to JSON and sent via WebSocket / EventBus.
+    """
+    return {
+        "type": WebSocketEventType.MESSAGE_QUEUED,
+        "timestamp": time.time(),
+        "project_id": project_id,
+        "task_id": task_id,
+        "message_preview": message_preview[:100],
+        "queue_position": queue_position,
+        "queue_depth": queue_depth,
+        "running_count": running_count,
+        "max_concurrent": max_concurrent,
+        "estimated_wait_seconds": estimated_wait_seconds,
+    }
+
+
 def _get_store() -> ConversationStore:
     """Return a ConversationStore using the cached session factory."""
     return ConversationStore(get_session_factory())
