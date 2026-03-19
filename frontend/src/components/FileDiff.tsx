@@ -71,7 +71,12 @@ export default function FileDiff({ files }: Props) {
       <div className="flex flex-col items-center justify-center h-full px-4 py-8">
         <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3 text-2xl"
           style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)' }}>
-          📝
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" style={{ opacity: 0.6 }}>
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="12" y1="18" x2="12" y2="12"/>
+            <line x1="9" y1="15" x2="15" y2="15"/>
+          </svg>
         </div>
         <p className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>No file changes</p>
         <p className="text-xs mt-1 text-center" style={{ color: 'var(--text-muted)' }}>
