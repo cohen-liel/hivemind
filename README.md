@@ -13,10 +13,11 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-SDK-orange.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-red.svg)](https://github.com/openclaw/openclaw)
 [![CI](https://github.com/cohen-liel/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/cohen-liel/hivemind/actions/workflows/ci.yml)
+[![Website](https://img.shields.io/badge/Website-Live-brightgreen.svg)](https://cohen-liel.github.io/hivemind/)
 
 **Describe a feature in plain English. Hivemind deploys a PM, developers, reviewer, and QA — all working in parallel — and delivers tested, committed code. No babysitting. No copy-pasting. No "continue".**
 
-[Quick Start](#-quick-start) · [How It Works](#-how-it-works) · [Features](#-features) · [Dashboard](#-dashboard) · [Agent Roster](#-agent-roster) · [Templates](#-templates) · [Contributing](CONTRIBUTING.md)
+[Website](https://cohen-liel.github.io/hivemind/) · [Quick Start](#-quick-start) · [How It Works](#-how-it-works) · [Features](#-features) · [Dashboard](#-dashboard) · [Agent Roster](#-agent-roster) · [Templates](#-templates) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
