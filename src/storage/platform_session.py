@@ -250,7 +250,7 @@ class PlatformSessionManager:
                 raise
 
     async def get_project_total_cost(self, project_id: str) -> float:
-        """Return total cost from performance records for a project."""
+        """Return total cost from performance records for a project (internal use only)."""
         async with self._factory() as db:
             stmt = (
                 select(func.coalesce(func.sum(AgentAction.cost_usd), 0.0))
@@ -263,6 +263,30 @@ class PlatformSessionManager:
             )
             result = await db.execute(stmt)
             return float(result.scalar() or 0.0)
+
+    async def get_project_total_tokens(self, project_id: str) -> dict:
+        """Return total token usage from performance records for a project."""
+        async with self._factory() as db:
+            stmt = (
+                select(
+                    func.coalesce(func.sum(AgentAction.input_tokens), 0).label("input_tokens"),
+                    func.coalesce(func.sum(AgentAction.output_tokens), 0).label("output_tokens"),
+                    func.coalesce(func.sum(AgentAction.total_tokens), 0).label("total_tokens"),
+                )
+                .where(AgentAction.action_type == "performance")
+                .where(
+                    AgentAction.conversation_id.in_(
+                        select(Conversation.id).where(Conversation.project_id == project_id)
+                    )
+                )
+            )
+            result = await db.execute(stmt)
+            row = result.one()
+            return {
+                "input_tokens": int(row.input_tokens),
+                "output_tokens": int(row.output_tokens),
+                "total_tokens": int(row.total_tokens),
+            }
 
     async def get_project_budget(self, project_id: str) -> float:
         """Return the remaining budget (USD) for a project."""
@@ -336,7 +360,6 @@ class PlatformSessionManager:
                 "agent_name": (m.get("metadata") or {}).get("agent_name", ""),
                 "role": m.get("role", ""),
                 "content": m.get("content", ""),
-                "cost_usd": (m.get("metadata") or {}).get("cost_usd", 0.0),
                 "timestamp": _iso_to_epoch(m.get("timestamp")),
             }
             for m in recent
@@ -361,7 +384,6 @@ class PlatformSessionManager:
                 "agent_name": (m.get("metadata") or {}).get("agent_name", ""),
                 "role": m.get("role", ""),
                 "content": m.get("content", ""),
-                "cost_usd": (m.get("metadata") or {}).get("cost_usd", 0.0),
                 "timestamp": _iso_to_epoch(m.get("timestamp")),
             }
             for i, m in enumerate(page)
@@ -842,7 +864,9 @@ class PlatformSessionManager:
                         "total": 0,
                         "successes": 0,
                         "durations": [],
-                        "costs": [],
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
                         "last_run": 0,
                     }
                 s = stats[role]
@@ -851,7 +875,9 @@ class PlatformSessionManager:
                 if result_json.get("status") == "success":
                     s["successes"] += 1
                 s["durations"].append(result_json.get("duration_seconds", 0))
-                s["costs"].append(a.cost_usd or 0)
+                s["input_tokens"] += a.input_tokens or 0
+                s["output_tokens"] += a.output_tokens or 0
+                s["total_tokens"] += a.total_tokens or 0
                 ts = a.timestamp.timestamp() if a.timestamp else 0
                 s["last_run"] = max(s["last_run"], ts)
 
@@ -861,8 +887,9 @@ class PlatformSessionManager:
                     "total_runs": s["total"],
                     "success_rate": round(s["successes"] / max(s["total"], 1) * 100, 1),
                     "avg_duration": round(sum(s["durations"]) / max(len(s["durations"]), 1), 1),
-                    "avg_cost": round(sum(s["costs"]) / max(len(s["costs"]), 1), 4),
-                    "total_cost": round(sum(s["costs"]), 4),
+                    "input_tokens": s["input_tokens"],
+                    "output_tokens": s["output_tokens"],
+                    "total_tokens": s["total_tokens"],
                     "last_run": s["last_run"],
                 }
                 for role, s in stats.items()
@@ -885,7 +912,9 @@ class PlatformSessionManager:
                     "agent_role": a.agent_role,
                     "status": (a.result_json or {}).get("status", ""),
                     "duration_seconds": (a.result_json or {}).get("duration_seconds", 0),
-                    "cost_usd": a.cost_usd or 0,
+                    "input_tokens": a.input_tokens or 0,
+                    "output_tokens": a.output_tokens or 0,
+                    "total_tokens": a.total_tokens or 0,
                     "turns_used": (a.result_json or {}).get("turns_used", 0),
                     "task_description": (a.payload_json or {}).get("task_description", ""),
                     "error_message": (a.payload_json or {}).get("error_message", ""),
@@ -896,7 +925,7 @@ class PlatformSessionManager:
             ]
 
     async def get_cost_breakdown(self, project_id: str | None = None, days: int = 30) -> dict:
-        """Return a per-agent cost breakdown for a project."""
+        """Return a per-agent token usage breakdown for a project."""
         since = time.time() - (days * 86400)
         since_dt = datetime.fromtimestamp(since, tz=UTC)
         async with self._factory() as db:
@@ -916,34 +945,46 @@ class PlatformSessionManager:
 
             by_agent: dict[str, dict] = {}
             by_day: dict[str, dict] = {}
-            total_cost = 0.0
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_tokens = 0
             total_runs = 0
 
             for a in actions:
                 total_runs += 1
-                cost = a.cost_usd or 0
-                total_cost += cost
+                in_tok = a.input_tokens or 0
+                out_tok = a.output_tokens or 0
+                tot_tok = a.total_tokens or 0
+                total_input_tokens += in_tok
+                total_output_tokens += out_tok
+                total_tokens += tot_tok
                 role = a.agent_role
                 if role not in by_agent:
-                    by_agent[role] = {"agent_role": role, "cost": 0.0, "runs": 0}
-                by_agent[role]["cost"] += cost
+                    by_agent[role] = {"agent_role": role, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "runs": 0}
+                by_agent[role]["input_tokens"] += in_tok
+                by_agent[role]["output_tokens"] += out_tok
+                by_agent[role]["total_tokens"] += tot_tok
                 by_agent[role]["runs"] += 1
 
                 day = a.timestamp.strftime("%Y-%m-%d") if a.timestamp else "unknown"
                 if day not in by_day:
-                    by_day[day] = {"day": day, "cost": 0.0, "runs": 0}
-                by_day[day]["cost"] += cost
+                    by_day[day] = {"day": day, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "runs": 0}
+                by_day[day]["input_tokens"] += in_tok
+                by_day[day]["output_tokens"] += out_tok
+                by_day[day]["total_tokens"] += tot_tok
                 by_day[day]["runs"] += 1
 
             return {
-                "by_agent": sorted(by_agent.values(), key=lambda x: x["cost"], reverse=True),
+                "by_agent": sorted(by_agent.values(), key=lambda x: x["total_tokens"], reverse=True),
                 "by_day": sorted(by_day.values(), key=lambda x: x["day"], reverse=True)[:30],
-                "total_cost": round(total_cost, 4),
+                "total_input_tokens": total_input_tokens,
+                "total_output_tokens": total_output_tokens,
+                "total_tokens": total_tokens,
                 "total_runs": total_runs,
             }
 
     async def get_project_cost_summary(self) -> list[dict]:
-        """Aggregate per-project cost from agent_actions with type='performance'.
+        """Aggregate per-project token usage from agent_actions with type='performance'.
 
         Uses a single JOIN query (agent_actions → conversations → projects) to
         avoid the previous N+1 anti-pattern that issued individual
@@ -951,13 +992,13 @@ class PlatformSessionManager:
         action row inside a Python loop.
         """
         async with self._factory() as db:
-            # Single JOIN query: aggregate cost, run count, and last timestamp
-            # grouped by project — eliminates N+1 queries entirely.
             stmt = (
                 select(
                     Project.id.label("project_id"),
                     Project.name.label("project_name"),
-                    func.coalesce(func.sum(AgentAction.cost_usd), 0.0).label("total_cost"),
+                    func.coalesce(func.sum(AgentAction.input_tokens), 0).label("total_input_tokens"),
+                    func.coalesce(func.sum(AgentAction.output_tokens), 0).label("total_output_tokens"),
+                    func.coalesce(func.sum(AgentAction.total_tokens), 0).label("total_tokens"),
                     func.count(AgentAction.id).label("total_runs"),
                     func.max(AgentAction.timestamp).label("last_activity"),
                 )
@@ -972,7 +1013,7 @@ class PlatformSessionManager:
                 )
                 .where(AgentAction.action_type == "performance")
                 .group_by(Project.id, Project.name)
-                .order_by(func.coalesce(func.sum(AgentAction.cost_usd), 0.0).desc())
+                .order_by(func.coalesce(func.sum(AgentAction.total_tokens), 0).desc())
             )
             result = await db.execute(stmt)
             rows = result.all()
@@ -981,7 +1022,9 @@ class PlatformSessionManager:
                 {
                     "project_id": row.project_id,
                     "project_name": row.project_name,
-                    "total_cost": round(float(row.total_cost), 4),
+                    "total_input_tokens": int(row.total_input_tokens),
+                    "total_output_tokens": int(row.total_output_tokens),
+                    "total_tokens": int(row.total_tokens),
                     "total_runs": row.total_runs,
                     "last_activity": (row.last_activity.timestamp() if row.last_activity else 0),
                 }
@@ -991,7 +1034,7 @@ class PlatformSessionManager:
     async def get_round_cost_breakdown(
         self, project_id: str, round_number: int | None = None
     ) -> list[dict]:
-        """Return cost breakdown grouped by orchestration round."""
+        """Return token usage breakdown grouped by orchestration round."""
         conv_id = await self._default_conv(project_id)
         async with self._factory() as db:
             stmt = (
@@ -1008,7 +1051,9 @@ class PlatformSessionManager:
                 {
                     "round_number": a.round or 0,
                     "agent_role": a.agent_role,
-                    "cost_usd": round(a.cost_usd or 0, 6),
+                    "input_tokens": a.input_tokens or 0,
+                    "output_tokens": a.output_tokens or 0,
+                    "total_tokens": a.total_tokens or 0,
                     "duration_seconds": round((a.result_json or {}).get("duration_seconds", 0), 1),
                     "turns_used": (a.result_json or {}).get("turns_used", 0),
                     "status": (a.result_json or {}).get("status", ""),
@@ -1018,7 +1063,7 @@ class PlatformSessionManager:
             ]
 
     async def get_round_cost_summary(self, project_id: str) -> list[dict]:
-        """Return a high-level cost summary per round."""
+        """Return a high-level token usage summary per round."""
         conv_id = await self._default_conv(project_id)
         async with self._factory() as db:
             stmt = (
@@ -1034,15 +1079,19 @@ class PlatformSessionManager:
             for a in actions:
                 r = a.round or 0
                 if r not in rounds:
-                    rounds[r] = {"cost": 0.0, "duration": 0.0, "agents": set()}
-                rounds[r]["cost"] += a.cost_usd or 0
+                    rounds[r] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "duration": 0.0, "agents": set()}
+                rounds[r]["input_tokens"] += a.input_tokens or 0
+                rounds[r]["output_tokens"] += a.output_tokens or 0
+                rounds[r]["total_tokens"] += a.total_tokens or 0
                 rounds[r]["duration"] += (a.result_json or {}).get("duration_seconds", 0)
                 rounds[r]["agents"].add(a.agent_role)
 
             return [
                 {
                     "round_number": r,
-                    "total_cost": round(d["cost"], 6),
+                    "input_tokens": d["input_tokens"],
+                    "output_tokens": d["output_tokens"],
+                    "total_tokens": d["total_tokens"],
                     "total_duration": round(d["duration"], 1),
                     "agent_count": len(d["agents"]),
                     "agents": sorted(d["agents"]),

@@ -1,4 +1,4 @@
-"""REST API router for conversation history.
+"""REST API router for conversation history and project execution history.
 
 Endpoints
 ---------
@@ -22,6 +22,12 @@ PUT  /api/memory/{project_id}/{key}
 
 DELETE /api/memory/{project_id}/{key}
     Delete a memory key for a project.
+
+GET  /api/projects/{project_id}/history
+    Full chronological execution history grouped by session/run.
+
+GET  /api/projects/{project_id}/history/summary
+    Auto-generated summary of what was accomplished across all sessions.
 
 These endpoints are registered on the FastAPI app by calling
 ``app.include_router(history_router)`` in ``dashboard/api.py``.
@@ -82,7 +88,7 @@ class MessageSchema(BaseModel):
     content: str = Field(description="Full message text")
     timestamp: str | None = Field(description="ISO-8601 UTC timestamp")
     metadata: dict | None = Field(
-        default=None, description="Optional metadata (model, tokens, cost, …)"
+        default=None, description="Optional metadata (model, tokens, …)"
     )
 
     model_config = {"from_attributes": True}
@@ -474,3 +480,253 @@ async def delete_project_memory(
     except Exception:
         logger.error("DELETE /api/memory/%s/%s failed", project_id, key, exc_info=True)
         return _problem(500, "Failed to delete memory. Check server logs.")
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models — Project execution history
+# ---------------------------------------------------------------------------
+
+
+class AgentActionSchema(BaseModel):
+    """A single agent action in an execution session."""
+
+    id: str = Field(description="Action UUID")
+    conversation_id: str = Field(description="Parent conversation UUID")
+    agent_role: str = Field(description="Role of the agent (e.g. 'backend_developer')")
+    action_type: str = Field(
+        description="Action category: 'tool_call' | 'message' | 'decision' | etc."
+    )
+    task_id: str | None = Field(default=None, description="DAG task ID")
+    round: int | None = Field(default=None, description="Orchestration round number")
+    payload: dict | None = Field(default=None, description="Action input/arguments")
+    result: dict | None = Field(default=None, description="Action output/result")
+    input_tokens: int | None = Field(default=None, description="Input tokens consumed")
+    output_tokens: int | None = Field(default=None, description="Output tokens produced")
+    total_tokens: int | None = Field(default=None, description="Total tokens consumed")
+    timestamp: str | None = Field(description="ISO-8601 UTC timestamp")
+
+    model_config = {"from_attributes": True}
+
+
+class ExecutionSessionSchema(BaseModel):
+    """An execution session (DAG run) in project history."""
+
+    id: str = Field(description="Session UUID")
+    project_id: str = Field(description="Parent project UUID")
+    title: str | None = Field(description="Human-readable title")
+    status: str = Field(description="'running' | 'completed' | 'failed' | 'cancelled'")
+    prompt: str | None = Field(default=None, description="Original user prompt")
+    plan: dict | None = Field(default=None, description="DAG plan as JSON")
+    summary: str | None = Field(default=None, description="Auto-generated session summary")
+    total_tasks: int = Field(default=0, description="Total tasks in plan")
+    completed_tasks: int = Field(default=0, description="Successfully completed tasks")
+    failed_tasks: int = Field(default=0, description="Failed tasks")
+    total_input_tokens: int = Field(default=0, description="Aggregate input tokens")
+    total_output_tokens: int = Field(default=0, description="Aggregate output tokens")
+    total_tokens: int = Field(default=0, description="Aggregate total tokens")
+    started_at: str | None = Field(description="ISO-8601 UTC start time")
+    completed_at: str | None = Field(default=None, description="ISO-8601 UTC end time")
+    created_at: str | None = Field(description="ISO-8601 UTC creation time")
+    agent_actions: dict[str, list[AgentActionSchema]] | None = Field(
+        default=None, description="Agent actions grouped by task_id"
+    )
+
+    model_config = {"from_attributes": True}
+
+
+class ConversationHistoryEntry(BaseModel):
+    """A conversation entry in project history (with message count)."""
+
+    id: str = Field(description="Conversation UUID")
+    project_id: str = Field(description="Parent project UUID")
+    title: str | None = Field(description="Conversation title")
+    created_at: str | None = Field(description="ISO-8601 UTC creation timestamp")
+    last_active_at: str | None = Field(description="ISO-8601 UTC last-activity timestamp")
+    message_count: int = Field(default=0, description="Number of messages")
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectHistoryResponse(BaseModel):
+    """Full chronological project history grouped by session/run."""
+
+    project_id: str
+    sessions: list[ExecutionSessionSchema] = Field(default_factory=list)
+    conversations: list[ConversationHistoryEntry] = Field(default_factory=list)
+    total_sessions: int = Field(default=0)
+    total_conversations: int = Field(default=0)
+    limit: int
+    offset: int
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "project_id": "my-project",
+                "sessions": [],
+                "conversations": [],
+                "total_sessions": 0,
+                "total_conversations": 0,
+                "limit": 50,
+                "offset": 0,
+            }
+        }
+    }
+
+
+class AggregateTokens(BaseModel):
+    """Aggregate token usage across all sessions."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+class TaskStats(BaseModel):
+    """Aggregate task completion statistics."""
+
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+
+
+class SessionSummaryEntry(BaseModel):
+    """Per-session summary in the history summary response."""
+
+    id: str
+    title: str | None = None
+    status: str
+    prompt: str | None = None
+    total_tasks: int = 0
+    completed_tasks: int = 0
+    failed_tasks: int = 0
+    total_tokens: int = 0
+    duration_seconds: float | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    summary: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectHistorySummaryResponse(BaseModel):
+    """Auto-generated summary of project execution history."""
+
+    project_id: str
+    summary: str = Field(description="Natural-language summary of project history")
+    total_sessions: int = 0
+    total_conversations: int = 0
+    total_messages: int = 0
+    total_agent_actions: int = 0
+    aggregate_tokens: AggregateTokens = Field(default_factory=AggregateTokens)
+    task_stats: TaskStats = Field(default_factory=TaskStats)
+    sessions: list[SessionSummaryEntry] = Field(default_factory=list)
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "project_id": "my-project",
+                "summary": "Project has 3 execution session(s)...",
+                "total_sessions": 3,
+                "total_conversations": 5,
+                "total_messages": 120,
+                "total_agent_actions": 45,
+                "aggregate_tokens": {
+                    "input_tokens": 50000,
+                    "output_tokens": 25000,
+                    "total_tokens": 75000,
+                },
+                "task_stats": {"total": 12, "completed": 10, "failed": 2},
+                "sessions": [],
+            }
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# Project history endpoints
+# ---------------------------------------------------------------------------
+
+
+@history_router.get(
+    "/api/projects/{project_id}/history",
+    response_model=ProjectHistoryResponse,
+    summary="Get full project execution history",
+    description=(
+        "Returns the complete chronological execution history for a project, "
+        "grouped by execution session/run. Each session includes its agent actions "
+        "grouped by task_id, along with all project conversations and message counts. "
+        "Data persists across server restarts."
+    ),
+    responses={
+        200: {"description": "Full project history grouped by session"},
+        400: {"description": "Invalid project_id format"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def get_project_history(
+    project_id: str,
+    limit: int = Query(default=50, ge=1, le=500, description="Max sessions per page"),
+    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    store: ConversationStore = Depends(get_conversation_store),
+) -> ProjectHistoryResponse | JSONResponse:
+    """Return full chronological project history grouped by session/run.
+
+    This endpoint aggregates execution sessions, conversations, messages,
+    and agent actions into a unified timeline. It is the primary endpoint
+    for the project history UI panel.
+    """
+    if not _valid_project_id(project_id):
+        return _problem(400, f"Invalid project_id format: {project_id!r}")
+
+    try:
+        history = await store.get_project_history(
+            project_id, limit=limit, offset=offset
+        )
+        return ProjectHistoryResponse(**history)
+    except Exception:
+        logger.error(
+            "GET /api/projects/%s/history failed", project_id, exc_info=True
+        )
+        return _problem(500, "Failed to load project history. Check server logs.")
+
+
+@history_router.get(
+    "/api/projects/{project_id}/history/summary",
+    response_model=ProjectHistorySummaryResponse,
+    summary="Get project execution history summary",
+    description=(
+        "Returns an auto-generated summary of what was accomplished across all "
+        "execution sessions in the project, including aggregate token usage, "
+        "task completion rates, and per-session summaries."
+    ),
+    responses={
+        200: {"description": "Project history summary"},
+        400: {"description": "Invalid project_id format"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def get_project_history_summary(
+    project_id: str,
+    store: ConversationStore = Depends(get_conversation_store),
+) -> ProjectHistorySummaryResponse | JSONResponse:
+    """Return an auto-generated summary of project execution history.
+
+    This endpoint provides a concise, actionable overview of all work done
+    in the project — aggregate token usage, task outcomes, and a natural-language
+    summary of recent sessions. Designed for the project dashboard overview.
+    """
+    if not _valid_project_id(project_id):
+        return _problem(400, f"Invalid project_id format: {project_id!r}")
+
+    try:
+        summary = await store.get_project_history_summary(project_id)
+        return ProjectHistorySummaryResponse(**summary)
+    except Exception:
+        logger.error(
+            "GET /api/projects/%s/history/summary failed",
+            project_id,
+            exc_info=True,
+        )
+        return _problem(
+            500, "Failed to generate project history summary. Check server logs."
+        )
