@@ -709,15 +709,12 @@ export default function Dashboard(): React.ReactElement {
                           return (
                             <div
                               key={name}
-                              className="w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all duration-500"
+                              className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all duration-500 ${isActive ? 'agent-icon-active' : 'agent-icon-idle'}`}
                               style={{
                                 background: isActive ? 'var(--glow-blue)' : 'var(--bg-elevated)',
                                 border: isActive ? '1px solid rgba(99,140,255,0.3)' : '1px solid var(--border-dim)',
-                                boxShadow: isActive ? '0 0 12px var(--glow-blue)' : 'none',
-                                opacity: isActive ? 1 : 0.5,
-                                transform: isActive ? 'scale(1.1)' : 'scale(1)',
                               }}
-                              title={name}
+                              title={`${name}${isActive ? ' (working)' : ''}`}
                               aria-label={`${name}${isActive ? ' (active)' : ''}`}
                             >
                               {icon}

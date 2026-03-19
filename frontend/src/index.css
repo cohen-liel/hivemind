@@ -307,6 +307,27 @@ input, textarea, select {
   animation: breathingGlow 2.5s ease-in-out infinite;
 }
 
+/* Active agent icon pulse — applied to agent emoji icons when they are actively working */
+@keyframes agentIconPulse {
+  0%, 100% { box-shadow: 0 0 8px var(--glow-blue); transform: scale(1.1); }
+  50% { box-shadow: 0 0 20px var(--glow-blue), 0 0 40px rgba(99, 140, 255, 0.1); transform: scale(1.15); }
+}
+
+.agent-icon-active {
+  animation: agentIconPulse 2s ease-in-out infinite;
+}
+
+[data-theme="light"] .agent-icon-active {
+  animation: agentIconPulse 2s ease-in-out infinite;
+}
+
+/* Idle agent icons — muted and static */
+.agent-icon-idle {
+  opacity: 0.45;
+  filter: grayscale(0.3);
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
 /* ===== MICRO-ANIMATIONS: State Transitions ===== */
 
 /* 1. Running card glow pulse — repeating border glow via ::after pseudo-element */
