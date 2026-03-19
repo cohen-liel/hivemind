@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from complexity import READER_ROLES, WRITER_ROLES
 from config import (
     AGENT_RETRY_DELAY,
     ASYNC_WAIT_TIMEOUT,
@@ -23,7 +24,6 @@ from config import (
     MAX_TURNS_PER_CYCLE,
     RATE_LIMIT_SECONDS,
     SESSION_TIMEOUT_SECONDS,
-    SPECIALIST_PROMPTS,
     USE_DAG_EXECUTOR,
 )
 
@@ -31,6 +31,7 @@ from config import (
 # Imported lazily inside _run_dag_session to avoid circular imports
 # (orchestrator → pm_agent → state → orchestrator)
 from contracts import TaskInput, TaskOutput
+from prompts import PROMPT_REGISTRY as SPECIALIST_PROMPTS
 from sdk_client import ClaudeSDKManager, SDKResponse
 from src.storage.platform_session import PlatformSessionManager as SessionManager
 
@@ -235,28 +236,11 @@ class OrchestratorManager:
                 break
         return drained
 
-    # Agents that modify files — must run sequentially to avoid conflicts
-    _WRITER_ROLES = {
-        "developer",
-        "devops",
-        "backend_developer",
-        "frontend_developer",
-        "database_expert",
-        "typescript_architect",
-        "python_backend",
-    }
+    # Agents that modify files — imported from complexity.py (single source of truth)
+    _WRITER_ROLES = WRITER_ROLES
 
-    # Read-only / analysis agents — safe to run in parallel
-    # (Kept consistent with dag_executor._READER_ROLES)
-    _READER_ROLES = {
-        "researcher",
-        "reviewer",
-        "security_auditor",
-        "ux_critic",
-        "test_engineer",
-        "tester",
-        "memory",
-    }
+    # Read-only / analysis agents — imported from complexity.py (single source of truth)
+    _READER_ROLES = READER_ROLES
 
     def __init__(
         self,

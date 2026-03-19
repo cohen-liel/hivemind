@@ -23,8 +23,8 @@ from typing import Any
 
 import config as cfg
 import state
+from complexity import READER_ROLES_ENUM, WRITER_ROLES_ENUM
 from contracts import (
-    AgentRole,
     ArtifactContractError,
     ArtifactType,
     DAGCheckpoint,
@@ -431,27 +431,11 @@ def _get_task_budget(role: str) -> float:
     return get_agent_budget(role)
 
 
-# Roles that write/modify files — must run sequentially when file scopes overlap
-_WRITER_ROLES = {
-    AgentRole.FRONTEND_DEVELOPER,
-    AgentRole.BACKEND_DEVELOPER,
-    AgentRole.DATABASE_EXPERT,
-    AgentRole.DEVOPS,
-    AgentRole.TYPESCRIPT_ARCHITECT,
-    AgentRole.PYTHON_BACKEND,
-    AgentRole.DEVELOPER,
-}
+# Roles that write/modify files — imported from complexity.py (single source of truth)
+_WRITER_ROLES = WRITER_ROLES_ENUM
 
-# Roles that are read-only / analysis only — always safe to run in parallel
-_READER_ROLES = {
-    AgentRole.RESEARCHER,
-    AgentRole.REVIEWER,
-    AgentRole.SECURITY_AUDITOR,
-    AgentRole.UX_CRITIC,
-    AgentRole.TEST_ENGINEER,
-    AgentRole.TESTER,
-    AgentRole.MEMORY,
-}
+# Roles that are read-only / analysis only — imported from complexity.py (single source of truth)
+_READER_ROLES = READER_ROLES_ENUM
 
 # Failure categories that should NOT be retried (waste of money)
 _NO_RETRY_CATEGORIES = {

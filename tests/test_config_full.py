@@ -160,14 +160,16 @@ class TestCollectionConfigs:
         assert isinstance(config.PREDEFINED_PROJECTS, dict)
 
     def test_sub_agent_prompts_keys(self):
-        assert isinstance(config.SUB_AGENT_PROMPTS, dict)
+        from prompts import PROMPT_REGISTRY
+
+        assert isinstance(PROMPT_REGISTRY, dict)
         # Must include at least the core 4 sub-agent roles
-        assert {"developer", "reviewer", "tester", "devops"}.issubset(
-            set(config.SUB_AGENT_PROMPTS.keys())
-        )
+        assert {"developer", "reviewer", "tester", "devops"}.issubset(set(PROMPT_REGISTRY.keys()))
 
     def test_sub_agent_prompts_values_are_strings(self):
-        for name, prompt in config.SUB_AGENT_PROMPTS.items():
+        from prompts import PROMPT_REGISTRY
+
+        for name, prompt in PROMPT_REGISTRY.items():
             assert isinstance(prompt, str), f"{name} prompt is not a string"
             assert len(prompt) > 50, f"{name} prompt is suspiciously short"
 

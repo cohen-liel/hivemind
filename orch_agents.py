@@ -20,8 +20,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from orchestrator import Delegation, OrchestratorManager
 
-from prompts import get_specialist_prompt
-
 import orch_context
 import orch_review
 from config import (
@@ -42,6 +40,7 @@ from config import (
 )
 from isolated_query import isolated_query
 from project_context import build_project_header
+from prompts import get_specialist_prompt
 from sdk_client import SDKResponse
 
 logger = logging.getLogger(__name__)

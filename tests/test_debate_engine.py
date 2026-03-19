@@ -173,7 +173,7 @@ class TestRunDebate:
             "isolated_query.isolated_query", new_callable=AsyncMock, return_value=mock_response
         ):
             with patch(
-                "config.SPECIALIST_PROMPTS",
+                "prompts.PROMPT_REGISTRY",
                 {
                     "database_expert": "You are a DB expert",
                     "backend_developer": "You are a backend dev",
@@ -199,7 +199,7 @@ class TestRunDebate:
         with patch(
             "isolated_query.isolated_query", new_callable=AsyncMock, return_value=mock_response
         ):
-            with patch("config.SPECIALIST_PROMPTS", {}):
+            with patch("prompts.PROMPT_REGISTRY", {}):
                 with patch("config.get_agent_turns", return_value=10):
                     result = await engine.run_debate(task, "/tmp/project", sdk=mock_sdk)
 
@@ -213,7 +213,7 @@ class TestRunDebate:
 
         mock_sdk = MagicMock()
         with patch("isolated_query.isolated_query", new_callable=AsyncMock, return_value=None):
-            with patch("config.SPECIALIST_PROMPTS", {}):
+            with patch("prompts.PROMPT_REGISTRY", {}):
                 with patch("config.get_agent_turns", return_value=10):
                     result = await engine.run_debate(task, "/tmp/project", sdk=mock_sdk)
 
