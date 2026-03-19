@@ -357,7 +357,17 @@ DAG_MAX_CONCURRENT_NODES: int = _get("DAG_MAX_CONCURRENT_NODES", "4", int)
 # concurrently at the server level.  Each graph runs inside an
 # OrchestratorManager; the bounded ingestion queue serialises submissions
 # that exceed this limit so the server never becomes overloaded.
-DAG_MAX_CONCURRENT_GRAPHS: int = _get("DAG_MAX_CONCURRENT_GRAPHS", "3", int)
+DAG_MAX_CONCURRENT_GRAPHS: int = _get("DAG_MAX_CONCURRENT_GRAPHS", "5", int)
+
+# Maximum number of projects that may execute graphs concurrently.
+# Within a single project, graphs execute sequentially (FIFO queue).
+# Across projects, graphs execute in parallel up to this limit.
+MAX_CONCURRENT_PROJECTS: int = _get("MAX_CONCURRENT_PROJECTS", "3", int)
+
+# File-lock acquisition timeout (seconds).  If a writer task cannot
+# acquire all its file locks within this window the task is failed
+# rather than blocking indefinitely.
+FILE_LOCK_TIMEOUT: float = _get("FILE_LOCK_TIMEOUT", "300", float)
 
 # Scheduler check interval (seconds)
 SCHEDULER_CHECK_INTERVAL: int = _get("SCHEDULER_CHECK_INTERVAL", "30", int)
@@ -587,6 +597,7 @@ def validate_config() -> list[str]:
         "MAX_USER_MESSAGE_LENGTH": MAX_USER_MESSAGE_LENGTH,
         "DAG_MAX_CONCURRENT_NODES": DAG_MAX_CONCURRENT_NODES,
         "DAG_MAX_CONCURRENT_GRAPHS": DAG_MAX_CONCURRENT_GRAPHS,
+        "MAX_CONCURRENT_PROJECTS": MAX_CONCURRENT_PROJECTS,
     }
     for name, val in _positive_ints.items():
         if not isinstance(val, int) or val <= 0:
@@ -1159,6 +1170,22 @@ _EXECUTION_FOOTER = (
     "- Do NOT run git commit, git push, or git add — the DAG Executor handles commits.\n"
     "- When done, briefly list what you built/changed.\n"
     "</work_style>\n\n"
+    "<scope_discipline>\n"
+    "CRITICAL — STAY IN SCOPE:\n"
+    "- ONLY change files directly required by your task goal.\n"
+    "- Do NOT 'clean up', refactor, or improve code outside your task scope.\n"
+    "- Do NOT remove imports, fix lint, or reorganize files you were not asked to change.\n"
+    "- If you notice issues in other files, add them as notes — do NOT fix them.\n"
+    "- Your commit should be explainable in ONE sentence matching your task goal.\n"
+    "</scope_discipline>\n\n"
+    "<code_quality>\n"
+    "- Do NOT create .notes.json, NOTES.md, or any metadata files in the project.\n"
+    "- Do NOT add verbose comments explaining obvious code.\n"
+    "- Do NOT wrap every line in try/except — only catch errors you can handle.\n"
+    "- Prefer small, focused functions over 500+ line god functions.\n"
+    "- If a file exceeds 500 lines, split it into logical modules.\n"
+    "- Do NOT add logging for every variable — log decisions and errors only.\n"
+    "</code_quality>\n\n"
     "<file_discipline>\n"
     "CRITICAL: You MUST only create/modify files within your assigned project directory.\n"
     "- NEVER write files to other projects or parent directories.\n"
@@ -1410,6 +1437,9 @@ SPECIALIST_PROMPTS: dict[str, str] = {
         "- Distinguish: MUST FIX (bugs/security/data loss) vs SHOULD FIX (quality/maintainability) vs NICE TO HAVE\n"
         "- Run existing tests and include EXACT output\n"
         "- Check git diff to verify all required changes were made\n"
+        "- SCOPE AUDIT: Flag any files changed that were NOT in the task's files_scope\n"
+        "- DRY AUDIT: Flag duplicated logic — same pattern in 2+ places means extract a helper\n"
+        "- SIZE AUDIT: Flag any file exceeding 500 lines — recommend splitting\n"
         "- Save review to .hivemind/REVIEW_round<N>.md\n"
         "- Count issues by severity in the summary: X MUST FIX, Y SHOULD FIX, Z NICE TO HAVE\n"
         "</standards>" + _QUALITY_FOOTER
