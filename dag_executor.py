@@ -27,12 +27,14 @@ from contracts import (
     AgentRole,
     ArtifactContractError,
     ArtifactType,
+    DAGCheckpoint,
     FailureCategory,
     TaskGraph,
     TaskInput,
     TaskOutput,
     TaskStatus,
     classify_failure,
+    compute_task_complexity,
     create_remediation_task,
     extract_task_output,
     get_retry_strategy,
@@ -52,6 +54,122 @@ logger = logging.getLogger(__name__)
 # Prevent GC of fire-and-forget event broadcast tasks
 _background_event_tasks: set[asyncio.Task] = set()
 
+
+# ---------------------------------------------------------------------------
+# File-Level Lock Manager — singleton across all concurrent graph executions
+# ---------------------------------------------------------------------------
+
+
+class FileLockManager:
+    """Manages per-file asyncio locks to prevent writer conflicts across graphs.
+
+    Each file path gets its own asyncio.Lock.  Writer tasks must acquire locks
+    for ALL files in their ``files_scope`` before execution begins and release
+    them when done.  Reader tasks do not need locks.
+
+    The manager is a process-wide singleton so that locks are shared across
+    concurrent graph executions (multiple OrchestratorManagers running in the
+    same event loop).
+    """
+
+    _instance: FileLockManager | None = None
+
+    def __new__(cls) -> FileLockManager:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._locks: dict[str, asyncio.Lock] = {}
+            cls._instance._meta_lock = asyncio.Lock()
+        return cls._instance
+
+    async def acquire_files(
+        self,
+        file_paths: list[str],
+        timeout: float | None = None,
+    ) -> bool:
+        """Acquire locks for all *file_paths* atomically (sorted to avoid deadlocks).
+
+        Args:
+            file_paths: List of file paths to lock.
+            timeout: Maximum seconds to wait.  ``None`` → use config default.
+
+        Returns:
+            ``True`` if all locks acquired, ``False`` on timeout.
+        """
+        if not file_paths:
+            return True
+
+        if timeout is None:
+            timeout = cfg.FILE_LOCK_TIMEOUT
+
+        # Sort to impose a global ordering → prevents ABBA deadlocks
+        sorted_paths = sorted(set(file_paths))
+
+        # Ensure Lock objects exist for all requested paths
+        async with self._meta_lock:
+            for fp in sorted_paths:
+                if fp not in self._locks:
+                    self._locks[fp] = asyncio.Lock()
+
+        # Acquire each lock in order with a global timeout
+        acquired: list[str] = []
+        deadline = asyncio.get_event_loop().time() + timeout
+
+        try:
+            for fp in sorted_paths:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    # Timeout — release everything we acquired
+                    self._release_paths(acquired)
+                    return False
+                try:
+                    await asyncio.wait_for(
+                        self._locks[fp].acquire(),
+                        timeout=remaining,
+                    )
+                    acquired.append(fp)
+                except TimeoutError:
+                    self._release_paths(acquired)
+                    return False
+        except Exception:
+            self._release_paths(acquired)
+            raise
+
+        return True
+
+    def release_files(self, file_paths: list[str]) -> None:
+        """Release locks for the given file paths."""
+        self._release_paths(sorted(set(file_paths)))
+
+    def _release_paths(self, paths: list[str]) -> None:
+        for fp in paths:
+            lock = self._locks.get(fp)
+            if lock is not None and lock.locked():
+                lock.release()
+
+    @property
+    def active_locks(self) -> int:
+        """Number of currently held file locks (for observability)."""
+        return sum(1 for lk in self._locks.values() if lk.locked())
+
+
+# Module-level singleton
+_file_lock_manager = FileLockManager()
+
+
+# Per-project checkpoint locks — prevents concurrent checkpoint writes
+# for the same project across parallel graph executions.
+_checkpoint_locks: dict[str, asyncio.Lock] = {}
+_checkpoint_locks_meta = asyncio.Lock()
+
+
+async def _get_checkpoint_lock(project_id: str) -> asyncio.Lock:
+    """Return (lazily create) a per-project checkpoint lock."""
+    async with _checkpoint_locks_meta:
+        if project_id not in _checkpoint_locks:
+            _checkpoint_locks[project_id] = asyncio.Lock()
+        return _checkpoint_locks[project_id]
+
+
 # --- Configuration — pulled from centralised config.py (H-3 fix) ---
 # These were previously hardcoded magic numbers; they are now tuneable via env vars.
 MAX_TASK_RETRIES: int = cfg.MAX_TASK_RETRIES  # Direct retries per task
@@ -61,7 +179,130 @@ MAX_REMEDIATION_DEPTH: int = (
 MAX_TOTAL_REMEDIATIONS: int = (
     cfg.MAX_TOTAL_REMEDIATIONS
 )  # Max total remediation tasks per graph execution
-MAX_ROUNDS: int = cfg.MAX_DAG_ROUNDS  # Safety limit on execution rounds
+MAX_ROUNDS: int = cfg.MAX_DAG_ROUNDS  # Safety limit on execution rounds (default 50)
+
+# ---------------------------------------------------------------------------
+# DAG Checkpoint Store — SQLite-backed durable checkpoints for resume
+# ---------------------------------------------------------------------------
+
+import sqlite3
+
+_CHECKPOINT_DB: str | None = None  # Set lazily to {project_dir}/.hivemind/dag_checkpoints.db
+
+
+def _get_checkpoint_db(project_dir: str) -> str:
+    """Return (and lazily initialise) the SQLite checkpoint DB path."""
+    hive_dir = Path(project_dir) / ".hivemind"
+    hive_dir.mkdir(parents=True, exist_ok=True)
+    db_path = str(hive_dir / "dag_checkpoints.db")
+    # Ensure table exists (idempotent)
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dag_checkpoints (
+                project_id   TEXT NOT NULL,
+                round_num    INTEGER NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'running',
+                checkpoint   TEXT NOT NULL,
+                created_at   REAL NOT NULL,
+                PRIMARY KEY (project_id, round_num)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_checkpoint_project
+            ON dag_checkpoints(project_id, created_at DESC)
+            """
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"[DAG] Checkpoint DB init failed (non-fatal): {exc}")
+    return db_path
+
+
+def _save_checkpoint(
+    project_dir: str,
+    checkpoint: DAGCheckpoint,
+) -> None:
+    """Persist a DAG checkpoint to SQLite (synchronous — called from async context via executor)."""
+    db_path = _get_checkpoint_db(project_dir)
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO dag_checkpoints (project_id, round_num, status, checkpoint, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                checkpoint.project_id,
+                checkpoint.round_num,
+                checkpoint.status,
+                checkpoint.model_dump_json(),
+                checkpoint.created_at,
+            ),
+        )
+        # Keep only the last 10 checkpoints per project to bound disk usage
+        conn.execute(
+            """
+            DELETE FROM dag_checkpoints
+            WHERE project_id = ? AND round_num NOT IN (
+                SELECT round_num FROM dag_checkpoints
+                WHERE project_id = ?
+                ORDER BY round_num DESC
+                LIMIT 10
+            )
+            """,
+            (checkpoint.project_id, checkpoint.project_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"[DAG] Checkpoint save failed (non-fatal): {exc}")
+
+
+def _load_latest_checkpoint(project_dir: str, project_id: str) -> DAGCheckpoint | None:
+    """Load the most recent checkpoint for a project, or None."""
+    db_path = _get_checkpoint_db(project_dir)
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        row = conn.execute(
+            """
+            SELECT checkpoint FROM dag_checkpoints
+            WHERE project_id = ? AND status = 'running'
+            ORDER BY round_num DESC LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        conn.close()
+        if row:
+            return DAGCheckpoint.model_validate_json(row[0])
+    except Exception as exc:
+        logger.warning(f"[DAG] Checkpoint load failed (non-fatal): {exc}")
+    return None
+
+
+def _clear_checkpoints(project_dir: str, project_id: str) -> None:
+    """Remove all checkpoints for a project (called on successful completion)."""
+    db_path = _get_checkpoint_db(project_dir)
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.execute("DELETE FROM dag_checkpoints WHERE project_id = ?", (project_id,))
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"[DAG] Checkpoint cleanup failed (non-fatal): {exc}")
+
+
+async def _async_save_checkpoint(project_dir: str, checkpoint: DAGCheckpoint) -> None:
+    """Save checkpoint without blocking the event loop, with per-project locking."""
+    lock = await _get_checkpoint_lock(checkpoint.project_id)
+    async with lock:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _save_checkpoint, project_dir, checkpoint)
+
 
 # Per-role max_turns and timeouts — derived from the SINGLE source of truth
 # in config.py AGENT_REGISTRY.  No duplicated maps here.
@@ -151,14 +392,33 @@ async def _git_status(ctx: _ExecutionContext, task_id: str, stage: str) -> str:
         return ""
 
 
-def _get_task_timeout(role: str) -> int:
+def _get_task_timeout(role: str, task: TaskInput | None = None) -> int:
     """Return the wall-clock timeout (seconds) for a given agent role.
 
-    Uses the centralized AGENT_REGISTRY from config.py.
+    Uses the centralized AGENT_REGISTRY from config.py as the base timeout,
+    then applies adaptive scaling based on task complexity when a TaskInput
+    is provided.
+
+    Adaptive scaling:
+    - complexity 1.0 → 1.0× base timeout
+    - complexity 3.0 → 1.5× base timeout
+    - complexity 5.0 → 2.0× base timeout
     """
     from config import get_agent_timeout
 
-    return get_agent_timeout(role)
+    base = get_agent_timeout(role)
+    if task is not None:
+        complexity = compute_task_complexity(task)
+        # Linear interpolation: complexity 1→1.0×, 5→2.0×
+        scale_factor = 1.0 + (complexity - 1.0) * 0.25
+        scaled = int(base * scale_factor)
+        if scaled != base:
+            logger.debug(
+                f"[DAG] Adaptive timeout for {task.id} ({role}): "
+                f"base={base}s × {scale_factor:.2f} (complexity={complexity:.1f}) = {scaled}s"
+            )
+        return max(scaled, 30)
+    return base
 
 
 def _get_task_budget(role: str) -> float:
@@ -417,10 +677,9 @@ async def _run_with_semaphore(
 ) -> TaskOutput:
     """Acquire the graph's bounded worker-pool slot, then run the task.
 
-    This wrapper ensures that at most ``ctx.max_concurrent_tasks`` DAG nodes
-    run simultaneously within a single graph execution.  When all slots are
-    occupied the coroutine blocks (via the semaphore) until a slot is freed by
-    a finishing peer — there is no busy-polling or explicit sleep.
+    Writer tasks additionally acquire file-level locks for their entire
+    ``files_scope`` to prevent conflicts across concurrent graph executions.
+    Reader tasks bypass file locking entirely.
 
     Args:
         task: The task to execute.
@@ -429,6 +688,9 @@ async def _run_with_semaphore(
     Returns:
         The TaskOutput produced by ``_run_single_task``.
     """
+    is_writer = task.role in _WRITER_ROLES
+    locked_files: list[str] = []
+
     async with ctx.node_semaphore:
         logger.debug(
             "[DAG] Semaphore acquired for %s (active_slots=%d/%d)",
@@ -436,7 +698,181 @@ async def _run_with_semaphore(
             ctx.max_concurrent_tasks - ctx.node_semaphore._value,  # type: ignore[attr-defined]
             ctx.max_concurrent_tasks,
         )
-        return await _run_single_task(task, ctx)
+
+        # Acquire file-level locks for writer tasks
+        if is_writer and task.files_scope:
+            locked_files = list(task.files_scope)
+            acquired = await _file_lock_manager.acquire_files(locked_files)
+            if not acquired:
+                logger.warning(
+                    "[DAG] Task %s: timed out acquiring file locks for %s",
+                    task.id,
+                    locked_files,
+                )
+                return TaskOutput(
+                    task_id=task.id,
+                    status=TaskStatus.FAILED,
+                    summary="Timed out waiting for file locks",
+                    issues=["Could not acquire file-level locks within timeout"],
+                    failure_details=(
+                        f"File lock timeout ({cfg.FILE_LOCK_TIMEOUT}s) for: {locked_files}"
+                    ),
+                    confidence=0.0,
+                )
+            logger.debug(
+                "[DAG] File locks acquired for %s: %s (total_active=%d)",
+                task.id,
+                locked_files,
+                _file_lock_manager.active_locks,
+            )
+
+        try:
+            return await _run_single_task(task, ctx)
+        finally:
+            if locked_files:
+                _file_lock_manager.release_files(locked_files)
+                logger.debug(
+                    "[DAG] File locks released for %s: %s",
+                    task.id,
+                    locked_files,
+                )
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint & resume helpers
+# ---------------------------------------------------------------------------
+
+
+async def _emit_checkpoint(
+    ctx: _ExecutionContext,
+    graph: TaskGraph,
+    round_num: int,
+    *,
+    status: str = "running",
+) -> None:
+    """Persist a checkpoint to SQLite and emit a WS event to the frontend.
+
+    Called after every completed round for crash recovery and real-time
+    progress tracking.
+    """
+    checkpoint = DAGCheckpoint(
+        project_id=graph.project_id,
+        graph_json=graph.model_dump_json(),
+        completed_tasks={tid: out.model_dump() for tid, out in ctx.completed.items()},
+        retries=dict(ctx.retries),
+        total_cost=ctx.total_cost,
+        remediation_count=ctx.remediation_count,
+        healing_history=ctx.healing_history,
+        round_num=round_num,
+        created_at=time.time(),
+        status=status,
+    )
+
+    # Persist to SQLite (non-blocking)
+    try:
+        await _async_save_checkpoint(ctx.project_dir, checkpoint)
+        logger.debug(
+            f"[DAG] Checkpoint saved: round={round_num} status={status} "
+            f"completed={len(ctx.completed)}/{len(graph.tasks)}"
+        )
+    except Exception as exc:
+        logger.warning(f"[DAG] Checkpoint persistence failed (non-fatal): {exc}")
+
+    # Emit WS event so the frontend gets real-time checkpoint progress
+    if ctx.on_event is not None:
+        event = {
+            "type": "dag_checkpoint",
+            "project_id": graph.project_id,
+            "round_num": round_num,
+            "status": status,
+            "completed_count": sum(1 for o in ctx.completed.values() if o.is_successful()),
+            "failed_count": sum(1 for o in ctx.completed.values() if not o.is_successful()),
+            "total_tasks": len(graph.tasks),
+            "total_cost": ctx.total_cost,
+            "remediation_count": ctx.remediation_count,
+            "timestamp": time.time(),
+        }
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                _task = asyncio.ensure_future(ctx.on_event(event))
+                _background_event_tasks.add(_task)
+                _task.add_done_callback(_background_event_tasks.discard)
+        except Exception as ev_err:
+            logger.debug(f"[DAG] Checkpoint event emission failed: {ev_err}")
+
+
+def _force_retry_stuck_tasks(ctx: _ExecutionContext, graph: TaskGraph) -> int:
+    """Force-retry failed tasks that haven't exhausted their retry budget.
+
+    Returns the number of tasks re-queued for retry.  This is the last-resort
+    mechanism before declaring a deadlock — it removes failed tasks from
+    ctx.completed so ready_tasks() picks them up again.
+
+    Only retries tasks whose dependencies are all successfully completed
+    (i.e., the task itself failed, not a dependency).
+    """
+    retried = 0
+    for task in graph.tasks:
+        if task.id not in ctx.completed:
+            continue
+        output = ctx.completed[task.id]
+        if output.is_successful():
+            continue
+        if output.is_terminal():
+            continue
+
+        # Check if all dependencies are satisfied
+        deps_ok = all(
+            dep in ctx.completed and ctx.completed[dep].is_successful() for dep in task.depends_on
+        )
+        if not deps_ok:
+            continue
+
+        # Check retry budget (allow one extra retry in deadlock recovery)
+        current_retries = ctx.retries.get(task.id, 0)
+        max_allowed = MAX_TASK_RETRIES + 1
+        if current_retries >= max_allowed:
+            continue
+
+        # Force retry
+        ctx.retries[task.id] = current_retries + 1
+        ctx.total_cost -= output.cost_usd
+        del ctx.completed[task.id]
+        retried += 1
+        logger.info(f"[DAG] Force-retry: {task.id} (attempt {ctx.retries[task.id]}/{max_allowed})")
+
+    return retried
+
+
+async def restore_graph_from_checkpoint(
+    project_dir: str,
+    project_id: str,
+) -> tuple[TaskGraph | None, dict[str, TaskOutput], dict[str, int], int]:
+    """Restore a DAG execution from the latest checkpoint.
+
+    Returns:
+        (graph, completed_tasks, retries, round_num) or (None, {}, {}, 0) if no checkpoint.
+    """
+    checkpoint = _load_latest_checkpoint(project_dir, project_id)
+    if checkpoint is None:
+        return None, {}, {}, 0
+
+    try:
+        graph = TaskGraph.model_validate_json(checkpoint.graph_json)
+        completed = {
+            tid: TaskOutput.model_validate(data) for tid, data in checkpoint.completed_tasks.items()
+        }
+        logger.info(
+            f"[DAG] Restored checkpoint: project={project_id} "
+            f"round={checkpoint.round_num} "
+            f"completed={len(completed)}/{len(graph.tasks)} "
+            f"status={checkpoint.status}"
+        )
+        return graph, completed, checkpoint.retries, checkpoint.round_num
+    except Exception as exc:
+        logger.warning(f"[DAG] Checkpoint restore failed: {exc}")
+        return None, {}, {}, 0
 
 
 async def _execute_graph_inner(
@@ -444,8 +880,18 @@ async def _execute_graph_inner(
     graph: TaskGraph,
     max_budget_usd: float,
 ) -> ExecutionResult:
-    """Inner graph execution loop (separated for watchdog wrapping)."""
+    """Inner graph execution loop (separated for watchdog wrapping).
+
+    Hardened for long-running executions:
+    - Checkpoints state to SQLite after every round
+    - Emits WS progress events on each checkpoint
+    - Does not stop until ALL plan tasks are completed or explicitly failed
+    - Adaptive deadlock detection with retry before giving up
+    """
     round_num = 0
+    _deadlock_retries = 0  # Track consecutive deadlock detections
+    _MAX_DEADLOCK_RETRIES = 3  # Allow some deadlock retries before giving up
+
     while not graph.is_complete(ctx.completed):
         round_num += 1
         if round_num > MAX_ROUNDS:
@@ -457,6 +903,8 @@ async def _execute_graph_inner(
                 f"  Total cost: ${ctx.total_cost:.4f}\n"
                 f"  Remediations: {ctx.remediation_count}"
             )
+            # Final checkpoint with interrupted status
+            await _emit_checkpoint(ctx, graph, round_num, status="max_rounds_exceeded")
             break
 
         completed_ids = list(ctx.completed.keys())
@@ -476,29 +924,59 @@ async def _execute_graph_inner(
                 # Try self-healing before giving up
                 healed = await _try_self_heal(ctx)
                 if healed:
+                    _deadlock_retries = 0  # Reset — we made progress
                     continue  # New tasks were added, re-check ready
+
+                # Before giving up, check if there are tasks with NO failed
+                # dependencies that just haven't been retried yet.
+                _deadlock_retries += 1
+                if _deadlock_retries <= _MAX_DEADLOCK_RETRIES:
+                    # Force-retry failed tasks that haven't hit their max retries
+                    _force_retried = _force_retry_stuck_tasks(ctx, graph)
+                    if _force_retried:
+                        logger.info(
+                            f"[DAG] Deadlock retry #{_deadlock_retries}: "
+                            f"force-retried {_force_retried} stuck tasks"
+                        )
+                        continue
+
                 _failed_tasks = [
                     f"{tid}={out.status.value}({out.failure_details[:60] if out.failure_details else 'no details'})"
                     for tid, out in ctx.completed.items()
                     if not out.is_successful()
                 ]
                 logger.error(
-                    f"[DAG] Graph has unresolvable failures after healing attempts. Stopping.\n"
+                    f"[DAG] Graph has unresolvable failures after {_deadlock_retries} "
+                    f"deadlock retries and healing attempts. Stopping.\n"
                     f"  Failed tasks: {_failed_tasks}\n"
                     f"  Completed: {len(ctx.completed)}/{len(graph.tasks)}\n"
                     f"  Remediation attempts: {ctx.remediation_count}"
                 )
+                await _emit_checkpoint(ctx, graph, round_num, status="failed")
                 break
             _all_statuses = [
                 f"{t.id}={'done' if t.id in ctx.completed else 'pending'}(deps={t.depends_on})"
                 for t in graph.tasks
             ]
+            _deadlock_retries += 1
+            if _deadlock_retries <= _MAX_DEADLOCK_RETRIES:
+                logger.warning(
+                    f"[DAG] No ready tasks but graph not complete (retry #{_deadlock_retries}). "
+                    f"Attempting to unblock..."
+                )
+                _force_retried = _force_retry_stuck_tasks(ctx, graph)
+                if _force_retried:
+                    continue
             logger.warning(
-                f"[DAG] No ready tasks but graph not complete. Deadlock?\n"
+                f"[DAG] No ready tasks but graph not complete. Deadlock after "
+                f"{_deadlock_retries} retries.\n"
                 f"  Task statuses: {_all_statuses}\n"
                 f"  Completed IDs: {list(ctx.completed.keys())}"
             )
+            await _emit_checkpoint(ctx, graph, round_num, status="deadlocked")
             break
+        else:
+            _deadlock_retries = 0  # Reset on successful round
 
         if ctx.total_cost >= max_budget_usd:
             _pending = [t.id for t in graph.tasks if t.id not in ctx.completed]
@@ -508,6 +986,7 @@ async def _execute_graph_inner(
                 f"  Still pending: {_pending}\n"
                 f"  Cost breakdown: {[(tid, f'${out.cost_usd:.4f}') for tid, out in ctx.completed.items()]}"
             )
+            await _emit_checkpoint(ctx, graph, round_num, status="budget_exhausted")
             break
 
         ready_info = [(t.id, t.role.value) for t in ready]
@@ -726,6 +1205,16 @@ async def _execute_graph_inner(
             except Exception as exc:
                 logger.warning(f"[DAG] Auto-commit failed (non-fatal): {exc}")
 
+        # ── Checkpoint: persist state after each round for crash recovery ──
+        await _emit_checkpoint(ctx, graph, round_num, status="running")
+
+    # ── Final checkpoint: mark execution as completed or failed ──
+    _final_status = "completed" if graph.is_complete(ctx.completed) else "interrupted"
+    await _emit_checkpoint(ctx, graph, round_num, status=_final_status)
+    if _final_status == "completed":
+        # Clean up old checkpoints on successful completion
+        _clear_checkpoints(ctx.project_dir, graph.project_id)
+
     return _build_result(ctx, graph)
 
 
@@ -814,17 +1303,23 @@ class ExecutionResult:
         self,
         outputs: list[TaskOutput],
         total_cost: float,
-        success_count: int,
-        failure_count: int,
-        remediation_count: int,
-        healing_history: list[dict[str, str]],
+        total_input_tokens: int = 0,
+        total_output_tokens: int = 0,
+        total_tokens: int = 0,
+        success_count: int = 0,
+        failure_count: int = 0,
+        remediation_count: int = 0,
+        healing_history: list[dict[str, str]] | None = None,
     ):
         self.outputs = outputs
         self.total_cost = total_cost
+        self.total_input_tokens = total_input_tokens
+        self.total_output_tokens = total_output_tokens
+        self.total_tokens = total_tokens
         self.success_count = success_count
         self.failure_count = failure_count
         self.remediation_count = remediation_count
-        self.healing_history = healing_history
+        self.healing_history = healing_history or []
 
     @property
     def all_successful(self) -> bool:
@@ -837,7 +1332,7 @@ class ExecutionResult:
             f"Tasks: {self.success_count + self.failure_count} total, "
             f"{self.success_count} succeeded, {self.failure_count} failed",
             f"Remediations: {self.remediation_count}",
-            f"Total cost: ${self.total_cost:.4f}",
+            f"Total cost: ${self.total_cost:.4f} | Tokens: {self.total_tokens}",
         ]
         if self.healing_history:
             lines.append("\nSelf-healing actions:")
@@ -854,10 +1349,13 @@ def _build_result(ctx: _ExecutionContext, graph: TaskGraph) -> ExecutionResult:
     roles_used = list(
         {graph.get_task(tid).role.value for tid in ctx.completed if graph.get_task(tid)}
     )
+    total_input_tokens = sum(o.input_tokens for o in all_outputs)
+    total_output_tokens = sum(o.output_tokens for o in all_outputs)
+    total_tokens = sum(o.total_tokens for o in all_outputs)
     logger.info(
         f"[DAG] ══════ RUN COMPLETE ══════ "
         f"{completed_count}✅ {failed_count}❌ / {len(graph.tasks)} tasks | "
-        f"cost=${ctx.total_cost:.4f} | "
+        f"cost=${ctx.total_cost:.4f} | tokens={total_tokens} | "
         f"roles={roles_used}"
     )
     # Save artifact manifest for downstream consumers
@@ -869,6 +1367,9 @@ def _build_result(ctx: _ExecutionContext, graph: TaskGraph) -> ExecutionResult:
     return ExecutionResult(
         outputs=all_outputs,
         total_cost=sum(o.cost_usd for o in all_outputs),
+        total_input_tokens=total_input_tokens,
+        total_output_tokens=total_output_tokens,
+        total_tokens=total_tokens,
         success_count=sum(1 for o in all_outputs if o.is_successful()),
         failure_count=sum(1 for o in all_outputs if not o.is_successful()),
         remediation_count=ctx.remediation_count,
@@ -906,7 +1407,7 @@ async def _run_single_task(
     """
     role_name = task.role.value
     max_turns = _get_max_turns(role_name)
-    task_timeout = _get_task_timeout(role_name)
+    task_timeout = _get_task_timeout(role_name, task=task)
 
     logger.info(
         f"[DAG] ▶ START {task.id} ({role_name}): {task.goal[:80]}{'...' if len(task.goal) > 80 else ''}"
@@ -1189,6 +1690,9 @@ async def _run_single_task(
     # Process work phase response
     work_session_id: str | None = None
     work_cost = 0.0
+    work_input_tokens = 0
+    work_output_tokens = 0
+    work_total_tokens = 0
     work_turns_used = 0
     work_text = ""
     work_had_error = False
@@ -1196,6 +1700,9 @@ async def _run_single_task(
     if response is not None:
         work_session_id = response.session_id or None
         work_cost = response.cost_usd
+        work_input_tokens = response.input_tokens
+        work_output_tokens = response.output_tokens
+        work_total_tokens = response.total_tokens
         work_turns_used = response.num_turns
         work_text = response.text
         work_had_error = response.is_error
@@ -1242,6 +1749,9 @@ async def _run_single_task(
         work_tool_uses = response.tool_uses if response is not None else None
         output = extract_task_output(work_text, task.id, task.role.value, tool_uses=work_tool_uses)
         output.cost_usd = work_cost
+        output.input_tokens = work_input_tokens
+        output.output_tokens = work_output_tokens
+        output.total_tokens = work_total_tokens
         output.turns_used = work_turns_used
         logger.info(
             f"[DAG] Task {task.id}: WORK phase extract -> "
@@ -1308,6 +1818,9 @@ async def _run_single_task(
             else:
                 # Summary didn't improve — keep work phase output but add costs
                 output.cost_usd = work_cost + (summary_output.cost_usd - work_cost)
+                output.input_tokens = work_input_tokens + summary_output.input_tokens
+                output.output_tokens = work_output_tokens + summary_output.output_tokens
+                output.total_tokens = work_total_tokens + summary_output.total_tokens
                 output.turns_used = work_turns_used + (summary_output.turns_used - work_turns_used)
     elif output is None:
         # No work output and no summary possible — create failure output
@@ -1317,6 +1830,9 @@ async def _run_single_task(
             summary=f"Agent produced no output (work_turns={work_turns_used}, error={work_had_error})",
             issues=["No output from work phase and no session for summary phase"],
             cost_usd=work_cost,
+            input_tokens=work_input_tokens,
+            output_tokens=work_output_tokens,
+            total_tokens=work_total_tokens,
             turns_used=work_turns_used,
             confidence=0.0,
         )
@@ -1769,6 +2285,9 @@ async def _run_summary_phase(
         summary_response.text, task.id, task.role.value, tool_uses=work_tool_uses
     )
     output.cost_usd = work_cost + summary_response.cost_usd
+    output.input_tokens = getattr(output, "input_tokens", 0) + summary_response.input_tokens
+    output.output_tokens = getattr(output, "output_tokens", 0) + summary_response.output_tokens
+    output.total_tokens = getattr(output, "total_tokens", 0) + summary_response.total_tokens
     output.turns_used = work_turns + summary_response.num_turns
 
     logger.info(

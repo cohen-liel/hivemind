@@ -232,7 +232,7 @@ class TestStatsEndpoint:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/api/stats")
         data = resp.json()
-        assert "total_cost_usd" in data
+        assert "total_tokens" in data
         assert "total_projects" in data
         assert "active_projects" in data
 
@@ -242,7 +242,7 @@ class TestStatsEndpoint:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/api/stats")
         data = resp.json()
-        assert data["total_cost_usd"] == 0.0
+        assert data["total_tokens"] == 0
         assert data["total_projects"] == 0
         assert data["active_projects"] == 0
 
