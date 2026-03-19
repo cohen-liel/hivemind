@@ -2612,12 +2612,13 @@ def _split_writers_by_conflicts(writers: list[TaskInput]) -> list[list[TaskInput
 def build_execution_summary(graph: TaskGraph, result: ExecutionResult) -> str:
     """Build a human-readable summary of the graph execution."""
     output_map = {o.task_id: o for o in result.outputs}
+    _total_k = result.total_tokens / 1000 if result.total_tokens else 0
     lines = [
         f"## Execution Summary — {graph.vision}",
         f"Tasks: {result.success_count + result.failure_count}/{len(graph.tasks)} executed "
         f"({result.success_count} succeeded, {result.failure_count} failed)",
         f"Self-healing: {result.remediation_count} remediation tasks created",
-        f"Total cost: ${result.total_cost:.4f}",
+        f"Tokens: {_total_k:.1f}K",
         "",
     ]
 
