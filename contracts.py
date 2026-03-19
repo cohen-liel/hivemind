@@ -358,7 +358,10 @@ class TaskOutput(BaseModel):
     followups: list[str] = Field(
         default_factory=list, max_length=50, description="Recommended follow-up tasks"
     )
-    cost_usd: float = Field(default=0.0, ge=0.0)
+    cost_usd: float = Field(default=0.0, ge=0.0)  # Deprecated — kept for backward compat
+    input_tokens: int = Field(default=0, ge=0, description="Input tokens consumed by this task")
+    output_tokens: int = Field(default=0, ge=0, description="Output tokens produced by this task")
+    total_tokens: int = Field(default=0, ge=0, description="Total tokens (input + output)")
     turns_used: int = Field(default=0, ge=0)
     confidence: float = Field(
         default=0.5,
@@ -580,6 +583,61 @@ class TaskGraph(BaseModel):
                     break
 
         return errors
+
+
+# ---------------------------------------------------------------------------
+# DAG Checkpoint — durable state for resuming interrupted graph executions
+# ---------------------------------------------------------------------------
+
+
+class DAGCheckpoint(BaseModel):
+    """Serializable snapshot of a DAG execution for crash recovery.
+
+    Persisted to SQLite after each completed round so that a long-running
+    graph execution can resume from the last checkpoint rather than
+    restarting from scratch.
+    """
+
+    project_id: str
+    graph_json: str = Field(
+        ..., description="JSON-serialized TaskGraph (including dynamically added remediation tasks)"
+    )
+    completed_tasks: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Map of task_id -> TaskOutput.model_dump() for every finished task",
+    )
+    retries: dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-task retry counts",
+    )
+    total_cost: float = Field(default=0.0, ge=0.0)
+    remediation_count: int = Field(default=0, ge=0)
+    healing_history: list[dict[str, str]] = Field(default_factory=list)
+    round_num: int = Field(default=0, ge=0, description="Last completed round number")
+    created_at: float = Field(default=0.0, description="Epoch timestamp of checkpoint creation")
+    status: str = Field(
+        default="running",
+        description="Checkpoint status: running, completed, failed, interrupted",
+    )
+
+
+def compute_task_complexity(task: TaskInput) -> float:
+    """Compute a complexity score (1.0 – 5.0) for adaptive timeout scaling.
+
+    Delegates to the unified classifier in blackboard.classify_complexity().
+    """
+    from blackboard import classify_complexity
+
+    result = classify_complexity(
+        text=task.goal,
+        acceptance_criteria=task.acceptance_criteria,
+        constraints=task.constraints,
+        files_scope=task.files_scope,
+        depends_on=task.depends_on,
+        role=task.role.value if hasattr(task.role, "value") else str(task.role),
+        is_remediation=getattr(task, "is_remediation", False),
+    )
+    return result.score
 
 
 # ---------------------------------------------------------------------------
