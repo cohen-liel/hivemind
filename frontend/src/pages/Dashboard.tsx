@@ -285,7 +285,13 @@ export default function Dashboard(): React.ReactElement {
         text: `${event.agent} ${event.is_error ? 'failed' : 'done'}`,
       });
     } else if (event.type === 'project_status' && event.status) {
-      dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: event.status as Project['status'] });
+      if (event.status === 'deleted') {
+        // Remove the project from the list immediately
+        dispatch({ type: 'REMOVE_PROJECT', projectId: pid });
+        dispatch({ type: 'CLEAR_LIVE_STATE', projectId: pid });
+      } else {
+        dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: event.status as Project['status'] });
+      }
       loadData();
     } else if (event.type === 'agent_final') {
       loadData();
@@ -753,10 +759,14 @@ export default function Dashboard(): React.ReactElement {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (confirm(`Remove "${project.project_name}" from dashboard?\n\nThis only removes it from the list — project files are NOT deleted.`)) {
+                            if (confirm(`Delete "${project.project_name}"?\n\nThis will permanently remove the project and all its data.`)) {
                               deleteProject(project.project_id)
-                                .then(() => dispatch({ type: 'REMOVE_PROJECT', projectId: project.project_id }))
-                                .catch(() => toast.error('Delete failed', 'Could not remove project'));
+                                .then(() => {
+                                  dispatch({ type: 'REMOVE_PROJECT', projectId: project.project_id });
+                                  dispatch({ type: 'CLEAR_LIVE_STATE', projectId: project.project_id });
+                                  toast.success('Project deleted', `"${project.project_name}" has been removed.`);
+                                })
+                                .catch(() => toast.error('Delete failed', 'Could not delete project. Please try again.'));
                             }
                           }}
                           className="opacity-0 group-hover:opacity-70 hover:!opacity-100 p-1.5 rounded-lg transition-all"

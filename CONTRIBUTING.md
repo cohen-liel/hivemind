@@ -183,13 +183,65 @@ We welcome contributions that use AI tools (GitHub Copilot, Claude, ChatGPT, etc
 
 We believe AI is a powerful tool for developers. We just ask that you use it responsibly and transparently.
 
+## Creating a New Agent
+
+1. Add the agent to `AGENT_REGISTRY` in `config.py`:
+
+```python
+"my_agent": AgentConfig(
+    timeout=900,
+    turns=100,
+    budget=50.0,
+    layer="execution",  # or "quality"
+    emoji="\U0001f4a1",
+    label="My Agent",
+    tw_color="blue",
+    accent="#638cff",
+),
+```
+
+2. Add the role to `AgentRole` enum in `contracts.py`
+3. Add a specialist prompt in `config.py` → `SPECIALIST_PROMPTS`
+4. Add a description in `pm_agent.py` → `_ROLE_DESCRIPTIONS`
+5. Update the org hierarchy in `org_hierarchy.py` if needed
+
+## Creating a New Runtime
+
+See `agent_runtime.py` for the runtime abstraction layer. Hivemind supports multiple runtimes:
+
+| Runtime | Description |
+|---------|-------------|
+| Claude Code | Default — Anthropic Claude Code SDK |
+| OpenClaw | Open-source AI agent framework |
+| Bash | Direct shell command execution |
+| HTTP | External API calls |
+
+To add a new runtime, implement the `AgentRuntime` interface and register it in `RuntimeRegistry`.
+
+## Organizational Hierarchy
+
+Each project has a corporate management structure:
+
+```
+CEO (Orchestrator)
+├── CTO (PM)
+│   ├── VP Engineering → Frontend, Backend, Database
+│   ├── VP Quality → Tester, Security, Reviewer
+│   └── VP Research → Researcher, UX
+└── VP Operations → DevOps
+```
+
+See `org_hierarchy.py` for the full implementation.
+
 ## Areas Where Help is Needed
 
-- **Testing**: Expanding test coverage, especially for the DAG executor and orchestrator.
-- **Documentation**: Improving inline code documentation and user guides.
-- **Frontend**: UI/UX improvements, accessibility, mobile responsiveness.
-- **Integrations**: Adding support for more AI providers beyond Claude Code.
-- **Performance**: Optimizing the orchestrator for large projects with many parallel tasks.
+- **Agent Runtimes**: Adding support for more AI providers (Gemini, GPT, local models)
+- **Project Templates**: New templates (e-commerce, blog, mobile app, CLI tool)
+- **Testing**: Expanding test coverage, especially for the DAG executor and orchestrator
+- **Documentation**: Improving inline code documentation and user guides
+- **Frontend**: UI/UX improvements, accessibility, mobile responsiveness
+- **Dashboard**: New visualizations, org chart improvements, analytics
+- **Performance**: Optimizing the orchestrator for large projects with many parallel tasks
 
 ## Questions?
 

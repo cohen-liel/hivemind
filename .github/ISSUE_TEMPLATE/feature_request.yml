@@ -37,12 +37,14 @@ body:
       label: Area
       description: Which part of the project does this relate to?
       options:
-        - Dashboard UI
-        - Agent Orchestration
-        - DAG Executor
-        - Project Management
+        - Agent System (new agents, runtimes, prompts)
+        - DAG Engine (task execution, scheduling)
+        - Dashboard UI (visualizations, UX)
+        - Org Hierarchy (management structure)
+        - CLI / Onboarding
+        - Templates
+        - API / Integrations
         - Authentication / Security
-        - Remote Access / Tunnel
         - Documentation
         - Other
     validations:

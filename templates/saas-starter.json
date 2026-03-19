@@ -1,0 +1,91 @@
+{
+  "name": "SaaS Starter",
+  "description": "Full-stack SaaS application with authentication, billing, and dashboard. React + FastAPI + PostgreSQL.",
+  "version": "1.0.0",
+  "author": "Hivemind",
+  "tags": ["saas", "fullstack", "auth", "billing", "dashboard"],
+  "estimated_time_minutes": 30,
+  "team_size": "full",
+  "prompt": "Build a complete SaaS starter application with the following features:\n\n1. **Authentication**: JWT-based auth with login, register, password reset, email verification\n2. **User Dashboard**: Protected dashboard with sidebar navigation, user profile, settings\n3. **Billing Integration**: Stripe integration with subscription plans (Free, Pro, Enterprise), usage tracking\n4. **Admin Panel**: Admin-only section with user management, analytics, system health\n5. **API**: RESTful API with OpenAPI docs, rate limiting, API key management\n6. **Database**: PostgreSQL with migrations (Alembic), user model, subscription model, audit log\n7. **Frontend**: React + TypeScript + Tailwind CSS, responsive design, dark mode\n8. **DevOps**: Docker Compose, health checks, environment configuration\n\nTech stack: React 18 + TypeScript + Tailwind CSS (frontend), FastAPI + Python 3.11 (backend), PostgreSQL (database), Stripe (billing), JWT (auth).",
+  "dag_override": {
+    "tasks": [
+      {
+        "id": "t1",
+        "title": "Database schema and models",
+        "role": "database_expert",
+        "dependencies": [],
+        "artifacts": ["schema.sql", "models.py", "migrations/"]
+      },
+      {
+        "id": "t2",
+        "title": "Authentication API (JWT, login, register, reset)",
+        "role": "backend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["auth/routes.py", "auth/jwt.py", "auth/models.py"]
+      },
+      {
+        "id": "t3",
+        "title": "Billing API (Stripe integration, subscriptions)",
+        "role": "backend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["billing/routes.py", "billing/stripe_client.py"]
+      },
+      {
+        "id": "t4",
+        "title": "Core API (users, admin, health)",
+        "role": "backend_developer",
+        "dependencies": ["t1", "t2"],
+        "artifacts": ["api/users.py", "api/admin.py", "api/health.py"]
+      },
+      {
+        "id": "t5",
+        "title": "Frontend: Auth pages (login, register, reset)",
+        "role": "frontend_developer",
+        "dependencies": ["t2"],
+        "artifacts": ["src/pages/Login.tsx", "src/pages/Register.tsx"]
+      },
+      {
+        "id": "t6",
+        "title": "Frontend: Dashboard and settings",
+        "role": "frontend_developer",
+        "dependencies": ["t4"],
+        "artifacts": ["src/pages/Dashboard.tsx", "src/pages/Settings.tsx"]
+      },
+      {
+        "id": "t7",
+        "title": "Frontend: Billing and subscription pages",
+        "role": "frontend_developer",
+        "dependencies": ["t3", "t5"],
+        "artifacts": ["src/pages/Billing.tsx", "src/pages/Plans.tsx"]
+      },
+      {
+        "id": "t8",
+        "title": "Docker Compose and deployment config",
+        "role": "devops",
+        "dependencies": ["t1"],
+        "artifacts": ["docker-compose.yml", "Dockerfile", ".env.example"]
+      },
+      {
+        "id": "t9",
+        "title": "End-to-end tests",
+        "role": "test_engineer",
+        "dependencies": ["t2", "t3", "t4", "t5", "t6", "t7"],
+        "artifacts": ["tests/"]
+      },
+      {
+        "id": "t10",
+        "title": "Security audit",
+        "role": "security_auditor",
+        "dependencies": ["t2", "t3", "t4"],
+        "artifacts": ["SECURITY_AUDIT.md"]
+      },
+      {
+        "id": "t11",
+        "title": "Code review and final cleanup",
+        "role": "reviewer",
+        "dependencies": ["t9", "t10"],
+        "artifacts": ["REVIEW.md"]
+      }
+    ]
+  }
+}

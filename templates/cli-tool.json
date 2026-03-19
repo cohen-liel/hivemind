@@ -1,0 +1,42 @@
+{
+  "name": "CLI Tool",
+  "description": "Professional command-line tool with subcommands, config files, colored output, and tests. Python + Click.",
+  "version": "1.0.0",
+  "author": "Hivemind",
+  "tags": ["cli", "python", "tool", "click"],
+  "estimated_time_minutes": 10,
+  "team_size": "solo",
+  "prompt": "Build a professional Python CLI tool with:\n\n1. **Click framework** with subcommands, options, and arguments\n2. **Config file**: YAML/TOML config with defaults, env var overrides\n3. **Output**: Rich colored output, progress bars, tables\n4. **Logging**: Configurable log levels, file and console handlers\n5. **Error handling**: Graceful error messages, exit codes\n6. **Packaging**: pyproject.toml, entry points, pip installable\n7. **Tests**: pytest with Click testing utilities, 80%+ coverage\n8. **Documentation**: --help for all commands, README with examples\n\nTech stack: Python 3.11, Click, Rich, PyYAML, pytest.",
+  "dag_override": {
+    "tasks": [
+      {
+        "id": "t1",
+        "title": "Project structure, CLI framework, and config",
+        "role": "backend_developer",
+        "dependencies": [],
+        "artifacts": ["src/cli/", "pyproject.toml", "config.yaml"]
+      },
+      {
+        "id": "t2",
+        "title": "Subcommands and core logic",
+        "role": "backend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["src/commands/", "src/core/"]
+      },
+      {
+        "id": "t3",
+        "title": "Tests and documentation",
+        "role": "test_engineer",
+        "dependencies": ["t2"],
+        "artifacts": ["tests/", "README.md"]
+      },
+      {
+        "id": "t4",
+        "title": "Final review",
+        "role": "reviewer",
+        "dependencies": ["t3"],
+        "artifacts": ["REVIEW.md"]
+      }
+    ]
+  }
+}

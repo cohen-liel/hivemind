@@ -6,6 +6,9 @@
 
 - [ ] Bug fix (non-breaking change that fixes an issue)
 - [ ] New feature (non-breaking change that adds functionality)
+- [ ] New agent (adds a specialist agent to the team)
+- [ ] New runtime (adds support for a new AI provider)
+- [ ] New template (adds a project template)
 - [ ] Breaking change (fix or feature that would cause existing functionality to change)
 - [ ] Documentation update
 - [ ] Refactoring (no functional changes)
@@ -13,6 +16,17 @@
 ## Related Issues
 
 <!-- Link any related issues: Fixes #123, Closes #456 -->
+
+## Component(s) Affected
+
+- [ ] Dashboard UI
+- [ ] DAG Engine
+- [ ] Agent System
+- [ ] Org Hierarchy
+- [ ] CLI (create-hivemind)
+- [ ] API / Backend
+- [ ] Templates
+- [ ] Documentation
 
 ## Changes Made
 

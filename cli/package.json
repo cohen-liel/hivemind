@@ -1,0 +1,44 @@
+{
+  "name": "create-hivemind",
+  "version": "1.0.0",
+  "description": "One prompt. A full AI engineering team. Go lie on the couch. 🧠",
+  "author": "Liel Cohen",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cohen-liel/hivemind.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/cohen-liel/hivemind",
+  "keywords": [
+    "hivemind",
+    "ai",
+    "agents",
+    "claude-code",
+    "openclaw",
+    "multi-agent",
+    "orchestration",
+    "engineering-team",
+    "developer-tools",
+    "ai-coding"
+  ],
+  "bin": {
+    "create-hivemind": "./bin/create-hivemind.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "templates/"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "inquirer": "^9.3.0",
+    "ora": "^8.0.1",
+    "gradient-string": "^2.0.2",
+    "figlet": "^1.7.0"
+  }
+}

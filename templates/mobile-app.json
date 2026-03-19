@@ -1,0 +1,70 @@
+{
+  "name": "Mobile App (React Native)",
+  "description": "Cross-platform mobile app with navigation, auth, API integration, and native features. Expo + React Native.",
+  "version": "1.0.0",
+  "author": "Hivemind",
+  "tags": ["mobile", "react-native", "expo", "ios", "android"],
+  "estimated_time_minutes": 25,
+  "team_size": "full",
+  "prompt": "Build a cross-platform mobile application with:\n\n1. **Expo + React Native** with TypeScript\n2. **Navigation**: React Navigation with tab bar, stack navigator, drawer\n3. **Authentication**: Login/register screens, secure token storage, biometric auth\n4. **API Integration**: Axios/fetch with interceptors, offline support, caching\n5. **Screens**: Home feed, Detail view, Profile, Settings, Search\n6. **Components**: Cards, Lists, Pull-to-refresh, Infinite scroll, Bottom sheets\n7. **State**: Zustand for global state, React Query for server state\n8. **Native Features**: Push notifications, camera, image picker, haptic feedback\n9. **Theming**: Dark/light mode, consistent design tokens\n10. **Testing**: Jest + React Native Testing Library\n\nTech stack: Expo SDK 51, React Native, TypeScript, React Navigation, Zustand.",
+  "dag_override": {
+    "tasks": [
+      {
+        "id": "t1",
+        "title": "Project setup, navigation, and theming",
+        "role": "frontend_developer",
+        "dependencies": [],
+        "artifacts": ["app/", "components/", "theme/"]
+      },
+      {
+        "id": "t2",
+        "title": "Authentication flow and secure storage",
+        "role": "frontend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["app/(auth)/", "services/auth.ts"]
+      },
+      {
+        "id": "t3",
+        "title": "Core screens and components",
+        "role": "frontend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["app/(tabs)/", "components/"]
+      },
+      {
+        "id": "t4",
+        "title": "API integration and state management",
+        "role": "backend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["services/api.ts", "stores/"]
+      },
+      {
+        "id": "t5",
+        "title": "Native features (notifications, camera)",
+        "role": "frontend_developer",
+        "dependencies": ["t3"],
+        "artifacts": ["services/notifications.ts", "services/camera.ts"]
+      },
+      {
+        "id": "t6",
+        "title": "Tests",
+        "role": "test_engineer",
+        "dependencies": ["t2", "t3", "t4", "t5"],
+        "artifacts": ["__tests__/"]
+      },
+      {
+        "id": "t7",
+        "title": "UX review",
+        "role": "ux_critic",
+        "dependencies": ["t3", "t5"],
+        "artifacts": ["UX_REVIEW.md"]
+      },
+      {
+        "id": "t8",
+        "title": "Final review",
+        "role": "reviewer",
+        "dependencies": ["t6", "t7"],
+        "artifacts": ["REVIEW.md"]
+      }
+    ]
+  }
+}
