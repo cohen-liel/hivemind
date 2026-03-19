@@ -15,11 +15,12 @@ services:
     environment:
       - CLAUDE_PROJECTS_DIR=/projects
       - CONVERSATION_STORE_DIR=/app/data
+      - LOG_FORMAT=${LOG_FORMAT:-json}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 30s
       timeout: 5s
-      start_period: 10s
+      start_period: 15s
       retries: 3
     deploy:
       resources:
