@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import type { AgentState as AgentStateType, LoopProgress, ActivityEntry } from '../types';
 import type { HealingEvent, DesktopTab } from '../reducers/projectReducer';
 import type { AgentMetric } from '../hooks/useAgentMetrics';
@@ -226,6 +226,347 @@ export const DesktopTabBar = React.memo(function DesktopTabBar({
 });
 
 // ============================================================================
+// AgentOrchestraViz — Circular SVG network with animated data-stream lines
+// ============================================================================
+
+interface OrchestraVizProps {
+  agents: AgentStateType[];
+  onSelectAgent: (agent: string | null) => void;
+  selectedAgent: string | null;
+}
+
+interface NodePosition {
+  x: number;
+  y: number;
+  name: string;
+  state: string;
+}
+
+interface ConnectorLine {
+  from: NodePosition;
+  to: NodePosition;
+  key: string;
+}
+
+const VIZ_SIZE = 280;
+const VIZ_CENTER = VIZ_SIZE / 2;
+const ORBIT_RADIUS = 90;
+const NODE_RADIUS = 22;
+const ORBITAL_RING_RADIUS = NODE_RADIUS + 8;
+const MAX_ACTIVE_ANIMATIONS = 12;
+
+const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
+  agents,
+  onSelectAgent,
+  selectedAgent,
+}: OrchestraVizProps): React.ReactElement | null {
+  const subAgents = agents.filter(a => a.name !== 'orchestrator');
+
+  const nodePositions = useMemo((): NodePosition[] => {
+    if (subAgents.length === 0) return [];
+    const count = subAgents.length;
+    return subAgents.map((agent, i) => {
+      const angle = (2 * Math.PI * i) / count - Math.PI / 2;
+      return {
+        x: VIZ_CENTER + ORBIT_RADIUS * Math.cos(angle),
+        y: VIZ_CENTER + ORBIT_RADIUS * Math.sin(angle),
+        name: agent.name,
+        state: agent.state,
+      };
+    });
+  }, [subAgents.length, ...subAgents.map(a => `${a.name}:${a.state}`)]);
+
+  const connectorLines = useMemo((): ConnectorLine[] => {
+    const lines: ConnectorLine[] = [];
+    const posMap = new Map(nodePositions.map(n => [n.name, n]));
+
+    for (const agent of subAgents) {
+      if (agent.delegated_from && (agent.state === 'working' || agent.state === 'done')) {
+        const fromPos = posMap.get(agent.delegated_from);
+        const toPos = posMap.get(agent.name);
+        if (fromPos && toPos) {
+          lines.push({
+            from: fromPos,
+            to: toPos,
+            key: `${agent.delegated_from}->${agent.name}`,
+          });
+        }
+      }
+    }
+
+    // Also connect done→working pairs by sequence (adjacency in the list)
+    const doneNames = new Set(subAgents.filter(a => a.state === 'done').map(a => a.name));
+    const workingNames = subAgents.filter(a => a.state === 'working');
+    for (const working of workingNames) {
+      if (working.delegated_from) continue; // already handled
+      // Connect from nearest done agent
+      for (const doneName of doneNames) {
+        const fromPos = posMap.get(doneName);
+        const toPos = posMap.get(working.name);
+        if (fromPos && toPos) {
+          const lineKey = `${doneName}->${working.name}`;
+          if (!lines.some(l => l.key === lineKey)) {
+            lines.push({ from: fromPos, to: toPos, key: lineKey });
+          }
+        }
+      }
+    }
+
+    return lines.slice(0, MAX_ACTIVE_ANIMATIONS);
+  }, [nodePositions, subAgents]);
+
+  const centerLabel = useMemo((): string => {
+    const working = subAgents.filter(a => a.state === 'working');
+    const done = subAgents.filter(a => a.state === 'done');
+    if (working.length > 0) return `${working.length} active`;
+    if (done.length > 0) return `${done.length} done`;
+    return 'idle';
+  }, [subAgents]);
+
+  if (subAgents.length === 0) return null;
+
+  return (
+    <div className="flex justify-center animate-[fadeSlideIn_0.4s_ease-out]">
+      <svg
+        width={VIZ_SIZE}
+        height={VIZ_SIZE}
+        viewBox={`0 0 ${VIZ_SIZE} ${VIZ_SIZE}`}
+        className="orchestra-viz"
+        aria-label="Agent orchestra visualization"
+        role="img"
+      >
+        <defs>
+          <filter id="glow-active" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+
+        {/* Connector lines between agents — pointer-events none so clicks pass through */}
+        <g style={{ pointerEvents: 'none' }}>
+          {connectorLines.map((line, idx) => {
+            const dx = line.to.x - line.from.x;
+            const dy = line.to.y - line.from.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const ux = dx / dist;
+            const uy = dy / dist;
+            // Shorten line to not overlap with node circles
+            const x1 = line.from.x + ux * (NODE_RADIUS + 2);
+            const y1 = line.from.y + uy * (NODE_RADIUS + 2);
+            const x2 = line.to.x - ux * (NODE_RADIUS + 2);
+            const y2 = line.to.y - uy * (NODE_RADIUS + 2);
+
+            return (
+              <g key={line.key}>
+                {/* Glow under-line */}
+                <line
+                  x1={x1} y1={y1} x2={x2} y2={y2}
+                  stroke="var(--accent-blue)"
+                  strokeWidth="3"
+                  strokeOpacity="0.1"
+                  strokeLinecap="round"
+                />
+                {/* Animated dash line */}
+                <line
+                  x1={x1} y1={y1} x2={x2} y2={y2}
+                  className="orchestra-connector-line"
+                  stroke="var(--accent-blue)"
+                  strokeWidth="1.5"
+                  strokeOpacity="0.6"
+                  strokeDasharray="6 4"
+                  strokeLinecap="round"
+                  style={{
+                    animation: `dashFlow ${1.5 + idx * 0.2}s linear infinite`,
+                  }}
+                />
+                {/* Flowing dot along the line */}
+                <circle r="2.5" fill="var(--accent-blue)" opacity="0.7" filter="url(#glow-active)">
+                  <animateMotion
+                    dur={`${2 + idx * 0.3}s`}
+                    repeatCount="indefinite"
+                    path={`M${x1},${y1} L${x2},${y2}`}
+                  />
+                </circle>
+              </g>
+            );
+          })}
+        </g>
+
+        {/* Center status text */}
+        <text
+          x={VIZ_CENTER}
+          y={VIZ_CENTER - 4}
+          textAnchor="middle"
+          className="orchestra-center-label"
+          fill="var(--text-muted)"
+          fontSize="10"
+          fontFamily="var(--font-mono)"
+          fontWeight="600"
+          letterSpacing="0.05em"
+          style={{ textTransform: 'uppercase' } as React.CSSProperties}
+        >
+          {centerLabel}
+        </text>
+        <text
+          x={VIZ_CENTER}
+          y={VIZ_CENTER + 10}
+          textAnchor="middle"
+          fill="var(--text-muted)"
+          fontSize="8"
+          fontFamily="var(--font-mono)"
+          opacity="0.6"
+        >
+          ORCHESTRA
+        </text>
+
+        {/* Agent nodes */}
+        {nodePositions.map((node) => {
+          const agent = subAgents.find(a => a.name === node.name);
+          if (!agent) return null;
+          const accent = getAgentAccent(agent.name);
+          const isActive = agent.state === 'working';
+          const isDone = agent.state === 'done';
+          const isError = agent.state === 'error';
+          const isSelected = selectedAgent === agent.name;
+          const icon = AGENT_ICONS[agent.name] || '\u{1F527}';
+
+          return (
+            <g
+              key={node.name}
+              style={{ cursor: 'pointer' }}
+              onClick={() => onSelectAgent(agent.name)}
+              role="button"
+              tabIndex={0}
+              aria-label={`${AGENT_LABELS[agent.name] || agent.name}: ${agent.state}`}
+            >
+              {/* Orbital glow ring — only for active agents, uses --glow-blue */}
+              {isActive && (
+                <circle
+                  cx={node.x}
+                  cy={node.y}
+                  r={ORBITAL_RING_RADIUS}
+                  fill="none"
+                  className="orchestra-orbital-ring"
+                  stroke={accent.color}
+                  strokeWidth="1.5"
+                  strokeDasharray="8 6"
+                  strokeOpacity="0.5"
+                  style={{
+                    transformOrigin: `${node.x}px ${node.y}px`,
+                    animation: 'orbitalSpin 4s linear infinite',
+                    filter: 'drop-shadow(0 0 6px var(--glow-blue))',
+                  }}
+                />
+              )}
+              {/* Active glow aura — --glow-blue highlight */}
+              {isActive && (
+                <circle
+                  cx={node.x}
+                  cy={node.y}
+                  r={NODE_RADIUS + 3}
+                  fill="none"
+                  stroke={accent.color}
+                  strokeWidth="2"
+                  strokeOpacity="0.3"
+                  filter="url(#glow-active)"
+                  className="animate-pulse"
+                  style={{ filter: 'drop-shadow(0 0 10px var(--glow-blue))' }}
+                />
+              )}
+              {/* Node background circle */}
+              <circle
+                cx={node.x}
+                cy={node.y}
+                r={NODE_RADIUS}
+                fill="var(--bg-elevated)"
+                stroke={
+                  isActive ? accent.color :
+                  isDone ? 'var(--accent-green)' :
+                  isError ? 'var(--accent-red)' :
+                  'var(--border-subtle)'
+                }
+                strokeWidth={isActive || isSelected ? 2 : 1}
+                strokeOpacity={isActive ? 0.8 : isDone ? 0.5 : isError ? 0.5 : 0.3}
+                style={{
+                  filter: isActive
+                    ? 'drop-shadow(0 0 10px var(--glow-blue))'
+                    : isDone
+                    ? 'drop-shadow(0 0 6px var(--glow-green))'
+                    : 'none',
+                  transition: 'all 0.3s ease',
+                }}
+              />
+              {/* Done glow ring — uses --glow-green */}
+              {isDone && (
+                <circle
+                  cx={node.x}
+                  cy={node.y}
+                  r={NODE_RADIUS + 3}
+                  fill="none"
+                  stroke="var(--accent-green)"
+                  strokeWidth="1"
+                  strokeOpacity="0.25"
+                  style={{ filter: 'drop-shadow(0 0 6px var(--glow-green))' }}
+                />
+              )}
+              {/* Agent icon */}
+              <text
+                x={node.x}
+                y={node.y + 1}
+                textAnchor="middle"
+                dominantBaseline="central"
+                fontSize="16"
+                style={{
+                  opacity: agent.state === 'idle' ? 0.4 : 1,
+                  transition: 'opacity 0.3s ease',
+                }}
+              >
+                {icon}
+              </text>
+              {/* Agent label */}
+              <text
+                x={node.x}
+                y={node.y + NODE_RADIUS + 14}
+                textAnchor="middle"
+                fontSize="9"
+                fontWeight="600"
+                fill={
+                  isActive ? accent.color :
+                  isDone ? 'var(--accent-green)' :
+                  isError ? 'var(--accent-red)' :
+                  'var(--text-muted)'
+                }
+                style={{ transition: 'fill 0.3s ease' }}
+              >
+                {AGENT_LABELS[agent.name] || agent.name}
+              </text>
+              {/* Status indicator dot */}
+              <circle
+                cx={node.x + NODE_RADIUS - 4}
+                cy={node.y - NODE_RADIUS + 4}
+                r="3.5"
+                fill={
+                  isActive ? accent.color :
+                  isDone ? 'var(--accent-green)' :
+                  isError ? 'var(--accent-red)' :
+                  'var(--text-muted)'
+                }
+                stroke="var(--bg-elevated)"
+                strokeWidth="1.5"
+                className={isActive ? 'animate-pulse' : ''}
+              />
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+});
+
+// ============================================================================
 // HivemindTabContent — Agent cards + metrics + self-healing (merged view)
 // ============================================================================
 
@@ -241,6 +582,7 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
   const doneAgents = agentStateList.filter(a => a.state === 'done' && a.name !== 'orchestrator');
   const errorAgents = agentStateList.filter(a => a.state === 'error' && a.name !== 'orchestrator');
   const isRunning = projectStatus === 'running';
+  const hasActiveAgents = agentStateList.some(a => a.state !== 'idle' && a.name !== 'orchestrator');
 
   return (
     <div className="p-6 space-y-5">
@@ -280,6 +622,15 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
             })}
           </div>
         </div>
+      )}
+
+      {/* Agent Orchestra Visualization — circular SVG network */}
+      {hasActiveAgents && agentStateList.filter(a => a.name !== 'orchestrator').length > 1 && (
+        <AgentOrchestraViz
+          agents={agentStateList}
+          onSelectAgent={onSelectAgent}
+          selectedAgent={selectedAgent}
+        />
       )}
 
       {/* Agent cards grid */}

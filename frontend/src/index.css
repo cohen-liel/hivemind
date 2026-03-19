@@ -571,6 +571,24 @@ input, textarea, select {
   animation: dashFlow 3s linear infinite;
 }
 
+/* ===== Agent Orchestra Visualization ===== */
+
+.orchestra-viz {
+  overflow: visible;
+}
+
+.orchestra-connector-line {
+  will-change: stroke-dashoffset;
+}
+
+.orchestra-orbital-ring {
+  will-change: transform;
+}
+
+.orchestra-center-label {
+  user-select: none;
+}
+
 /* Empty state node pulse */
 @keyframes nodePulse {
   0%, 100% { r: 8; opacity: 0.3; }
