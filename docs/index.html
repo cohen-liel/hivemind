@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hivemind — One prompt. A full AI engineering team.</title>
+  <meta name="description" content="Open-source AI engineering team that builds production code while you sleep. One prompt, parallel agents, tested & committed code." />
+  <meta property="og:title" content="Hivemind — One prompt. A full AI engineering team." />
+  <meta property="og:description" content="Describe a feature. Hivemind deploys a PM, developers, reviewer, and QA — all working in parallel — and delivers tested, committed code." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://hivemind.dev" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Hivemind — One prompt. A full AI engineering team." />
+  <meta name="twitter:description" content="Open-source AI engineering team. One prompt → parallel agents → production code." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #09090b;
+      --bg-card: #18181b;
+      --bg-card-hover: #1f1f23;
+      --border: #27272a;
+      --text: #fafafa;
+      --text-muted: #a1a1aa;
+      --text-dim: #71717a;
+      --accent: #8b5cf6;
+      --accent-glow: rgba(139, 92, 246, 0.3);
+      --green: #22c55e;
+      --red: #ef4444;
+      --blue: #3b82f6;
+      --orange: #f97316;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ─── Noise overlay ─── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─── Glow orbs ─── */
+    .glow-orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.15;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .glow-orb-1 { width: 600px; height: 600px; background: var(--accent); top: -200px; left: -200px; }
+    .glow-orb-2 { width: 500px; height: 500px; background: #3b82f6; top: 200px; right: -200px; }
+    .glow-orb-3 { width: 400px; height: 400px; background: #8b5cf6; bottom: -100px; left: 30%; }
+
+    /* ─── Container ─── */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ─── Nav ─── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(9, 9, 11, 0.8);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    nav .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      font-size: 1.25rem;
+      text-decoration: none;
+      color: var(--text);
+    }
+
+    .nav-logo span { font-size: 1.5rem; }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--text); }
+
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 20px;
+      background: var(--accent);
+      color: white;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .nav-cta:hover {
+      background: #7c3aed;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    /* ─── Hero ─── */
+    .hero {
+      padding: 160px 0 100px;
+      text-align: center;
+      position: relative;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+      border-radius: 100px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--accent);
+      margin-bottom: 32px;
+    }
+
+    .hero-badge .dot {
+      width: 6px;
+      height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .hero h1 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-weight: 900;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin-bottom: 24px;
+      background: linear-gradient(135deg, #fff 0%, #a1a1aa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero h1 em {
+      font-style: normal;
+      background: linear-gradient(135deg, var(--accent), #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-sub {
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      color: var(--text-muted);
+      max-width: 640px;
+      margin: 0 auto 48px;
+      line-height: 1.7;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 48px;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 32px;
+      background: var(--accent);
+      color: white;
+      border-radius: 12px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+      border: none;
+      cursor: pointer;
+    }
+
+    .btn-primary:hover {
+      background: #7c3aed;
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px var(--accent-glow);
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 32px;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-card);
+      border-color: var(--text-dim);
+    }
+
+    /* ─── Install box ─── */
+    .install-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .install-box:hover {
+      border-color: var(--accent);
+      background: var(--bg-card-hover);
+    }
+
+    .install-box code {
+      color: var(--green);
+      font-weight: 500;
+    }
+
+    .install-box .copy-btn {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: color 0.2s;
+    }
+
+    .install-box .copy-btn:hover { color: var(--text); }
+
+    /* ─── Tagline ─── */
+    .tagline {
+      font-size: 1.1rem;
+      color: var(--text-dim);
+      font-style: italic;
+      margin-top: 16px;
+    }
+
+    .tagline strong {
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    /* ─── Section ─── */
+    section {
+      padding: 100px 0;
+      position: relative;
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 64px;
+    }
+
+    .section-header h2 {
+      font-size: clamp(1.75rem, 4vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+
+    .section-header p {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    /* ─── How it works ─── */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+
+    .step {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px;
+      transition: all 0.3s;
+    }
+
+    .step:hover {
+      border-color: var(--accent);
+      transform: translateY(-4px);
+      box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+    }
+
+    .step-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 0.9rem;
+      color: var(--accent);
+      margin-bottom: 20px;
+    }
+
+    .step h3 {
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    .step p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+
+    /* ─── Features grid ─── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      transition: all 0.3s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .feature-icon {
+      font-size: 1.5rem;
+      margin-bottom: 16px;
+    }
+
+    .feature-card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .feature-card p {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      line-height: 1.6;
+    }
+
+    /* ─── Comparison table ─── */
+    .comparison {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    .comparison table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .comparison th {
+      padding: 16px 24px;
+      text-align: left;
+      font-weight: 700;
+      font-size: 0.875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .comparison td {
+      padding: 16px 24px;
+      font-size: 0.95rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    .comparison tr:last-child td { border-bottom: none; }
+
+    .comparison .without { color: var(--text-dim); }
+    .comparison .with { color: var(--text); }
+
+    /* ─── Agent roster ─── */
+    .agents-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 16px;
+    }
+
+    .agent-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+      transition: all 0.3s;
+    }
+
+    .agent-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .agent-emoji {
+      font-size: 2rem;
+      margin-bottom: 12px;
+    }
+
+    .agent-card h4 {
+      font-size: 0.9rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .agent-card p {
+      color: var(--text-dim);
+      font-size: 0.8rem;
+    }
+
+    /* ─── Compatible with ─── */
+    .compat-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 32px;
+      flex-wrap: wrap;
+      padding: 40px 0;
+    }
+
+    .compat-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      font-weight: 500;
+    }
+
+    .compat-item span { font-size: 1.3rem; }
+
+    /* ─── CTA section ─── */
+    .cta-section {
+      text-align: center;
+      padding: 120px 0;
+    }
+
+    .cta-section h2 {
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 900;
+      margin-bottom: 16px;
+    }
+
+    .cta-section p {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      margin-bottom: 40px;
+    }
+
+    /* ─── Footer ─── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 0;
+    }
+
+    footer .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    footer p {
+      color: var(--text-dim);
+      font-size: 0.875rem;
+    }
+
+    footer a {
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    footer a:hover { color: var(--text); }
+
+    .footer-links {
+      display: flex;
+      gap: 24px;
+      list-style: none;
+    }
+
+    .footer-links a {
+      color: var(--text-dim);
+      font-size: 0.875rem;
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 768px) {
+      .steps { grid-template-columns: 1fr; }
+      .features-grid { grid-template-columns: 1fr; }
+      .nav-links { display: none; }
+      footer .container { flex-direction: column; gap: 16px; text-align: center; }
+      .comparison td, .comparison th { padding: 12px 16px; font-size: 0.85rem; }
+    }
+
+    @media (max-width: 1024px) {
+      .features-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* ─── Animations ─── */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+
+    .fade-in.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <div class="container">
+      <a href="#" class="nav-logo">
+        <span>🧠</span> Hivemind
+      </a>
+      <ul class="nav-links">
+        <li><a href="#how-it-works">How It Works</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#agents">Agents</a></li>
+        <li><a href="https://github.com/cohen-liel/hivemind" target="_blank">GitHub</a></li>
+      </ul>
+      <a href="https://github.com/cohen-liel/hivemind" class="nav-cta" target="_blank">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="glow-orb glow-orb-1"></div>
+    <div class="glow-orb glow-orb-2"></div>
+    <div class="container">
+      <div class="hero-badge">
+        <span class="dot"></span>
+        Open Source — Apache 2.0
+      </div>
+      <h1>One prompt.<br/><em>A full AI engineering team.</em></h1>
+      <p class="hero-sub">
+        Describe a feature in plain English. Hivemind deploys a PM, developers, reviewer, and QA — all working in parallel — and delivers tested, committed code.
+      </p>
+      <div class="hero-actions">
+        <a href="https://github.com/cohen-liel/hivemind" class="btn-primary" target="_blank">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          Get Started
+        </a>
+        <a href="#how-it-works" class="btn-secondary">See How It Works</a>
+      </div>
+      <div class="install-box" onclick="navigator.clipboard.writeText('npx create-hivemind@latest'); this.querySelector('.copy-btn').textContent='Copied!'">
+        <span>$</span>
+        <code>npx create-hivemind@latest</code>
+        <button class="copy-btn">Copy</button>
+      </div>
+      <p class="tagline"><strong>If Claude Code is a developer,</strong> Hivemind is the engineering team.</p>
+    </div>
+  </section>
+
+  <!-- Compatible with -->
+  <section style="padding: 20px 0 60px;">
+    <div class="container">
+      <div class="compat-row">
+        <div class="compat-item"><span>🤖</span> Claude Code</div>
+        <div class="compat-item"><span>🦞</span> OpenClaw</div>
+        <div class="compat-item"><span>🧪</span> Codex</div>
+        <div class="compat-item"><span>⌨️</span> Cursor</div>
+        <div class="compat-item"><span>🐚</span> Bash</div>
+        <div class="compat-item"><span>🌐</span> HTTP</div>
+      </div>
+      <p style="text-align: center; color: var(--text-dim); font-size: 0.9rem; font-style: italic;">If it can write code, it's hired.</p>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how-it-works">
+    <div class="container">
+      <div class="section-header fade-in">
+        <h2>How It Works</h2>
+        <p>Three steps. One prompt to production code.</p>
+      </div>
+      <div class="steps">
+        <div class="step fade-in">
+          <div class="step-number">01</div>
+          <h3>Describe the feature</h3>
+          <p>"Add JWT authentication with a login page and protected routes."</p>
+          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Plain English. No config files. No YAML.</p>
+        </div>
+        <div class="step fade-in">
+          <div class="step-number">02</div>
+          <h3>Watch the team work</h3>
+          <p>PM plans the DAG. Frontend, Backend, and DB agents work in parallel. Tests run. Reviewer checks quality.</p>
+          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Real-time streaming dashboard. Mobile-friendly.</p>
+        </div>
+        <div class="step fade-in">
+          <div class="step-number">03</div>
+          <h3>Get production code</h3>
+          <p>Tested, reviewed, committed. Open your IDE and it's already there. Go lie on the couch.</p>
+          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Self-healing. If something fails, it fixes itself.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features">
+    <div class="container">
+      <div class="section-header fade-in">
+        <h2>Features</h2>
+        <p>Everything you need to run an AI engineering team.</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🧩</div>
+          <h3>DAG-Based Planning</h3>
+          <p>Every feature is broken into a dependency-aware task graph. Independent tasks run in parallel.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🔄</div>
+          <h3>Self-Healing</h3>
+          <p>Failed tasks are classified by failure type and retried with targeted fixes — not blind restarts.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🔀</div>
+          <h3>Artifact Flow</h3>
+          <p>Agents pass typed artifacts (API contracts, schemas, test reports) to downstream agents.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🧠</div>
+          <h3>Proactive Memory</h3>
+          <p>Past failures and lessons are injected into agent prompts. The team learns across sessions.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🛡️</div>
+          <h3>Code Review Gate</h3>
+          <p>A reviewer agent checks correctness, consistency, and code quality before the final commit.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">⚡</div>
+          <h3>Smart Concurrency</h3>
+          <p>Reader agents run in parallel. Writer agents are serialized when file scopes overlap.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">💰</div>
+          <h3>Zero Extra Cost</h3>
+          <p>No API keys needed. Runs on your existing Claude Code CLI subscription. No token charges.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">📱</div>
+          <h3>Mobile Dashboard</h3>
+          <p>Real-time streaming, DAG progress, file diffs, cost analytics — all from your phone.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🔌</div>
+          <h3>Circuit Breaker</h3>
+          <p>SDK client prevents cascade failures when the LLM is overloaded. Other agents keep working.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Comparison -->
+  <section>
+    <div class="container">
+      <div class="section-header fade-in">
+        <h2>Before & After</h2>
+        <p>What changes when you add Hivemind to your workflow.</p>
+      </div>
+      <div class="comparison fade-in">
+        <table>
+          <thead>
+            <tr>
+              <th style="color: var(--red);">Without Hivemind</th>
+              <th style="color: var(--green);">With Hivemind</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="without">You ask Claude Code to build a feature. It works on one file at a time, loses context, and you babysit for hours.</td>
+              <td class="with">Describe the feature once. PM breaks it into a DAG, agents build in parallel, reviewer checks quality, code is committed.</td>
+            </tr>
+            <tr>
+              <td class="without">For a full-stack feature, you manually coordinate backend, frontend, tests, review. Copy-pasting context between sessions.</td>
+              <td class="with">Artifact flow passes API contracts, schemas, and test reports between agents automatically.</td>
+            </tr>
+            <tr>
+              <td class="without">An agent gets stuck in a loop. You kill it, lose context, start over.</td>
+              <td class="with">Self-healing detects stuck agents (5 distinct signals), reassigns, simplifies, or respawns — automatically.</td>
+            </tr>
+            <tr>
+              <td class="without">You can't leave your desk. If you walk away, the agent stops or goes off track.</td>
+              <td class="with">Monitor from your phone. The dashboard streams everything in real-time. Walk away. Go to the couch.</td>
+            </tr>
+            <tr>
+              <td class="without">Agents write buggy code and you only find out after merging.</td>
+              <td class="with">Code review gate catches issues before commit. Test engineer validates. Security auditor checks OWASP Top 10.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Agents -->
+  <section id="agents">
+    <div class="container">
+      <div class="section-header fade-in">
+        <h2>Meet the Team</h2>
+        <p>11 specialist agents. Each one built for a specific job.</p>
+      </div>
+      <div class="agents-grid fade-in">
+        <div class="agent-card">
+          <div class="agent-emoji">📋</div>
+          <h4>PM Agent</h4>
+          <p>Plans the DAG</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🎯</div>
+          <h4>Orchestrator</h4>
+          <p>Routes & manages</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🧠</div>
+          <h4>Memory Agent</h4>
+          <p>Learns from past</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🎨</div>
+          <h4>Frontend Dev</h4>
+          <p>React, TS, Tailwind</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">⚙️</div>
+          <h4>Backend Dev</h4>
+          <p>FastAPI, Python</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🗄️</div>
+          <h4>Database Expert</h4>
+          <p>Schema & queries</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🐳</div>
+          <h4>DevOps</h4>
+          <p>Docker, CI/CD</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🏗️</div>
+          <h4>TS Architect</h4>
+          <p>Advanced patterns</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🧪</div>
+          <h4>Test Engineer</h4>
+          <p>pytest, TDD, e2e</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🔒</div>
+          <h4>Security Auditor</h4>
+          <p>OWASP Top 10</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">👁️</div>
+          <h4>Reviewer</h4>
+          <p>Quality gate</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <div class="container">
+      <div class="glow-orb glow-orb-3"></div>
+      <h2>Ready to ship features,<br/>not babysit agents?</h2>
+      <p>Open source. Self-hosted. No account required.</p>
+      <div class="hero-actions">
+        <a href="https://github.com/cohen-liel/hivemind" class="btn-primary" target="_blank">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          Get Started on GitHub
+        </a>
+      </div>
+      <div class="install-box" style="margin-top: 24px;" onclick="navigator.clipboard.writeText('npx create-hivemind@latest'); this.querySelector('.copy-btn').textContent='Copied!'">
+        <span>$</span>
+        <code>npx create-hivemind@latest</code>
+        <button class="copy-btn">Copy</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <p>Apache 2.0 &copy; 2026 Hivemind. Built for developers who want to ship features, not babysit agents.</p>
+      <ul class="footer-links">
+        <li><a href="https://github.com/cohen-liel/hivemind" target="_blank">GitHub</a></li>
+        <li><a href="https://github.com/cohen-liel/hivemind/issues" target="_blank">Issues</a></li>
+        <li><a href="https://github.com/cohen-liel/hivemind/discussions" target="_blank">Discussions</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <!-- Scroll animations -->
+  <script>
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+          }
+        });
+      },
+      { threshold: 0.1 }
+    );
+
+    document.querySelectorAll('.fade-in').forEach((el) => observer.observe(el));
+  </script>
+
+</body>
+</html>
