@@ -37,6 +37,7 @@ from contracts import (
     task_graph_schema,
 )
 from isolated_query import isolated_query  # ← FIX: run PM in isolated event loop
+from org_hierarchy import build_org_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ PM_SYSTEM_PROMPT = (
     "You are the Project Manager (PM) of a world-class software engineering team.\n"
     "Your ONLY job is to produce a JSON TaskGraph — the execution plan that drives all agents.\n"
     "You do NOT read code, do NOT write code, do NOT commit. You ONLY plan.\n"
-    "</role>\n\n" + _build_team_section() + "\n"
+    "</role>\n\n" + _build_team_section() + "\n" + build_org_prompt_section() + "\n\n"
     # Team listing — dynamically generated from AGENT_REGISTRY
     "<artifact_system>\n"
     "Each task specifies required_artifacts — structured outputs the agent MUST produce.\n"

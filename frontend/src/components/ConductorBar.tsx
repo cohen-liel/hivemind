@@ -163,10 +163,15 @@ export default function ConductorBar({
         {/* Delete project button */}
         <button
           onClick={() => {
-            if (confirm(`Remove "${projectName}" from dashboard?\n\nThis only removes it from the list — project files are NOT deleted.`)) {
+            if (confirm(`Delete "${projectName}"?\n\nThis will permanently remove the project and all its data.`)) {
               deleteProject(projectId)
-                .then(() => navigate('/'))
-                .catch(() => {});
+                .then(() => {
+                  navigate('/');
+                })
+                .catch((err) => {
+                  console.error('Failed to delete project:', err);
+                  alert('Failed to delete project. Please try again.');
+                });
             }
           }}
           className="flex-shrink-0 p-1.5 rounded-lg transition-all hover:bg-[rgba(239,68,68,0.1)]"
