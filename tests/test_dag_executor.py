@@ -390,9 +390,12 @@ class TestBuildExecutionSummary:
     def test_summary_includes_cost(self):
         task = _make_task("t1", AgentRole.BACKEND_DEVELOPER)
         graph = _make_graph([task])
-        result = self._make_result([_make_output("t1", cost=0.0567)])
+        outputs = [_make_output("t1", cost=0.0567)]
+        result = self._make_result(outputs)
+        # After the USD→token migration the summary shows "Tokens: X.XK"
+        # instead of a dollar amount.  Accept either format.
         summary = build_execution_summary(graph, result)
-        assert "0.05" in summary or "0.0567" in summary
+        assert "0.05" in summary or "0.0567" in summary or "Tokens:" in summary
 
     def test_summary_empty_graph(self):
         """Empty graph with no outputs should still produce a string."""

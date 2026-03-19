@@ -315,6 +315,7 @@ class OrchestratorManager:
         self.total_output_tokens = 0
         self.total_tokens = 0
         self.turn_count = 0
+        self._task_summaries: list[str] = []  # Short summaries per completed task
 
         # Live state tracking for dashboard
         self.current_agent: str | None = None
@@ -1057,8 +1058,9 @@ class OrchestratorManager:
             summary = response.text[:3000]
             if len(response.text) > 3000:
                 summary += "\n... (truncated)"
-            cost_str = f" | ${response.cost_usd:.4f}" if response.cost_usd > 0 else ""
-            await self._send_final(f"💬 *{target}*{cost_str}\n\n{summary}")
+            _resp_tokens = getattr(response, "total_tokens", 0)
+            token_str = f" | {_resp_tokens / 1000:.1f}K tokens" if _resp_tokens else ""
+            await self._send_final(f"💬 *{target}*{token_str}\n\n{summary}")
         else:
             # Enqueue — the orchestrator loop / _on_task_done will drain pending messages
             await self._message_queue.put((agent_name, message))
@@ -1177,10 +1179,21 @@ class OrchestratorManager:
 
         self._active_graph_count = 0
 
-        await self._send_final(
-            f"🛑 Project *{self.project_name}* stopped.\n"
-            f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}"
-        )
+        # Build a meaningful stop summary with token counts and what was done
+        _total_k = self.total_tokens / 1000 if self.total_tokens else 0
+        _in_k = self.total_input_tokens / 1000 if self.total_input_tokens else 0
+        _out_k = self.total_output_tokens / 1000 if self.total_output_tokens else 0
+        _stop_lines = [
+            f"🛑 Project *{self.project_name}* stopped.",
+            f"📊 Turns: {self.turn_count} | "
+            f"🔤 Tokens: {_total_k:.1f}K ({_in_k:.1f}K in / {_out_k:.1f}K out)",
+        ]
+        if self._task_summaries:
+            _stop_lines.append("")
+            _stop_lines.append(f"**Completed {len(self._task_summaries)} task(s):**")
+            for s in self._task_summaries[-10:]:  # Show last 10
+                _stop_lines.append(f"  • {s}")
+        await self._send_final("\n".join(_stop_lines))
 
     async def request_approval(self, description: str) -> bool:
         """Request human approval before proceeding. Blocks until approved/rejected."""
@@ -2020,9 +2033,11 @@ class OrchestratorManager:
             summary += "\n\n---\n💬 Send another message to continue working on this project."
             await self._send_final(summary)
 
-            # Record outputs in conversation log for persistence
+            # Record outputs in conversation log and collect summaries
             for output in result.outputs:
                 self._record_dag_output(output)
+                if output.is_successful() and output.summary:
+                    self._task_summaries.append(output.summary[:120])
 
             # Update total cost and token counts
             self.total_cost_usd += result.total_cost
