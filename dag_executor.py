@@ -74,6 +74,23 @@ def _fire_event(on_event: Callable | None, event: dict) -> None:
         pass
 
 
+def _make_step_description(milestone: str, task_name: str) -> str:
+    """Build a human-readable step description from milestone and task name."""
+    _MILESTONE_LABELS = {
+        "preparing": "Preparing",
+        "agent_working": "Working on",
+        "writing_files": "Writing files for",
+        "summarising": "Summarising",
+        "complete": "Completed",
+        "failed": "Failed",
+    }
+    label = _MILESTONE_LABELS.get(milestone, milestone.replace("_", " ").title())
+    short_name = task_name[:80].strip() if task_name else ""
+    if not short_name:
+        return label
+    return f"{label}: {short_name}"
+
+
 def _emit_task_progress(
     on_event: Callable | None,
     project_id: str,
@@ -81,6 +98,7 @@ def _emit_task_progress(
     milestone: str,
     task_start_time: float,
     estimated_total_s: float = 0.0,
+    task_name: str = "",
 ) -> None:
     """Emit a TASK_PROGRESS event if not throttled (max 2/sec/task)."""
     from dashboard.events import task_progress_throttler
@@ -100,6 +118,10 @@ def _emit_task_progress(
         elapsed_s=elapsed,
         est_remaining_s=est_remaining,
     )
+    # Enrich with human-readable fields (backward-compatible additions)
+    if task_name:
+        event["task_name"] = task_name[:120]
+    event["step_description"] = _make_step_description(milestone, task_name)
     _fire_event(on_event, event)
 
 
@@ -1501,6 +1523,7 @@ async def _run_single_task(
     # Milestone 1: preparing — context gathering begins
     _task_start_mono = time.monotonic()
     _est_total = float(task_timeout)
+    _task_goal = task.goal or ""
     _emit_task_progress(
         ctx.on_event,
         ctx.graph.project_id,
@@ -1508,6 +1531,7 @@ async def _run_single_task(
         "preparing",
         _task_start_mono,
         _est_total,
+        task_name=_task_goal,
     )
 
     # Gather context from upstream tasks (now with structured artifacts)
@@ -1668,6 +1692,7 @@ async def _run_single_task(
                         "writing_files",
                         _task_start_mono,
                         _est_total,
+                        task_name=_task_goal,
                     )
                 await ctx.on_agent_tool_use(role_name, tool_name, tool_info, task.id)
             except Exception as exc:
@@ -1730,6 +1755,7 @@ async def _run_single_task(
         "agent_working",
         _task_start_mono,
         _est_total,
+        task_name=_task_goal,
     )
     try:
         # BUG-23: isolated_query (separate thread) prevents anyio leak propagation.
@@ -1910,6 +1936,7 @@ async def _run_single_task(
             "summarising",
             _task_start_mono,
             _est_total,
+            task_name=_task_goal,
         )
         logger.info(
             f"[DAG] Task {task.id}: PHASE 2 (SUMMARY) — "
@@ -2112,6 +2139,7 @@ async def _run_single_task(
             _final_milestone,
             _task_start_mono,
             0.0,
+            task_name=_task_goal,
         )
         # Clean up throttler state for this task
         from dashboard.events import task_progress_throttler
