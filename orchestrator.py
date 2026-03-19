@@ -23,9 +23,10 @@ from config import (
     MAX_TURNS_PER_CYCLE,
     RATE_LIMIT_SECONDS,
     SESSION_TIMEOUT_SECONDS,
-    SPECIALIST_PROMPTS,
     USE_DAG_EXECUTOR,
 )
+from complexity import READER_ROLES, WRITER_ROLES
+from prompts import PROMPT_REGISTRY as SPECIALIST_PROMPTS
 
 # --- Typed Contract Protocol (new DAG-based system) ---
 # Imported lazily inside _run_dag_session to avoid circular imports
@@ -231,28 +232,11 @@ class OrchestratorManager:
                 break
         return drained
 
-    # Agents that modify files — must run sequentially to avoid conflicts
-    _WRITER_ROLES = {
-        "developer",
-        "devops",
-        "backend_developer",
-        "frontend_developer",
-        "database_expert",
-        "typescript_architect",
-        "python_backend",
-    }
+    # Agents that modify files — imported from complexity.py (single source of truth)
+    _WRITER_ROLES = WRITER_ROLES
 
-    # Read-only / analysis agents — safe to run in parallel
-    # (Kept consistent with dag_executor._READER_ROLES)
-    _READER_ROLES = {
-        "researcher",
-        "reviewer",
-        "security_auditor",
-        "ux_critic",
-        "test_engineer",
-        "tester",
-        "memory",
-    }
+    # Read-only / analysis agents — imported from complexity.py (single source of truth)
+    _READER_ROLES = READER_ROLES
 
     def __init__(
         self,
