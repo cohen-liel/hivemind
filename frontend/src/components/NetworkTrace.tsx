@@ -47,7 +47,6 @@ export default function NetworkTrace({ calls }: Props) {
     );
   }
 
-  const totalCost = calls.reduce((sum, c) => sum + (c.cost || 0), 0);
   const totalTurns = calls.reduce((sum, c) => sum + (c.turns || 0), 0);
 
   return (
@@ -68,12 +67,6 @@ export default function NetworkTrace({ calls }: Props) {
             {totalTurns} turns
           </span>
         )}
-        {totalCost > 0 && (
-          <span className="text-xs px-2 py-0.5 rounded-md tabular-nums"
-            style={{ background: 'var(--glow-green)', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>
-            ${totalCost.toFixed(4)}
-          </span>
-        )}
       </div>
 
       {/* Table */}
@@ -92,8 +85,6 @@ export default function NetworkTrace({ calls }: Props) {
                 style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Duration</th>
               <th className="px-3 py-2.5 text-right font-medium"
                 style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Turns</th>
-              <th className="px-3 py-2.5 text-right font-medium"
-                style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Cost</th>
               <th className="px-3 py-2.5 text-right font-medium"
                 style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Status</th>
             </tr>
@@ -131,9 +122,6 @@ export default function NetworkTrace({ calls }: Props) {
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                     {call.turns ?? '-'}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
-                    {call.cost !== undefined ? `$${call.cost.toFixed(4)}` : '-'}
                   </td>
                   <td className="px-3 py-2.5 text-right">
                     <span

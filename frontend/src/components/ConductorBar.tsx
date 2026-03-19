@@ -1,5 +1,4 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { useAnimatedNumber } from '../hooks/useAnimatedNumber';
 import { deleteProject } from '../api';
 import type { AgentState, LoopProgress } from '../types';
 
@@ -10,14 +9,13 @@ interface Props {
   connected: boolean;
   orchestrator: AgentState | null;
   progress: LoopProgress | null;
-  totalCost: number;
   agentSummary?: AgentState[];
   /** Most recent live activity text from any agent — shown when orchestrator has no specific task */
   lastTicker?: string;
 }
 
 export default function ConductorBar({
-  projectId, projectName, status, connected, orchestrator, progress, totalCost, agentSummary, lastTicker,
+  projectId, projectName, status, connected, orchestrator, progress, agentSummary, lastTicker,
 }: Props) {
   const navigate = useNavigate();
   const isActive = orchestrator?.state === 'working';
@@ -26,10 +24,6 @@ export default function ConductorBar({
   const turnsUsed = progress?.turn ?? 0;
   const turnsMax = progress?.max_turns ?? 0;
   const turnsPct = turnsMax > 0 ? Math.min((turnsUsed / turnsMax) * 100, 100) : 0;
-  const costUsed = progress?.cost ?? totalCost;
-
-  // Animated cost display
-  const animatedCost = useAnimatedNumber(costUsed, 500, costUsed < 1 ? 3 : 2);
 
   const counts = { working: 0, done: 0, error: 0, idle: 0 };
   if (agentSummary) {
@@ -149,16 +143,6 @@ export default function ConductorBar({
             <div className="text-[10px]" style={{ color: 'var(--accent-amber)' }}>Paused — waiting for input</div>
           )}
         </div>
-
-        {/* Cost pill — animated */}
-        {costUsed > 0 && (
-          <div className="flex-shrink-0 rounded-full px-2.5 py-0.5"
-            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)' }}>
-            <span className="telemetry" style={{ color: 'var(--accent-green)' }}>
-              ${animatedCost}
-            </span>
-          </div>
-        )}
 
         {/* Delete project button */}
         <button
