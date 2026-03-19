@@ -1,0 +1,63 @@
+{
+  "name": "React Dashboard",
+  "description": "Modern admin dashboard with charts, tables, dark mode, and responsive design. React + TypeScript + Tailwind.",
+  "version": "1.0.0",
+  "author": "Hivemind",
+  "tags": ["frontend", "dashboard", "react", "tailwind", "charts"],
+  "estimated_time_minutes": 20,
+  "team_size": "team",
+  "prompt": "Build a modern admin dashboard application with:\n\n1. **Layout**: Sidebar navigation, top bar with search and notifications, breadcrumbs\n2. **Pages**: Overview (KPI cards, charts), Users (data table with CRUD), Analytics (interactive charts), Settings\n3. **Components**: Data tables with sorting/filtering/pagination, Chart components (line, bar, pie, area), Modal dialogs, Form components with validation\n4. **Theming**: Dark mode / light mode toggle, consistent design system\n5. **State Management**: React Query for server state, Zustand for client state\n6. **Routing**: React Router with protected routes and lazy loading\n7. **Responsive**: Mobile-first design, collapsible sidebar on mobile\n8. **Accessibility**: ARIA labels, keyboard navigation, focus management\n\nTech stack: React 18 + TypeScript, Tailwind CSS, Recharts, React Query, Zustand, React Router v6.",
+  "dag_override": {
+    "tasks": [
+      {
+        "id": "t1",
+        "title": "Project setup, layout, and design system",
+        "role": "frontend_developer",
+        "dependencies": [],
+        "artifacts": ["src/components/Layout/", "src/styles/", "tailwind.config.ts"]
+      },
+      {
+        "id": "t2",
+        "title": "Reusable UI components (tables, charts, forms, modals)",
+        "role": "frontend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["src/components/ui/"]
+      },
+      {
+        "id": "t3",
+        "title": "Dashboard pages (Overview, Users, Analytics, Settings)",
+        "role": "frontend_developer",
+        "dependencies": ["t2"],
+        "artifacts": ["src/pages/"]
+      },
+      {
+        "id": "t4",
+        "title": "State management and API integration",
+        "role": "frontend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["src/stores/", "src/api/", "src/hooks/"]
+      },
+      {
+        "id": "t5",
+        "title": "UX review and accessibility audit",
+        "role": "ux_critic",
+        "dependencies": ["t3"],
+        "artifacts": ["UX_REVIEW.md"]
+      },
+      {
+        "id": "t6",
+        "title": "Component tests",
+        "role": "test_engineer",
+        "dependencies": ["t2", "t3"],
+        "artifacts": ["src/__tests__/"]
+      },
+      {
+        "id": "t7",
+        "title": "Final review",
+        "role": "reviewer",
+        "dependencies": ["t5", "t6"],
+        "artifacts": ["REVIEW.md"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "REST API Backend",
+  "description": "Production-ready REST API with FastAPI, PostgreSQL, auth, tests, and Docker. Ready to deploy.",
+  "version": "1.0.0",
+  "author": "Hivemind",
+  "tags": ["api", "backend", "fastapi", "postgresql", "docker"],
+  "estimated_time_minutes": 15,
+  "team_size": "team",
+  "prompt": "Build a production-ready REST API backend with:\n\n1. **FastAPI** application with proper project structure (routers, models, schemas, services)\n2. **PostgreSQL** database with SQLAlchemy ORM, Alembic migrations\n3. **Authentication**: JWT tokens, OAuth2 password flow, role-based access control\n4. **CRUD endpoints**: Full CRUD for a configurable resource with pagination, filtering, sorting\n5. **Validation**: Pydantic schemas with proper error handling\n6. **Testing**: pytest with 80%+ coverage, fixtures, factory pattern\n7. **Documentation**: Auto-generated OpenAPI/Swagger docs\n8. **Docker**: Multi-stage Dockerfile, docker-compose with PostgreSQL\n9. **CI/CD**: GitHub Actions workflow for tests and linting\n10. **Logging**: Structured JSON logging with request tracing\n\nTech stack: FastAPI + Python 3.11, PostgreSQL + SQLAlchemy, Alembic, pytest, Docker.",
+  "dag_override": {
+    "tasks": [
+      {
+        "id": "t1",
+        "title": "Project structure and database models",
+        "role": "backend_developer",
+        "dependencies": [],
+        "artifacts": ["app/models/", "app/schemas/", "alembic/"]
+      },
+      {
+        "id": "t2",
+        "title": "Authentication system (JWT, OAuth2, RBAC)",
+        "role": "backend_developer",
+        "dependencies": ["t1"],
+        "artifacts": ["app/auth/", "app/middleware/"]
+      },
+      {
+        "id": "t3",
+        "title": "CRUD endpoints with pagination and filtering",
+        "role": "backend_developer",
+        "dependencies": ["t1", "t2"],
+        "artifacts": ["app/routers/", "app/services/"]
+      },
+      {
+        "id": "t4",
+        "title": "Docker and CI/CD configuration",
+        "role": "devops",
+        "dependencies": ["t1"],
+        "artifacts": ["Dockerfile", "docker-compose.yml", ".github/workflows/"]
+      },
+      {
+        "id": "t5",
+        "title": "Comprehensive test suite",
+        "role": "test_engineer",
+        "dependencies": ["t2", "t3"],
+        "artifacts": ["tests/"]
+      },
+      {
+        "id": "t6",
+        "title": "Security review",
+        "role": "security_auditor",
+        "dependencies": ["t2", "t3"],
+        "artifacts": ["SECURITY_AUDIT.md"]
+      },
+      {
+        "id": "t7",
+        "title": "Final review and documentation",
+        "role": "reviewer",
+        "dependencies": ["t5", "t6"],
+        "artifacts": ["README.md", "REVIEW.md"]
+      }
+    ]
+  }
+}
