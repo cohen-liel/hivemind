@@ -273,6 +273,12 @@ class Project(Base):
             "idx_projects_user_id",
             "user_id",
         ),
+        # Composite: list user's projects sorted by last activity (dashboard hot path)
+        Index(
+            "idx_projects_user_updated",
+            "user_id",
+            "updated_at",
+        ),
     )
 
 
@@ -629,6 +635,19 @@ class AgentAction(Base):
         Index(
             "idx_agent_actions_task_id",
             "task_id",
+        ),
+        # Composite: task-scoped agent history queries (get_project_history groups by task+role)
+        Index(
+            "idx_agent_actions_task_role_ts",
+            "task_id",
+            "agent_role",
+            "timestamp",
+        ),
+        # Composite: conversation + action_type for filtered aggregations
+        Index(
+            "idx_agent_actions_conv_type",
+            "conversation_id",
+            "action_type",
         ),
     )
 
@@ -1066,6 +1085,12 @@ class ExecutionRun(Base):
             "idx_exec_runs_session_status",
             "session_id",
             "status",
+        ),
+        # Composite: chronological task listing within a project
+        Index(
+            "idx_exec_runs_project_started",
+            "project_id",
+            "started_at",
         ),
     )
 
