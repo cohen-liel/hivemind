@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import type { AgentState as AgentStateType, LoopProgress, ActivityEntry } from '../types';
 import type { HealingEvent, DesktopTab } from '../reducers/projectReducer';
 import type { AgentMetric } from '../hooks/useAgentMetrics';
@@ -315,13 +315,52 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
     return lines.slice(0, MAX_ACTIVE_ANIMATIONS);
   }, [nodePositions, subAgents]);
 
-  const centerLabel = useMemo((): string => {
+  // ---- Live status text with 500ms debounce ----
+  const MAX_CENTER_CHARS = 32;
+
+  const rawStatusText = useMemo((): string => {
     const working = subAgents.filter(a => a.state === 'working');
     const done = subAgents.filter(a => a.state === 'done');
-    if (working.length > 0) return `${working.length} active`;
-    if (done.length > 0) return `${done.length} done`;
-    return 'idle';
+    if (working.length > 0) {
+      const primary = working[0];
+      const label = AGENT_LABELS[primary.name] || primary.name;
+      if (primary.task) return `${label}: ${primary.task}`;
+      if (primary.current_tool) return `${label} → ${primary.current_tool}`;
+      return working.length > 1
+        ? `${working.length} agents working...`
+        : `${label} is working...`;
+    }
+    if (done.length > 0) return done.length === subAgents.length ? 'All agents complete' : `${done.length} done`;
+    return 'READY';
   }, [subAgents]);
+
+  // Truncate for SVG display
+  const truncateText = (text: string, max: number): string =>
+    text.length > max ? text.slice(0, max - 1) + '…' : text;
+
+  // Debounced display text — waits 500ms before committing a new value
+  const [displayText, setDisplayText] = useState<string>(rawStatusText);
+  const [textKey, setTextKey] = useState<number>(0);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevRawRef = useRef<string>(rawStatusText);
+
+  useEffect(() => {
+    if (rawStatusText === prevRawRef.current) return;
+    prevRawRef.current = rawStatusText;
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setDisplayText(rawStatusText);
+      setTextKey(k => k + 1); // re-trigger typewriter
+    }, 500);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [rawStatusText]);
+
+  const centerLabel = truncateText(displayText, MAX_CENTER_CHARS);
+  const isActiveStatus = displayText !== 'READY' && displayText !== 'idle';
 
   if (subAgents.length === 0) return null;
 
@@ -395,32 +434,62 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
           })}
         </g>
 
-        {/* Center status text */}
-        <text
-          x={VIZ_CENTER}
-          y={VIZ_CENTER - 4}
-          textAnchor="middle"
-          className="orchestra-center-label"
-          fill="var(--text-muted)"
-          fontSize="10"
-          fontFamily="var(--font-mono)"
-          fontWeight="600"
-          letterSpacing="0.05em"
-          style={{ textTransform: 'uppercase' } as React.CSSProperties}
+        {/* Center status — dynamic live text with typewriter animation */}
+        <foreignObject
+          x={VIZ_CENTER - 60}
+          y={VIZ_CENTER - 18}
+          width={120}
+          height={36}
         >
-          {centerLabel}
-        </text>
-        <text
-          x={VIZ_CENTER}
-          y={VIZ_CENTER + 10}
-          textAnchor="middle"
-          fill="var(--text-muted)"
-          fontSize="8"
-          fontFamily="var(--font-mono)"
-          opacity="0.6"
-        >
-          ORCHESTRA
-        </text>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '100%',
+              height: '100%',
+            }}
+          >
+            <div
+              key={textKey}
+              className="orchestra-live-status"
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '10px',
+                fontWeight: 600,
+                letterSpacing: '0.05em',
+                textTransform: 'uppercase',
+                color: isActiveStatus ? 'var(--accent-blue)' : 'var(--text-muted)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                maxWidth: '120px',
+                textAlign: 'center',
+                borderRight: isActiveStatus ? '2px solid var(--accent-blue)' : 'none',
+                animation: isActiveStatus
+                  ? 'typewriter 0.8s steps(20, end) forwards, blink 0.7s step-end 0.8s infinite'
+                  : 'none',
+                width: isActiveStatus ? '0' : 'auto',
+              }}
+              aria-live="polite"
+              aria-label={`Orchestra status: ${displayText}`}
+            >
+              {centerLabel}
+            </div>
+            <span
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '8px',
+                color: 'var(--text-muted)',
+                opacity: 0.6,
+                marginTop: '2px',
+              }}
+            >
+              ORCHESTRA
+            </span>
+          </div>
+        </foreignObject>
 
         {/* Agent nodes */}
         {nodePositions.map((node) => {
