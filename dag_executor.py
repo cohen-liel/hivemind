@@ -57,6 +57,81 @@ _background_event_tasks: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------------------
+# Task Progress Event Emission — throttled, lightweight milestone events
+# ---------------------------------------------------------------------------
+
+def _fire_event(on_event: Callable | None, event: dict) -> None:
+    """Schedule an async on_event callback as a fire-and-forget task."""
+    if on_event is None:
+        return
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            _task = asyncio.ensure_future(on_event(event))
+            _background_event_tasks.add(_task)
+            _task.add_done_callback(_background_event_tasks.discard)
+    except Exception:
+        pass
+
+
+def _emit_task_progress(
+    on_event: Callable | None,
+    project_id: str,
+    task_id: str,
+    milestone: str,
+    task_start_time: float,
+    estimated_total_s: float = 0.0,
+) -> None:
+    """Emit a TASK_PROGRESS event if not throttled (max 2/sec/task)."""
+    from dashboard.events import task_progress_throttler
+    from src.api.websocket_handler import build_task_progress_event
+
+    throttle_key = f"tp:{task_id}"
+    if not task_progress_throttler.should_emit(throttle_key):
+        return
+
+    elapsed = time.monotonic() - task_start_time
+    est_remaining = max(0.0, estimated_total_s - elapsed) if estimated_total_s > 0 else 0.0
+
+    event = build_task_progress_event(
+        project_id=project_id,
+        task_id=task_id,
+        milestone=milestone,
+        elapsed_s=elapsed,
+        est_remaining_s=est_remaining,
+    )
+    _fire_event(on_event, event)
+
+
+def _emit_dag_progress(
+    on_event: Callable | None,
+    project_id: str,
+    completed_count: int,
+    total_count: int,
+    graph_start_time: float,
+) -> None:
+    """Emit a DAG_PROGRESS aggregate event with completion % and ETA."""
+    from src.api.websocket_handler import build_dag_progress_event
+
+    elapsed = time.monotonic() - graph_start_time
+    if completed_count > 0:
+        avg_per_task = elapsed / completed_count
+        remaining_tasks = total_count - completed_count
+        est_remaining = avg_per_task * remaining_tasks
+    else:
+        est_remaining = 0.0
+
+    event = build_dag_progress_event(
+        project_id=project_id,
+        completed=completed_count,
+        total=total_count,
+        elapsed_s=elapsed,
+        est_remaining_s=est_remaining,
+    )
+    _fire_event(on_event, event)
+
+
+# ---------------------------------------------------------------------------
 # File-Level Lock Manager — singleton across all concurrent graph executions
 # ---------------------------------------------------------------------------
 
@@ -879,6 +954,7 @@ async def _execute_graph_inner(
     round_num = 0
     _deadlock_retries = 0  # Track consecutive deadlock detections
     _MAX_DEADLOCK_RETRIES = 3  # Allow some deadlock retries before giving up
+    _graph_start_time = time.monotonic()  # For DAG_PROGRESS ETA computation
 
     while not graph.is_complete(ctx.completed):
         round_num += 1
@@ -1127,6 +1203,16 @@ async def _execute_graph_inner(
                         await ctx.on_task_done(task, output)
                     except Exception as exc:
                         logger.warning(f"[DAG] on_task_done callback failed: {exc}")
+
+                # Emit DAG_PROGRESS aggregate event
+                _done_count = sum(1 for t in ctx.graph.tasks if t.id in ctx.completed)
+                _emit_dag_progress(
+                    ctx.on_event,
+                    graph.project_id,
+                    _done_count,
+                    len(graph.tasks),
+                    _graph_start_time,
+                )
 
                 # Handle failures
                 if not output.is_successful():
@@ -1415,6 +1501,14 @@ async def _run_single_task(
         except Exception as exc:
             logger.warning("[DAG] on_task_start callback failed for %s: %s", task.id, exc)
 
+    # Milestone 1: preparing — context gathering begins
+    _task_start_mono = time.monotonic()
+    _est_total = float(task_timeout)
+    _emit_task_progress(
+        ctx.on_event, ctx.graph.project_id, task.id,
+        "preparing", _task_start_mono, _est_total,
+    )
+
     # Gather context from upstream tasks (now with structured artifacts)
     context_outputs = {tid: ctx.completed[tid] for tid in task.context_from if tid in ctx.completed}
 
@@ -1564,6 +1658,12 @@ async def _run_single_task(
                 if task.id in ctx.running_tasks:
                     ctx.running_tasks[task.id]["last_activity"] = time.monotonic()
                     ctx.running_tasks[task.id]["turns_used"] += 1
+                # Milestone 3: writing_files — detected file mutation tool
+                if tool_name in ("Write", "Edit", "NotebookEdit", "write_file", "edit_file"):
+                    _emit_task_progress(
+                        ctx.on_event, ctx.graph.project_id, task.id,
+                        "writing_files", _task_start_mono, _est_total,
+                    )
                 await ctx.on_agent_tool_use(role_name, tool_name, tool_info, task.id)
             except Exception as exc:
                 logger.debug("[DAG] on_agent_tool_use callback error (task=%s): %s", task.id, exc)
@@ -1574,6 +1674,11 @@ async def _run_single_task(
             if task.id in ctx.running_tasks:
                 ctx.running_tasks[task.id]["last_activity"] = time.monotonic()
                 ctx.running_tasks[task.id]["turns_used"] += 1
+            if tool_name in ("Write", "Edit", "NotebookEdit", "write_file", "edit_file"):
+                _emit_task_progress(
+                    ctx.on_event, ctx.graph.project_id, task.id,
+                    "writing_files", _task_start_mono, _est_total,
+                )
 
     # ── Two-Phase Execution ──
     # Phase 1: WORK — agent does the actual task with full tools.
@@ -1608,6 +1713,11 @@ async def _run_single_task(
     # Double-wrapping causes a race condition that leaks subprocesses.
 
     t0 = time.monotonic()
+    # Milestone 2: agent_working — SDK call begins
+    _emit_task_progress(
+        ctx.on_event, ctx.graph.project_id, task.id,
+        "agent_working", _task_start_mono, _est_total,
+    )
     try:
         # BUG-23: isolated_query (separate thread) prevents anyio leak propagation.
         from config import get_agent_timeout as _get_role_timeout
@@ -1779,6 +1889,11 @@ async def _run_single_task(
     )
 
     if needs_summary:
+        # Milestone 4: summarising — entering summary phase
+        _emit_task_progress(
+            ctx.on_event, ctx.graph.project_id, task.id,
+            "summarising", _task_start_mono, _est_total,
+        )
         logger.info(
             f"[DAG] Task {task.id}: PHASE 2 (SUMMARY) — "
             f"resuming session, tools disabled, max_turns={_SUMMARY_PHASE_TURNS}"
@@ -1970,6 +2085,16 @@ async def _run_single_task(
             project_dir=ctx.project_dir,
             on_event=ctx.on_event,
         )
+
+        # Milestone 5: complete/failed — task finished
+        _final_milestone = "complete" if output.is_successful() else "failed"
+        _emit_task_progress(
+            ctx.on_event, ctx.graph.project_id, task.id,
+            _final_milestone, _task_start_mono, 0.0,
+        )
+        # Clean up throttler state for this task
+        from dashboard.events import task_progress_throttler
+        task_progress_throttler.reset(f"tp:{task.id}")
 
         return output
 
