@@ -1,26 +1,211 @@
 <div align="center">
 
-# Hivemind
+<img src="docs/hero-architecture.png" alt="Hivemind" width="100%" />
 
-### One prompt. A full team of AI agents. Production-ready code.
+# 🧠 Hivemind
 
-[![CI](https://github.com/cohen-liel/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/cohen-liel/hivemind/actions/workflows/ci.yml)
+### One prompt. A full AI engineering team. Go lie on the couch.
+
+[![GitHub stars](https://img.shields.io/github/stars/cohen-liel/hivemind?style=social)](https://github.com/cohen-liel/hivemind/stargazers)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)](https://python.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6.svg)](https://typescriptlang.org)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-SDK-orange.svg)](https://docs.anthropic.com/en/docs/claude-code)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-red.svg)](https://github.com/openclaw/openclaw)
+[![CI](https://github.com/cohen-liel/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/cohen-liel/hivemind/actions/workflows/ci.yml)
 
-**Give Hivemind a task. It deploys a PM, developers, reviewer, and QA agent — all working in parallel — and delivers tested, committed code in minutes.**
+**Describe a feature in plain English. Hivemind deploys a PM, developers, reviewer, and QA — all working in parallel — and delivers tested, committed code. No babysitting. No copy-pasting. No "continue".**
 
-[Quick Start](#-quick-start) | [How It Works](#-how-it-works) | [Architecture](#-architecture) | [Dashboard](#-dashboard) | [Contributing](CONTRIBUTING.md)
+[Quick Start](#-quick-start) · [How It Works](#-how-it-works) · [Features](#-features) · [Dashboard](#-dashboard) · [Agent Roster](#-agent-roster) · [Templates](#-templates) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
 ---
 
+## What is Hivemind?
+
+# Open-source AI engineering team that builds production code while you sleep
+
+**If Claude Code is a _developer_, Hivemind is the _engineering team_.**
+
+Hivemind is a Python orchestrator and React dashboard that turns AI coding agents into a full software engineering team. Give it one prompt — it plans the work, spins up specialist agents in parallel, passes artifacts between them, reviews the output, and commits tested code.
+
+It looks like a project dashboard — but under the hood it has DAG-based task planning, parallel execution, self-healing, artifact flow, code review gates, and proactive memory.
+
+**Ship features, not prompts.**
+
+| Step | | Example |
+| --- | --- | --- |
+| **01** | Describe the feature | *"Add JWT authentication with a login page and protected routes"* |
+| **02** | Watch the team work | PM plans → Frontend + Backend + DB work in parallel → Tests → Review |
+| **03** | Get production code | Tested, reviewed, committed. Open your IDE and it's already there. |
+
+> **COMING SOON: Template Marketplace** — Download pre-built project DAGs and run them with one click. SaaS starters, API backends, full-stack apps — pick a template and let the team build it.
+
+&nbsp;
+
+| **Works with** | 🤖 Claude Code | 🦞 OpenClaw | 🧪 Codex | ⌨️ Cursor | 🐚 Bash | 🌐 HTTP |
+
+*If it can write code, it's hired.*
+
+&nbsp;
+
+## Hivemind is right for you if
+
+- ✅ You want to **describe a feature once** and get production-ready code back
+- ✅ You're tired of **babysitting Claude Code** — typing "continue", fixing context loss, managing files manually
+- ✅ You want **parallel execution** — frontend, backend, and tests built simultaneously
+- ✅ You want a **code review gate** before anything gets committed
+- ✅ You want to **monitor everything from your phone** while lying on the couch
+- ✅ You want **self-healing** — when an agent fails, the system fixes it automatically
+- ✅ You want **zero extra API costs** — runs on your existing Claude Code subscription
+
+&nbsp;
+
+## ⚡ Features
+
+| | | |
+|---|---|---|
+| 🧩 **DAG-Based Planning** | Every feature is broken into a dependency-aware task graph. Independent tasks run in parallel; dependent tasks wait for upstream artifacts. | 🔄 **Self-Healing Execution** | Failed tasks are classified by failure type and retried with targeted fixes — not blind restarts. |
+| 🔀 **Artifact Flow** | Agents pass typed artifacts (API contracts, schemas, test reports) to downstream agents as structured context. | 🧠 **Proactive Memory** | The orchestrator injects lessons learned from past sessions to prevent repeating the same mistakes. |
+| 🛡️ **Code Review Gate** | A reviewer agent checks the combined output for correctness, consistency, and code quality before the final commit. | ⚡ **Smart Concurrency** | Reader agents run in parallel; writer agents are serialized when their file scopes overlap to prevent conflicts. |
+| 💰 **Zero Extra Cost** | No API keys needed. Runs directly on your Claude Code CLI subscription. No token charges. | 🔒 **Project Isolation** | Every agent is sandboxed to its project directory. Cross-project file access is blocked at multiple enforcement layers. |
+| 📱 **Mobile Dashboard** | Real-time streaming, DAG progress, file diffs, cost analytics — all from your phone. | 🔌 **Circuit Breaker** | SDK client implements circuit breaker pattern to prevent cascade failures when the LLM is overloaded. |
+
+&nbsp;
+
+## Problems Hivemind solves
+
+| Without Hivemind | With Hivemind |
+| --- | --- |
+| ❌ You ask Claude Code to build a feature. It works on one file at a time, loses context, and you babysit for hours. | ✅ Describe the feature once. The PM breaks it into a DAG, agents build in parallel, reviewer checks quality, code is committed. |
+| ❌ For a full-stack feature, you manually coordinate backend → frontend → tests → review. Copy-pasting context between sessions. | ✅ Artifact flow passes API contracts, schemas, and test reports between agents automatically. No copy-pasting. |
+| ❌ An agent gets stuck in a loop. You kill it, lose context, start over. | ✅ Self-healing detects stuck agents (5 distinct signals), reassigns, simplifies, or respawns — automatically. |
+| ❌ You can't leave your desk. If you walk away, the agent stops or goes off track. | ✅ Monitor from your phone. The dashboard streams everything in real-time. Walk away. Go to the couch. |
+| ❌ Agents write buggy code and you only find out after merging. | ✅ Code review gate catches issues before commit. Test engineer validates. Security auditor checks OWASP Top 10. |
+| ❌ You pay per token and have no idea what each agent is costing you. | ✅ Cost analytics dashboard tracks token usage per session, per agent, over time. |
+
+&nbsp;
+
+## Why Hivemind is special
+
+Hivemind handles the hard orchestration details correctly.
+
+| | |
+|---|---|
+| **Dependency-aware DAG execution.** | Tasks execute in optimal order. The PM creates a real dependency graph, not a flat list. |
+| **Two-phase agent protocol.** | Each agent runs a work phase (tools enabled) followed by a structured summary phase, guaranteeing parseable output. |
+| **Active escalation.** | Watchdog monitors 5 stuck signals (text similarity > 85%, no file progress, circular delegation). Triggers reassign → simplify → kill & respawn. |
+| **Exponential backoff with circuit breaker.** | Rate limits (429) are caught per-agent with retry strategy. Other agents continue working. |
+| **Proactive memory injection.** | Past failures and lessons are injected into agent prompts so the team learns across sessions. |
+| **File-scope enforcement.** | Agents can only touch files assigned to their task. Cross-scope writes are blocked at the SDK layer. |
+| **Typed artifact contracts.** | Agents communicate via structured `TaskInput → TaskOutput` contracts, not free-form text. |
+
+&nbsp;
+
+## What Hivemind is not
+
+| | |
+|---|---|
+| **Not a chatbot.** | Agents have jobs, not chat windows. |
+| **Not an agent framework.** | We don't tell you how to build agents. We tell you how to run an engineering team made of them. |
+| **Not a workflow builder.** | No drag-and-drop pipelines. Hivemind models engineering teams — with roles, dependencies, artifacts, and quality gates. |
+| **Not a single-agent tool.** | This is for teams. If you have one agent, use Claude Code directly. If you want a team — you need Hivemind. |
+
+&nbsp;
+
+---
+
+## 🚀 Quick Start
+
+### Option 1: NPX (Recommended)
+
+```bash
+npx create-hivemind@latest
+```
+
+One command. It clones the repo, installs dependencies, builds the frontend, and starts the server.
+
+### Option 2: Git Clone
+
+```bash
+git clone https://github.com/cohen-liel/hivemind.git
+cd hivemind
+chmod +x setup.sh restart.sh
+./setup.sh
+./restart.sh
+```
+
+### Option 3: Docker
+
+```bash
+git clone https://github.com/cohen-liel/hivemind.git
+cd hivemind
+docker-compose up -d --build
+```
+
+> **Requirements:** Python 3.11+, Node.js 18+, Claude Code CLI (`npm install -g @anthropic-ai/claude-code && claude login`)
+
+### First Launch
+
+1. Open **http://localhost:8080** in your browser
+2. Enter the **access code** shown in your terminal (or scan the QR code from your phone)
+3. Click **"+ New Project"** → select a working directory
+4. Choose your team: **Solo**, **Team**, or **Full Team**
+5. Type a task and hit **Execute**
+
+That's it. Go lie on the couch.
+
+&nbsp;
+
+---
+
+## ⚡ How It Works
+
+```
+You: "Add user authentication with JWT tokens and a login page"
+                    │
+                    ▼
+         ┌──────────────────┐
+         │    PM Agent       │  Analyzes request, creates TaskGraph (DAG)
+         │    (Planning)     │  with dependencies and file scopes
+         └────────┬─────────┘
+                  │
+         ┌────────▼─────────┐
+         │   DAG Executor    │  Launches agents in parallel
+         │   (Orchestration) │  where dependencies allow
+         └────────┬─────────┘
+                  │
+    ┌─────────────┼─────────────┐
+    ▼             ▼             ▼
+┌────────┐  ┌────────┐  ┌────────┐
+│Backend │  │Frontend│  │Database│   Agents work in parallel,
+│  Dev   │  │  Dev   │  │ Expert │   passing typed artifacts downstream
+└───┬────┘  └───┬────┘  └───┬────┘
+    │           │           │
+    └─────────┬─┘───────────┘
+              ▼
+    ┌──────────────────┐
+    │   Test Engineer   │   Tests the combined output
+    └────────┬─────────┘
+             ▼
+    ┌──────────────────┐
+    │    Reviewer       │   Quality gate — checks correctness,
+    │  (Code Review)    │   consistency, and code quality
+    └────────┬─────────┘
+             ▼
+        ✅ Committed & Ready
+```
+
+&nbsp;
+
+---
+
+## 📊 Dashboard
+
 <div align="center">
 
-### Desktop Dashboard
+### Desktop
 ![Hivemind Dashboard — Desktop](docs/screenshots/dashboard-desktop.png)
 
 </div>
@@ -38,175 +223,27 @@
 </table>
 </div>
 
----
+The web dashboard gives you full visibility into what every agent is doing:
 
-## The Problem
-
-You ask Claude Code to build a feature. It works on one file at a time, loses context, and you end up babysitting the process for hours. For anything beyond a simple script, you become the project manager, the code reviewer, and the QA team — all at once.
-
-## The Solution
-
-Hivemind turns Claude Code into a **software engineering team**. You describe what you want in plain language. Hivemind's PM agent breaks it into a dependency-aware task graph, then deploys specialist agents — frontend developer, backend developer, database expert, security auditor, test engineer — that execute in parallel, pass typed artifacts between each other, and self-heal when something fails.
-
-The result: complex features built, reviewed, tested, and committed autonomously.
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-| Requirement | Version | Install |
-|---|---|---|
-| Python | 3.11+ | [python.org](https://python.org) |
-| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| Claude Code CLI | Latest | See below |
-
-**Install Claude Code CLI:**
-
-```bash
-npm install -g @anthropic-ai/claude-code
-claude login
-```
-
-### Option 1: Quick Install (Recommended)
-
-```bash
-# Clone the repository
-git clone https://github.com/cohen-liel/hivemind.git
-cd hivemind
-
-# Run the setup script (installs all dependencies + builds frontend)
-chmod +x setup.sh restart.sh
-./setup.sh
-
-# Configure your projects directory
-cp .env.example .env
-# Edit .env and set CLAUDE_PROJECTS_DIR to your projects folder
-# Example: CLAUDE_PROJECTS_DIR=/Users/yourname/projects
-
-# Launch Hivemind
-./restart.sh
-```
-
-Open **http://localhost:8080** in your browser. That's it.
-
-### Option 2: Docker
-
-```bash
-docker-compose up -d --build
-```
-
-### Option 3: Manual Install
-
-```bash
-# Clone
-git clone https://github.com/cohen-liel/hivemind.git
-cd hivemind
-
-# Python dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Frontend
-cd frontend
-npm install
-npm run build
-cd ..
-
-# Configure
-cp .env.example .env
-# Edit .env — set CLAUDE_PROJECTS_DIR
-
-# Run
-python3 server.py
-```
-
-### First Launch
-
-1. Open **http://localhost:8080** in your browser
-2. If device authentication is enabled, enter the **access code** shown in your terminal
-3. Click **"+ New Project"** in the sidebar
-4. Select a working directory (the folder containing your code)
-5. Choose an agent configuration: **Solo**, **Team**, or **Full Team**
-6. Type a task in the message box and hit **Execute**
-
----
-
-## ⚡ How It Works
-
-When you send a message to Hivemind, here is what happens behind the scenes:
-
-```
-You: "Add user authentication with JWT tokens and a login page"
-                    │
-                    ▼
-         ┌──────────────────┐
-         │    PM Agent       │  Step 1: Analyzes request, creates TaskGraph
-         │    (Planning)     │  with dependencies and file scopes
-         └────────┬─────────┘
-                  │
-         ┌────────▼─────────┐
-         │   DAG Executor    │  Step 2: Launches agents in parallel
-         │   (Orchestration) │  where dependencies allow
-         └────────┬─────────┘
-                  │
-    ┌─────────────┼─────────────┐
-    ▼             ▼             ▼
-┌────────┐  ┌────────┐  ┌────────┐
-│Backend │  │Frontend│  │Database│   Step 3: Agents work in parallel,
-│  Dev   │  │  Dev   │  │ Expert │   passing typed artifacts downstream
-└───┬────┘  └───┬────┘  └───┬────┘
-    │           │           │
-    └─────────┬─┘───────────┘
-              ▼
-    ┌──────────────────┐
-    │   Test Engineer   │   Step 4: Tests the combined output
-    └────────┬─────────┘
-             ▼
-    ┌──────────────────┐
-    │    Reviewer       │   Step 5: Quality gate — checks correctness,
-    │  (Code Review)    │   consistency, and code quality
-    └────────┬─────────┘
-             ▼
-        ✅ Committed
-```
-
-**Step 1 — Planning.** The PM Agent analyzes your request and produces a structured **Task Graph** (DAG) with dependencies, file scopes, and agent assignments.
-
-**Step 2 — Parallel Execution.** The DAG Executor launches specialist agents in parallel where dependencies allow. Each agent receives a typed task input with the exact files it may touch.
-
-**Step 3 — Artifact Flow.** When an agent completes its task, it produces a structured artifact (API contract, schema, test report) that flows to downstream agents as context.
-
-**Step 4 — Self-Healing.** If a task fails, the system classifies the failure and spawns a targeted remediation task — not a blind retry.
-
-**Step 5 — Quality Gate.** A reviewer agent checks the combined output for correctness, consistency, and code quality before the final commit.
-
----
-
-## 🏗️ Architecture
-
-Hivemind is built in three layers:
-
-| Layer | Components | Responsibility |
-|---|---|---|
-| **Dashboard** | React + FastAPI + WebSocket | Real-time UI, REST API, device authentication |
-| **Orchestration** | Orchestrator + PM Agent + DAG Executor | Task planning, parallel execution, state management, memory |
-| **Execution** | Specialist Agents + Claude Code SDK | Code generation, review, debugging, testing via Claude Code CLI |
-
-### Technical Highlights
-
-| Feature | What It Does |
+| Feature | Description |
 |---|---|
-| **Dependency-Aware DAG** | Tasks execute in the optimal order. Independent tasks run in parallel; dependent tasks wait for upstream artifacts. |
-| **Self-Healing Execution** | Failed tasks are classified by failure type and retried with targeted fixes, not blind restarts. |
-| **Proactive Memory** | The orchestrator injects lessons learned from past sessions to prevent repeating the same mistakes. |
-| **Two-Phase Agent Protocol** | Each agent runs a work phase (tools enabled) followed by a structured summary phase, guaranteeing parseable output. |
-| **Smart Concurrency Control** | Reader agents run in parallel; writer agents are serialized when their file scopes overlap to prevent conflicts. |
-| **Project Isolation** | Every agent is sandboxed to its project directory. Cross-project file access is blocked at multiple enforcement layers. |
-| **Circuit Breaker** | The SDK client implements a circuit breaker pattern to prevent cascade failures when Claude Code is overloaded. |
-| **Device Authentication** | Zero-password auth. Approve devices with a rotating access code + optional QR scan from your phone. Multiple devices can connect with the same code. |
+| **Live Agent Output** | Stream each agent's work in real-time via WebSocket |
+| **DAG Progress** | Visual task graph showing agent status and dependencies |
+| **Agent Cards** | See all 11 agents with their current status (Standby, Working, Done) |
+| **Plan View** | Live execution plan with ✓ completion tracking and progress bar |
+| **Code Browser** | Browse and diff the files agents are creating and modifying |
+| **Cost Analytics** | Monitor token usage and cost per session over time |
+| **Schedules** | Set up recurring tasks with cron expressions |
+| **Dark/Light Mode** | Full theme support |
+| **Mobile Optimized** | WhatsApp-like input, bottom tab nav, haptic feedback |
+
+<div align="center">
+
+![Hivemind Agents View](docs/screenshots/agents-desktop.png)
+
+</div>
+
+&nbsp;
 
 ---
 
@@ -214,7 +251,7 @@ Hivemind is built in three layers:
 
 Hivemind deploys the right agent for each task. Here is the full team:
 
-### Planning and Coordination
+### Planning & Coordination
 
 | Agent | Role |
 |---|---|
@@ -242,34 +279,7 @@ Hivemind deploys the right agent for each task. Here is the full team:
 | **UX Critic** | Accessibility, usability heuristics |
 | **Researcher** | Technical research, documentation, best practices |
 
----
-
-## 📊 Dashboard
-
-<div align="center">
-
-![Hivemind Agents View](docs/screenshots/agents-desktop.png)
-
-</div>
-
-The web dashboard provides full visibility into what every agent is doing:
-
-- **Live Agent Output** — Stream each agent's work in real-time via WebSocket
-- **DAG Progress** — Visual task graph showing agent status and dependencies
-- **Agent Cards** — See all 11 agents with their current status (Standby, Working, Done)
-- **Plan View** — Live execution plan with ✓ completion tracking, collapsible completed tasks, and progress bar
-- **Code Browser** — Browse and diff the files agents are creating and modifying
-- **Diff View** — See exactly what changed in each file
-- **Cost Analytics** — Monitor token usage and cost per session over time
-- **Schedules** — Set up recurring tasks with cron expressions
-- **Dark/Light Mode** — Full theme support
-- **Mobile Optimized** — WhatsApp-like auto-expanding input, bottom tab nav, haptic feedback, "New messages" pill for quick scroll-to-bottom
-
-<div align="center">
-
-![New Project Dialog](docs/screenshots/new-project-desktop.png)
-
-</div>
+&nbsp;
 
 ---
 
@@ -282,7 +292,7 @@ Access Hivemind from your phone, tablet, or any device:
 DASHBOARD_HOST=0.0.0.0
 ```
 
-Start the server and it prints everything you need — local URL, public URL, access code, and a **QR code** you can scan with your phone:
+Start the server and it prints everything you need — local URL, public URL, access code, and a **QR code** you can scan:
 
 ```
   ╔══════════════════════════════════════════════════════╗
@@ -299,25 +309,15 @@ Start the server and it prints everything you need — local URL, public URL, ac
   ╚══════════════════════════════════════════════════════╝
 ```
 
-When you open the dashboard from a new device, enter the **access code** shown in your terminal. The device is approved permanently — no passwords, no accounts. The code rotates every 5 minutes and supports **multiple devices** connecting with the same code.
+Zero-password auth. Approve devices with a rotating access code + optional QR scan. Multiple devices supported.
 
-For extra security, set `HIVEMIND_PASSWORD` in `.env` — devices will need both the code and the password.
-
-For a permanent URL, set up a named Cloudflare Tunnel:
-
-```bash
-cloudflared tunnel login
-cloudflared tunnel create hivemind
-cloudflared tunnel route dns hivemind your-domain.com
-```
+&nbsp;
 
 ---
 
 ## ⚙️ Configuration
 
-All configuration is done via environment variables in `.env`:
-
-### Core Settings
+All configuration via `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -325,87 +325,11 @@ All configuration is done via environment variables in `.env`:
 | `CLAUDE_PROJECTS_DIR` | `~/claude-projects` | Base directory for project workspaces |
 | `DASHBOARD_PORT` | `8080` | Dashboard listen port |
 | `DASHBOARD_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` for remote access) |
-
-### Agent Limits
-
-| Variable | Default | Description |
-|---|---|---|
-| `MAX_TURNS_PER_CYCLE` | `200` | Maximum turns before pausing |
 | `MAX_BUDGET_USD` | `100` | Budget limit per session in USD |
-| `AGENT_TIMEOUT_SEC` | `900` | Timeout for each agent query in seconds |
-| `MAX_ORCHESTRATOR_LOOPS` | `100` | Safety limit on orchestrator iterations |
-
-### SDK Settings
-
-| Variable | Default | Description |
-|---|---|---|
-| `SDK_MAX_TURNS_PER_QUERY` | `200` | Turns per sub-agent query |
-| `SDK_MAX_BUDGET_PER_QUERY` | `50` | Budget per sub-agent query in USD |
-
-### Security
-
-| Variable | Default | Description |
-|---|---|---|
 | `DEVICE_AUTH_ENABLED` | `true` | Enable device-based authentication |
-| `HIVEMIND_PASSWORD` | *(empty)* | Optional password required alongside the access code |
 | `SANDBOX_ENABLED` | `true` | Restrict agents to project directories |
-| `SESSION_EXPIRY_HOURS` | `24` | Session expiry time |
 
----
-
-## 🛠️ Development
-
-```bash
-# Frontend development with hot reload
-cd frontend && npm run dev
-
-# Run the test suite
-python3 -m pytest tests/ -v
-
-# Type checking
-cd frontend && npx tsc --noEmit
-
-# Lint + format
-ruff check .
-ruff format --check .
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
-
-### Project Structure
-
-```
-hivemind/
-├── server.py              # FastAPI entry point + Cloudflare tunnel setup
-├── orchestrator.py        # Core orchestration engine
-├── dag_executor.py        # Parallel DAG execution engine
-├── pm_agent.py            # Project Manager — creates TaskGraph
-├── contracts.py           # Typed agent protocol (TaskInput → TaskOutput)
-├── config.py              # Agent prompts, registry, operational constants
-├── device_auth.py         # Device token authentication
-├── _shared_utils.py       # Centralized utility functions
-├── orch_agents.py         # Agent query and sub-agent management
-├── orch_watchdog.py       # Silence watchdog and stuck detection
-├── orch_context.py        # Context building for agents
-├── orch_experience.py     # Experience and memory injection
-├── orch_review.py         # Code review orchestration
-├── project_context.py     # Project context and file management
-├── dashboard/
-│   └── api.py             # REST API + WebSocket + auth middleware
-├── frontend/
-│   └── src/               # React + TypeScript + Tailwind UI
-│       ├── pages/         # Dashboard, Settings, Project views
-│       └── components/    # Reusable UI components
-├── terminal_qr.py         # Terminal QR code renderer (zero-dep)
-├── tests/                 # 1,282 tests — unit, integration, e2e
-├── setup.sh               # One-command setup script
-├── restart.sh             # Server restart script
-├── docker-compose.yml     # Docker deployment
-├── CONTRIBUTING.md        # Contribution guidelines
-├── SECURITY.md            # Security policy
-├── CODE_OF_CONDUCT.md     # Community code of conduct
-└── LICENSE                # Apache License 2.0
-```
+&nbsp;
 
 ---
 
@@ -427,37 +351,12 @@ lsof -ti :8080 | xargs kill -9
 ```bash
 npm install -g @anthropic-ai/claude-code
 claude login
-# Verify: claude --version
 ```
 
 </details>
 
 <details>
-<summary><strong>No public URL (Cloudflare tunnel not working)</strong></summary>
-
-```bash
-# Check if cloudflared is installed
-cloudflared --version
-
-# If not installed:
-# macOS: brew install cloudflared
-# Linux: sudo apt install cloudflared
-# Or re-run setup: ./setup.sh
-```
-
-</details>
-
-<details>
-<summary><strong>Device authentication code not showing</strong></summary>
-
-Check the terminal where `server.py` is running. The access code and QR code are printed on startup. The code rotates every 5 minutes — if it expired, a new one is generated automatically. You can also rotate the code from the Settings page in the dashboard.
-
-</details>
-
-<details>
-<summary><strong>Agents not starting / "No Claude CLI found"</strong></summary>
-
-Make sure Claude Code CLI is installed and authenticated:
+<summary><strong>Agents not starting</strong></summary>
 
 ```bash
 which claude          # Should return a path
@@ -467,29 +366,80 @@ claude login          # Re-authenticate if needed
 
 </details>
 
+&nbsp;
+
 ---
 
-## ⚖️ License & Enterprise
+## 🛠️ Development
 
-### Open Source
+```bash
+pnpm dev              # Full dev (backend + frontend, watch mode)
+pnpm dev:frontend     # Frontend only with hot reload
+pnpm dev:backend      # Backend only
 
-Hivemind is proudly open-source under the **[Apache License 2.0](LICENSE)**. You are free to use, modify, and distribute the software for personal and commercial purposes.
+python3 -m pytest tests/ -v   # Run 1,282 tests
+cd frontend && npx tsc --noEmit   # Type checking
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
+
+&nbsp;
+
+---
+
+## 🗺️ Roadmap
+
+- 🟢 DAG-based parallel execution
+- 🟢 Real-time mobile dashboard
+- 🟢 Self-healing and active escalation
+- 🟢 Proactive memory
+- 🟢 Code review gate
+- ⚪ OpenClaw agent runtime support
+- ⚪ Template marketplace (pre-built project DAGs)
+- ⚪ Plugin system for custom agent types
+- ⚪ Multi-project orchestration
+- ⚪ Team collaboration features
+
+&nbsp;
+
+---
+
+## ⚖️ License
+
+Open source under **[Apache License 2.0](LICENSE)**. Free for personal and commercial use.
 
 ### Hivemind for Teams (Enterprise)
 
 While the core orchestrator will always remain open-source, we are developing advanced features for engineering organizations:
 
-- **Centralized Agent Governance:** Manage tokens and permissions across large teams.
-- **Advanced Security Auditing:** Enhanced SOC2-compliant logging for AI-generated code.
-- **Custom MCP Integrations:** Private agent skills tailored to your internal stack.
-- **Priority Support & SLA:** Dedicated support for mission-critical deployments.
+- **Centralized Agent Governance** — Manage tokens and permissions across large teams
+- **Advanced Security Auditing** — SOC2-compliant logging for AI-generated code
+- **Custom MCP Integrations** — Private agent skills tailored to your internal stack
+- **Priority Support & SLA** — Dedicated support for mission-critical deployments
 
-Interested in Hivemind for your company? [Open an issue](https://github.com/cohen-liel/hivemind/issues) or reach out.
+Interested? [Open an issue](https://github.com/cohen-liel/hivemind/issues) or reach out.
+
+&nbsp;
 
 ## 🔒 Security
 
-Found a vulnerability? Please see our [Security Policy](SECURITY.md) for responsible disclosure guidelines.
+Found a vulnerability? See our [Security Policy](SECURITY.md) for responsible disclosure guidelines.
 
 ## 🤝 Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to get started, our PR process, and coding standards.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## 💬 Community
+
+- [GitHub Issues](https://github.com/cohen-liel/hivemind/issues) — bugs and feature requests
+- [GitHub Discussions](https://github.com/cohen-liel/hivemind/discussions) — ideas and RFC
+
+&nbsp;
+
+---
+
+<div align="center">
+
+**Open source under Apache 2.0. Built for developers who want to ship features, not babysit agents.**
+
+</div>
