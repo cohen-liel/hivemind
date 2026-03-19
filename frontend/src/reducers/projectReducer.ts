@@ -39,6 +39,7 @@ export interface SdkCall {
   cost?: number;
   status: string;
   taskId?: string;      // DAG task ID (e.g. "task_003") — distinguishes multiple calls by same role
+  taskName?: string;    // Human-readable task name/goal
   turns?: number;       // Number of turns used
   failureReason?: string; // Why the call failed (if status === 'error')
 }
@@ -507,7 +508,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         },
         sdkCalls: state.sdkCalls.some(c => c.agent === event.agent && c.status === 'running' && (!event.task_id || c.taskId === event.task_id))
           ? state.sdkCalls  // Already tracked from delegation event
-          : [...state.sdkCalls, { agent: event.agent, startTime: event.timestamp, status: 'running', taskId: event.task_id }],
+          : [...state.sdkCalls, { agent: event.agent, startTime: event.timestamp, status: 'running', taskId: event.task_id, taskName: event.task_name || event.task?.slice(0, 120) }],
         liveAgentStream: {
           ...state.liveAgentStream,
           [event.agent]: {
