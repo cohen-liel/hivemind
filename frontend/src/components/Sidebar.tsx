@@ -132,12 +132,11 @@ export default function Sidebar({ onProjectsChange }: Props) {
         style={{ borderBottom: '1px solid var(--border-dim)' }}>
         {!collapsed && (
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-sm ${hasRunningProject ? 'logo-breathing' : ''}`}
+            <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${hasRunningProject ? 'logo-breathing' : ''}`}
               style={{
-                background: 'var(--glow-blue)',
                 boxShadow: '0 0 12px var(--glow-blue)',
               }}>
-              ⚡
+              <img src="/favicon-32x32.png" alt="Hivemind" width="28" height="28" style={{ borderRadius: '6px' }} />
             </div>
             <span className="text-sm font-bold truncate"
               style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>

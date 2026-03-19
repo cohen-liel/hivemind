@@ -340,11 +340,7 @@ export default function LoginScreen({ onAuthenticated }: LoginScreenProps): Reac
               <path d="M20 6L9 17l-5-5" className="login-checkmark-draw"/>
             </svg>
           ) : (
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-              <path d="M2 17l10 5 10-5"/>
-              <path d="M2 12l10 5 10-5"/>
-            </svg>
+            <img src="/favicon-32x32.png" alt="Hivemind" width="48" height="48" style={{ borderRadius: '10px' }} />
           )}
         </div>
 
