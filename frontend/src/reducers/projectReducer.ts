@@ -59,7 +59,7 @@ export interface LiveAgentEntry {
 }
 
 export type MobileView = 'orchestra' | 'activity' | 'code' | 'changes' | 'plan' | 'trace';
-export type DesktopTab = 'hivemind' | 'agents' | 'plan' | 'code' | 'diff' | 'trace';
+export type DesktopTab = 'hivemind' | 'plan' | 'code' | 'diff' | 'trace';
 
 // ============================================================================
 // State

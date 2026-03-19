@@ -37,7 +37,7 @@ function safeSetItem(key: string, value: string): void {
 // ============================================================================
 
 const VALID_DESKTOP_TABS = new Set<DesktopTab>([
-  'hivemind', 'agents', 'plan', 'code', 'diff', 'trace',
+  'hivemind', 'plan', 'code', 'diff', 'trace',
 ]);
 const VALID_MOBILE_VIEWS = new Set<MobileView>([
   'orchestra', 'activity', 'code', 'changes', 'plan', 'trace',

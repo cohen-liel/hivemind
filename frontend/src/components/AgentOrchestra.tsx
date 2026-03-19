@@ -2,7 +2,6 @@ import React from 'react';
 import type { AgentState as AgentStateType, LoopProgress, ActivityEntry } from '../types';
 import type { HealingEvent, DesktopTab } from '../reducers/projectReducer';
 import type { AgentMetric } from '../hooks/useAgentMetrics';
-import ConductorMode from './ConductorMode';
 import AgentStatusPanel from './AgentStatusPanel';
 import AgentMetrics from './AgentMetrics';
 import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
@@ -25,10 +24,6 @@ export interface HivemindTabContentProps {
   projectStatus: string;
   messageDraft: string;
   healingEvents: HealingEvent[];
-}
-
-export interface AgentsTabContentProps {
-  agentStateList: AgentStateType[];
   selectedAgent: string | null;
   onSelectAgent: (agent: string | null) => void;
   agentMetrics: AgentMetric[];
@@ -57,11 +52,6 @@ const DESKTOP_TAB_ITEMS: DesktopTabItem[] = [
     id: 'hivemind',
     label: 'Hivemind',
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="4" /><line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" /></svg>,
-  },
-  {
-    id: 'agents',
-    label: 'Agents',
-    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
   },
   {
     id: 'plan',
@@ -232,70 +222,92 @@ export const DesktopTabBar = React.memo(function DesktopTabBar({
 });
 
 // ============================================================================
-// HivemindTabContent — Conductor mode + DAG + self-healing
+// HivemindTabContent — Agent cards + metrics + self-healing (merged view)
 // ============================================================================
 
 export const HivemindTabContent = React.memo(function HivemindTabContent({
   agentStateList,
-  loopProgress,
-  activities,
   projectStatus,
-  messageDraft,
   healingEvents,
-}: HivemindTabContentProps): React.ReactElement {
-  return (
-    <>
-      <ConductorMode
-        agents={agentStateList}
-        progress={loopProgress}
-        activities={activities}
-        status={projectStatus}
-        messageDraft={messageDraft}
-      />
-      {/* Self-Healing Events */}
-      {healingEvents.length > 0 && (
-        <div className="px-6 pb-4">
-          <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid rgba(245,158,11,0.2)' }}>
-            <h3 className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
-              🔧 Self-Healing ({healingEvents.length})
-            </h3>
-            <div className="space-y-2">
-              {healingEvents.map((h, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  <span className="px-1.5 py-0.5 rounded" style={{ background: 'var(--glow-red)', color: 'var(--accent-red)', fontSize: '10px' }}>{h.failure_category}</span>
-                  <span>{h.failed_task}</span>
-                  <span style={{ color: 'var(--text-muted)' }}>→</span>
-                  <span className="font-mono" style={{ color: 'var(--accent-green)' }}>{h.remediation_role}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-});
-
-// ============================================================================
-// AgentsTabContent — Agent status panel + metrics
-// ============================================================================
-
-export const AgentsTabContent = React.memo(function AgentsTabContent({
-  agentStateList,
   selectedAgent,
   onSelectAgent,
   agentMetrics,
-}: AgentsTabContentProps): React.ReactElement {
+}: HivemindTabContentProps): React.ReactElement {
+  const workingAgents = agentStateList.filter(a => a.state === 'working' && a.name !== 'orchestrator');
+  const doneAgents = agentStateList.filter(a => a.state === 'done' && a.name !== 'orchestrator');
+  const errorAgents = agentStateList.filter(a => a.state === 'error' && a.name !== 'orchestrator');
+  const isRunning = projectStatus === 'running';
+
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-5">
+      {/* Status summary strip — shows when agents are running */}
+      {isRunning && workingAgents.length > 0 && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl animate-[fadeSlideIn_0.3s_ease-out]"
+          style={{
+            background: 'linear-gradient(135deg, rgba(99,140,255,0.06), rgba(139,92,246,0.04))',
+            border: '1px solid rgba(99,140,255,0.12)',
+          }}>
+          <div className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--accent-blue)' }} />
+            <span className="text-xs font-bold tracking-wider" style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
+              {workingAgents.length} ACTIVE
+            </span>
+          </div>
+          {doneAgents.length > 0 && (
+            <span className="text-[10px] font-medium" style={{ color: 'var(--accent-green)' }}>
+              {doneAgents.length} done
+            </span>
+          )}
+          {errorAgents.length > 0 && (
+            <span className="text-[10px] font-medium" style={{ color: 'var(--accent-red)' }}>
+              {errorAgents.length} failed
+            </span>
+          )}
+          <div className="flex-1" />
+          <div className="flex -space-x-2">
+            {workingAgents.slice(0, 5).map(a => {
+              const ac = getAgentAccent(a.name);
+              return (
+                <div key={a.name} className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] ring-2 ring-[var(--bg-panel)]"
+                  style={{ background: ac.bg, border: `1px solid ${ac.color}40` }}>
+                  {AGENT_ICONS[a.name] || '\u{1F527}'}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Agent cards grid */}
       <AgentStatusPanel
         agents={agentStateList}
         onSelectAgent={onSelectAgent}
         selectedAgent={selectedAgent}
         layout="grid"
       />
+
+      {/* Agent metrics (when available) */}
       {agentMetrics.length > 0 && (
         <AgentMetrics metrics={agentMetrics} />
+      )}
+
+      {/* Self-Healing Events */}
+      {healingEvents.length > 0 && (
+        <div className="rounded-xl p-4" style={{ background: 'var(--bg-card)', border: '1px solid rgba(245,158,11,0.2)' }}>
+          <h3 className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
+            Self-Healing ({healingEvents.length})
+          </h3>
+          <div className="space-y-2">
+            {healingEvents.map((h, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                <span className="px-1.5 py-0.5 rounded" style={{ background: 'var(--glow-red)', color: 'var(--accent-red)', fontSize: '10px' }}>{h.failure_category}</span>
+                <span>{h.failed_task}</span>
+                <span style={{ color: 'var(--text-muted)' }}>→</span>
+                <span className="font-mono" style={{ color: 'var(--accent-green)' }}>{h.remediation_role}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -28,7 +28,6 @@ import {
   LiveStatusStrip,
   DesktopTabBar,
   HivemindTabContent,
-  AgentsTabContent,
 } from '../AgentOrchestra';
 import ActivityPanel from '../ActivityPanel';
 import CodePanel from '../CodePanel';
@@ -119,13 +118,6 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
                 projectStatus={project.status}
                 messageDraft={message}
                 healingEvents={healingEvents}
-              />
-            </PanelErrorBoundary>
-          )}
-          {desktopTab === 'agents' && (
-            <PanelErrorBoundary panelName="Agents">
-              <AgentsTabContent
-                agentStateList={agentStateList}
                 selectedAgent={selectedAgent}
                 onSelectAgent={onSelectAgent}
                 agentMetrics={agentMetrics}
