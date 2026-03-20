@@ -142,6 +142,30 @@ async def get_project(project_id: str):
         from config import DEFAULT_AGENTS
 
         default_agent_names = [a["name"] for a in DEFAULT_AGENTS]
+        # Extract DAG progress from saved orchestrator state
+        dag_progress = None
+        dag_vision = None
+        if saved_orch:
+            agents_blob = saved_orch.get("agent_states", {})
+            if isinstance(agents_blob, dict) and "dag_graph" in agents_blob:
+                graph_data = agents_blob.get("dag_graph")
+                statuses = agents_blob.get("dag_task_statuses", {})
+                if graph_data:
+                    dag_vision = graph_data.get("vision")
+                    tasks = graph_data.get("tasks", []) or []
+                    total = len(tasks)
+                    if total > 0:
+                        completed = sum(1 for s in statuses.values() if s in ("completed", "skipped"))
+                        failed = sum(1 for s in statuses.values() if s == "failed")
+                        running = sum(1 for s in statuses.values() if s == "working")
+                        dag_progress = {
+                            "total": total,
+                            "completed": completed,
+                            "failed": failed,
+                            "running": running,
+                            "percent": round(completed / total * 100) if total else 0,
+                        }
+
         data = {
             "project_id": project_id,
             "project_name": db_project["name"],
@@ -160,6 +184,8 @@ async def get_project(project_id: str):
             "conversation_log": recent_msgs,
             "description": db_project.get("description", ""),
             "message_count": total_msgs,
+            "dag_progress": dag_progress,
+            "dag_vision": dag_vision,
         }
 
     return data
@@ -404,6 +430,16 @@ async def get_files(project_id: str):
     if not project_dir or not Path(project_dir).exists():
         return {"stat": "", "status": "", "diff": ""}
 
+    # Check if git is initialized in the project directory
+    if not (Path(project_dir) / ".git").exists():
+        return {
+            "stat": "",
+            "status": "",
+            "diff": "",
+            "project_dir": str(project_dir),
+            "error": "Git repository not initialized. Changes will be tracked after the first agent run.",
+        }
+
     try:
 
         async def _run_git(*args: str, timeout: float = 5.0) -> str:
@@ -568,6 +604,42 @@ async def create_project(req: CreateProjectRequest):
     except OSError as e:
         logger.error("Cannot create project directory: %s", e, exc_info=True)
         return _problem(400, "Cannot create directory: permission denied or path is invalid.")
+
+    # Initialize a git repo so the Diff tab can track file changes.
+    # Claude Code CLI normally does this, but we ensure it exists regardless.
+    git_dir = Path(project_dir) / ".git"
+    if not git_dir.exists():
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "init",
+                cwd=project_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            # Set default user for commits if not configured globally
+            for cfg_args in (
+                ["git", "config", "user.email", "hivemind@local"],
+                ["git", "config", "user.name", "Hivemind"],
+            ):
+                p = await asyncio.create_subprocess_exec(
+                    *cfg_args,
+                    cwd=project_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(p.communicate(), timeout=3.0)
+            # Create an initial empty commit so HEAD exists for diff operations
+            p = await asyncio.create_subprocess_exec(
+                "git", "commit", "--allow-empty", "-m", "Initial commit",
+                cwd=project_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(p.communicate(), timeout=5.0)
+            logger.info("[%s] Initialized git repo in %s", name, project_dir)
+        except Exception as git_err:
+            logger.warning("[%s] Git init failed (non-fatal): %s", name, git_err)
 
     project_id = name.lower().replace(" ", "-")
     existing = await state.session_mgr.load_project(project_id)
