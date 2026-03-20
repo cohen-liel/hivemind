@@ -8,7 +8,8 @@ export interface DagTask {
   id: string;
   role: string;
   goal: string;
-  depends_on?: string[];
+  depends_on: string[];
+  required_artifacts?: string[];
   is_remediation?: boolean;
   message_round?: number;
 }

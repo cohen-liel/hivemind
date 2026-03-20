@@ -103,7 +103,7 @@ describe('Event sequence validation', () => {
   it('test_reducer_when_event_has_no_sequence_id_should_process', () => {
     const state = stateWith({ lastSequenceId: 10 });
     const event = makeWSEvent({}); // No sequence_id field
-    delete (event as Record<string, unknown>).sequence_id;
+    delete (event as unknown as Record<string, unknown>).sequence_id;
     const result = projectReducer(state, { type: 'WS_AGENT_UPDATE', event });
 
     // Should process normally — lastSequenceId unchanged (no seq to track)
@@ -129,7 +129,7 @@ describe('Event sequence validation', () => {
     const state = stateWith({ lastSequenceId: 10 });
 
     // Try WS_TOOL_USE with old sequence
-    const toolEvent = makeWSEvent({ sequence_id: 5, tool: 'read_file' }) as WSEvent;
+    const toolEvent = makeWSEvent({ sequence_id: 5 }) as WSEvent;
     const result1 = projectReducer(state, { type: 'WS_TOOL_USE', event: toolEvent });
     expect(result1).toBe(state);
 
@@ -184,7 +184,7 @@ describe('State size monitoring', () => {
 
     // Small state should not trigger warning
     const sizeWarnings = warnSpy.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].includes('State size warning'),
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('State size warning'),
     );
     expect(sizeWarnings).toHaveLength(0);
     expect(result.sending).toBe(true);
@@ -210,7 +210,7 @@ describe('State size monitoring', () => {
     projectReducer(state, { type: 'SET_SENDING', sending: true });
 
     const sizeWarnings = warnSpy.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].includes('State size warning'),
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('State size warning'),
     );
     expect(sizeWarnings.length).toBeGreaterThanOrEqual(1);
     expect(sizeWarnings[0][0]).toContain('exceeds 1MB threshold');
@@ -232,7 +232,7 @@ describe('State size monitoring', () => {
     projectReducer(state, { type: 'SET_SENDING', sending: true });
 
     const firstCount = warnSpy.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].includes('State size warning'),
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('State size warning'),
     ).length;
 
     // Second call within throttle interval — should NOT check again
@@ -240,7 +240,7 @@ describe('State size monitoring', () => {
     projectReducer(state, { type: 'SET_SENDING', sending: false });
 
     const secondCount = warnSpy.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && call[0].includes('State size warning'),
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('State size warning'),
     ).length;
 
     // The warning count should not increase for the second call
@@ -293,7 +293,7 @@ describe('Error boundary for malformed events', () => {
       type: 'dag_task_update',
     });
     // No task_id — reducer should handle gracefully
-    delete (event as Record<string, unknown>).task_id;
+    delete (event as unknown as Record<string, unknown>).task_id;
 
     const result = projectReducer(state, { type: 'WS_DAG_TASK_UPDATE', event });
 

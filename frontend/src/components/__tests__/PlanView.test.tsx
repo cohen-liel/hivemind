@@ -292,12 +292,12 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           task_id: 'task_001',
           action: 'modified',
           changes: { goal: 'Updated goal text here' },
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
 
-      const updatedTask = result.dagGraph?.tasks.find(t => t.id === 'task_001');
+      const updatedTask = result.dagGraph?.tasks?.find(t => t.id === 'task_001');
       expect(updatedTask?.goal).toBe('Updated goal text here');
     });
 
@@ -312,13 +312,13 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           task_id: 'task_001',
           action: 'modified',
           changes: { goal: 'New goal' },
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
 
-      expect(result.dagGraph?.tasks.length).toBe(3);
-      const task2 = result.dagGraph?.tasks.find(t => t.id === 'task_002');
+      expect(result.dagGraph?.tasks?.length).toBe(3);
+      const task2 = result.dagGraph?.tasks?.find(t => t.id === 'task_002');
       expect(task2?.goal).toBe('Build login form');
     });
   });
@@ -340,13 +340,13 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
             goal: 'Add rate limiting',
             depends_on: [],
           },
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
 
-      expect(result.dagGraph?.tasks.length).toBe(4);
-      const newTask = result.dagGraph?.tasks.find(t => t.id === 'task_004');
+      expect(result.dagGraph?.tasks?.length).toBe(4);
+      const newTask = result.dagGraph?.tasks?.find(t => t.id === 'task_004');
       expect(newTask).toBeDefined();
       expect(newTask?.goal).toBe('Add rate limiting');
       expect(result.dagTaskStatus['task_004']).toBe('pending');
@@ -368,13 +368,13 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
             goal: 'Duplicate task',
             depends_on: [],
           },
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
 
       // Should be same reference since no change was made
-      expect(result.dagGraph?.tasks.length).toBe(3);
+      expect(result.dagGraph?.tasks?.length).toBe(3);
     });
   });
 
@@ -389,13 +389,13 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           timestamp: Date.now() / 1000,
           task_id: 'task_003',
           action: 'removed',
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
 
-      expect(result.dagGraph?.tasks.length).toBe(2);
-      expect(result.dagGraph?.tasks.find(t => t.id === 'task_003')).toBeUndefined();
+      expect(result.dagGraph?.tasks?.length).toBe(2);
+      expect(result.dagGraph?.tasks?.find(t => t.id === 'task_003')).toBeUndefined();
     });
 
     it('test_reducer_when_removed_event_should_remove_task_status', () => {
@@ -408,7 +408,7 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           timestamp: Date.now() / 1000,
           task_id: 'task_003',
           action: 'removed',
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
@@ -428,7 +428,7 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           timestamp: Date.now() / 1000,
           task_id: 'task_003',
           action: 'removed',
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
@@ -446,13 +446,13 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           timestamp: Date.now() / 1000,
           task_id: 'task_003',
           action: 'removed',
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
 
-      expect(result.dagGraph?.tasks.find(t => t.id === 'task_001')).toBeDefined();
-      expect(result.dagGraph?.tasks.find(t => t.id === 'task_002')).toBeDefined();
+      expect(result.dagGraph?.tasks?.find(t => t.id === 'task_001')).toBeDefined();
+      expect(result.dagGraph?.tasks?.find(t => t.id === 'task_002')).toBeDefined();
     });
   });
 
@@ -467,7 +467,7 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           timestamp: Date.now() / 1000,
           task_id: 'task_001',
           status: 'working',
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);
@@ -486,7 +486,7 @@ describe('projectReducer WS_DAG_TASK_UPDATE plan modifications', () => {
           task_id: 'task_001',
           status: 'failed',
           failure_reason: 'Timed out',
-        } as WSEvent,
+        } as unknown as WSEvent,
       };
 
       const result = projectReducer(state, action);

@@ -363,7 +363,7 @@ describe('dagToPlanSteps (task_006)', () => {
 
   it('test_dag_to_steps_when_failed_status_should_map_to_error', () => {
     const tasks: DagTask[] = [
-      { id: 'task_001', role: 'backend_developer', goal: 'Build API' },
+      { id: 'task_001', role: 'backend_developer', goal: 'Build API', depends_on: [] },
     ];
     const graph = makeDagGraph(tasks);
     const steps = dagToPlanSteps(graph, { task_001: 'failed' as const }, {});
@@ -372,7 +372,7 @@ describe('dagToPlanSteps (task_006)', () => {
 
   it('test_dag_to_steps_when_remediation_should_mark_flag', () => {
     const tasks: DagTask[] = [
-      { id: 'task_001', role: 'backend_developer', goal: 'Fix the bug', is_remediation: true },
+      { id: 'task_001', role: 'backend_developer', goal: 'Fix the bug', is_remediation: true, depends_on: [] },
     ];
     const graph = makeDagGraph(tasks);
     const steps = dagToPlanSteps(graph, {}, {});
@@ -381,7 +381,7 @@ describe('dagToPlanSteps (task_006)', () => {
 
   it('test_dag_to_steps_should_preserve_dependency_links', () => {
     const tasks: DagTask[] = [
-      { id: 'task_001', role: 'pm', goal: 'Plan the project' },
+      { id: 'task_001', role: 'pm', goal: 'Plan the project', depends_on: [] },
       { id: 'task_002', role: 'dev', goal: 'Build feature', depends_on: ['task_001'] },
     ];
     const graph = makeDagGraph(tasks);
