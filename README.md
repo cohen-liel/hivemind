@@ -96,6 +96,10 @@ Hivemind handles the hard orchestration details correctly.
 |---|---|
 | **Dependency-aware DAG execution.** | Tasks execute in optimal order. The PM creates a real dependency graph, not a flat list. |
 | **Two-phase agent protocol.** | Each agent runs a work phase (tools enabled) followed by a structured summary phase, guaranteeing parseable output. |
+| **Structured Handoff Protocol.** | Agents don't just finish tasks; they write detailed handoff documents explaining *what* they built, *why*, and *how* to test it for the next agent. |
+| **TDD Verification Loop.** | The test engineer doesn't just write tests—they are forced to run them, fix bugs, and provide actual terminal output as proof. |
+| **Two-Stage Code Review.** | The reviewer agent performs a strict two-stage check: Stage 1 for spec compliance, and Stage 2 for code quality and security. |
+| **PM Brainstorming Phase.** | Before committing to a plan, the PM agent evaluates 3 different architectural approaches and documents trade-offs. |
 | **Active escalation.** | Watchdog monitors 5 stuck signals (text similarity > 85%, no file progress, circular delegation). Triggers reassign → simplify → kill & respawn. |
 | **Exponential backoff with circuit breaker.** | Rate limits (429) are caught per-agent with retry strategy. Other agents continue working. |
 | **Proactive memory injection.** | Past failures and lessons are injected into agent prompts so the team learns across sessions. |
@@ -256,7 +260,7 @@ Hivemind deploys the right agent for each task. Here is the full team:
 
 | Agent | Role |
 |---|---|
-| **PM Agent** | Analyzes the request and creates the structured execution plan (TaskGraph) |
+| **PM Agent** | Brainstorms architectural approaches, analyzes trade-offs, and creates the structured execution plan (TaskGraph) |
 | **Orchestrator** | Routes messages, manages delegation, tracks progress, handles lifecycle |
 | **Memory Agent** | Updates project knowledge after each execution to improve future runs |
 
@@ -274,9 +278,9 @@ Hivemind deploys the right agent for each task. Here is the full team:
 
 | Agent | Specialty |
 |---|---|
-| **Test Engineer** | pytest, TDD, end-to-end tests |
+| **Test Engineer** | Writes tests, runs them in a strict TDD verification loop, and proves they pass |
 | **Security Auditor** | OWASP Top 10, dependency scanning |
-| **Reviewer** | Code quality, architecture critique, consistency checks |
+| **Reviewer** | Performs a rigorous two-stage review: spec compliance followed by code quality checks |
 | **UX Critic** | Accessibility, usability heuristics |
 | **Researcher** | Technical research, documentation, best practices |
 
@@ -378,7 +382,7 @@ pnpm dev              # Full dev (backend + frontend, watch mode)
 pnpm dev:frontend     # Frontend only with hot reload
 pnpm dev:backend      # Backend only
 
-python3 -m pytest tests/ -v   # Run 1,282 tests
+python3 -m pytest tests/ -v   # Run 1,319 tests
 cd frontend && npx tsc --noEmit   # Type checking
 ```
 
@@ -396,6 +400,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 - 🟢 Proactive memory
 - 🟢 Code review gate
 - ⚪ OpenClaw agent runtime support
+- 🟢 Structured agent handoff protocol
+- 🟢 Strict TDD verification loop
+- 🟢 Two-stage code review
 - ⚪ Template marketplace (pre-built project DAGs)
 - ⚪ Plugin system for custom agent types
 - ⚪ Multi-project orchestration

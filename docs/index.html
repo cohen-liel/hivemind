@@ -748,6 +748,21 @@
           <h3>Circuit Breaker</h3>
           <p>SDK client prevents cascade failures when the LLM is overloaded. Other agents keep working.</p>
         </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🤝</div>
+          <h3>Structured Handoffs</h3>
+          <p>Agents write detailed handoff documents explaining what they built, why, and how to test it for the next agent.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">✅</div>
+          <h3>TDD Verification Loop</h3>
+          <p>The test engineer runs tests, fixes failures, and provides actual terminal output as proof — no hallucinated results.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">📋</div>
+          <h3>Two-Stage Review</h3>
+          <p>Code review is split into spec compliance (does it match requirements?) and code quality (is it well-written?).</p>
+        </div>
       </div>
     </div>
   </section>
@@ -805,7 +820,7 @@
         <div class="agent-card">
           <div class="agent-emoji">📋</div>
           <h4>PM Agent</h4>
-          <p>Breaks your feature into a dependency-aware task graph and assigns each task to the right specialist</p>
+          <p>Brainstorms architectural approaches, evaluates trade-offs, then creates a dependency-aware task graph</p>
         </div>
         <div class="agent-card">
           <div class="agent-emoji">🎯</div>
@@ -845,7 +860,7 @@
         <div class="agent-card">
           <div class="agent-emoji">🧪</div>
           <h4>Test Engineer</h4>
-          <p>Writes unit, integration, and e2e tests to ensure every feature works before it ships</p>
+          <p>Writes tests in a strict TDD verification loop — runs them, fixes failures, and proves they pass with real output</p>
         </div>
         <div class="agent-card">
           <div class="agent-emoji">🔒</div>
@@ -855,7 +870,7 @@
         <div class="agent-card">
           <div class="agent-emoji">👁️</div>
           <h4>Reviewer</h4>
-          <p>Reviews all code for quality, consistency, and best practices before it gets committed</p>
+          <p>Performs a rigorous two-stage review: first checks spec compliance, then evaluates code quality and security</p>
         </div>
       </div>
     </div>
