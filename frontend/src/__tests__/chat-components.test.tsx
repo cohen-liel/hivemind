@@ -25,7 +25,7 @@ function makeChannel(overrides: Partial<ChatChannel> = {}): ChatChannel {
     description: 'General chat',
     is_archived: false,
     created_by: 'user-1',
-    created_at: '2026-03-20T00:00:00Z',
+    created_at: 1742428800,
     unread_count: 0,
     ...overrides,
   };

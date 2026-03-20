@@ -79,10 +79,10 @@ function handleWSEvent(event: WSEvent, dispatch: (action: ProjectAction) => void
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('plan_delta dispatch (task_001)', () => {
-  let dispatch: ReturnType<typeof vi.fn>;
+  let dispatch: ReturnType<typeof vi.fn> & ((action: ProjectAction) => void);
 
   beforeEach(() => {
-    dispatch = vi.fn();
+    dispatch = vi.fn() as ReturnType<typeof vi.fn> & ((action: ProjectAction) => void);
     nextIdCounter = 0;
   });
 
@@ -127,7 +127,7 @@ describe('plan_delta dispatch (task_001)', () => {
   it('test_plan_delta_when_dispatch_throws_should_catch_error', () => {
     const throwingDispatch = vi.fn(() => {
       throw new Error('Reducer error');
-    });
+    }) as ReturnType<typeof vi.fn> & ((action: ProjectAction) => void);
     const event: WSEvent = {
       type: 'plan_delta',
       add_tasks: [],

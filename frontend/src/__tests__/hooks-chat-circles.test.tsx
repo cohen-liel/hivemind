@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import type { ChatChannel, ChatMessage, Circle, CircleMember } from '../types';
+import type { ChatChannel, ChatMessage, Circle, CircleMember, CircleMemberRole } from '../types';
 
 // ---------------------------------------------------------------------------
 // Mock api module
@@ -28,18 +28,18 @@ const mockRemoveCircleMember = vi.fn();
 
 vi.mock('../api', () => ({
   getChatChannels: (...args: unknown[]) => mockGetChatChannels(...(args as [])),
-  getChatMessages: (...args: unknown[]) => mockGetChatMessages(...args),
-  sendChatMessage: (...args: unknown[]) => mockSendChatMessage(...args),
-  createChatChannel: (...args: unknown[]) => mockCreateChatChannel(...args),
-  markMessageRead: (...args: unknown[]) => mockMarkMessageRead(...args),
+  getChatMessages: (...args: unknown[]) => mockGetChatMessages(...(args as any[])),
+  sendChatMessage: (...args: unknown[]) => mockSendChatMessage(...(args as any[])),
+  createChatChannel: (...args: unknown[]) => mockCreateChatChannel(...(args as any[])),
+  markMessageRead: (...args: unknown[]) => mockMarkMessageRead(...(args as any[])),
   getCircles: () => mockGetCircles(),
-  getCircle: (...args: unknown[]) => mockGetCircle(...args),
-  getCircleMembers: (...args: unknown[]) => mockGetCircleMembers(...args),
-  getCircleProjects: (...args: unknown[]) => mockGetCircleProjects(...args),
-  createCircle: (...args: unknown[]) => mockCreateCircle(...args),
-  deleteCircle: (...args: unknown[]) => mockDeleteCircle(...args),
-  addCircleMember: (...args: unknown[]) => mockAddCircleMember(...args),
-  removeCircleMember: (...args: unknown[]) => mockRemoveCircleMember(...args),
+  getCircle: (...args: unknown[]) => mockGetCircle(...(args as any[])),
+  getCircleMembers: (...args: unknown[]) => mockGetCircleMembers(...(args as [])),
+  getCircleProjects: (...args: unknown[]) => mockGetCircleProjects(...(args as any[])),
+  createCircle: (...args: unknown[]) => mockCreateCircle(...(args as any[])),
+  deleteCircle: (...args: unknown[]) => mockDeleteCircle(...(args as any[])),
+  addCircleMember: (...args: unknown[]) => mockAddCircleMember(...(args as any[])),
+  removeCircleMember: (...args: unknown[]) => mockRemoveCircleMember(...(args as any[])),
 }));
 
 // Mock WebSocket
@@ -76,7 +76,7 @@ function makeChannel(overrides: Partial<ChatChannel> = {}): ChatChannel {
     description: null,
     is_archived: false,
     created_by: 'u1',
-    created_at: '2026-03-20T00:00:00Z',
+    created_at: 1742428800,
     unread_count: 0,
     ...overrides,
   };
@@ -91,7 +91,9 @@ function makeCircle(overrides: Partial<Circle> = {}): Circle {
     member_count: 3,
     project_count: 1,
     created_by: 'u1',
-    created_at: '2026-03-20T00:00:00Z',
+    created_at: 1742428800,
+    updated_at: 1742428800,
+    settings: null,
     ...overrides,
   };
 }
@@ -104,9 +106,10 @@ function makeMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     content: 'Hello',
     message_type: 'text',
     parent_message_id: null,
-    is_edited: false,
     metadata: null,
-    created_at: '2026-03-20T00:00:00Z',
+    created_at: 1742428800,
+    updated_at: null,
+    is_deleted: false,
     ...overrides,
   };
 }
@@ -230,9 +233,9 @@ describe('useCircleDetail', () => {
   });
 
   it('test_useCircleDetail_when_removeMember_should_update_list', async () => {
-    const members = [
-      { id: 'm1', circle_id: 'circle-1', user_id: 'user-1', role: 'owner', joined_at: '' },
-      { id: 'm2', circle_id: 'circle-1', user_id: 'user-2', role: 'member', joined_at: '' },
+    const members: CircleMember[] = [
+      { user_id: 'user-1', role: 'owner' as CircleMemberRole },
+      { user_id: 'user-2', role: 'member' as CircleMemberRole },
     ];
     mockGetCircleMembers.mockResolvedValue(members);
     mockRemoveCircleMember.mockResolvedValue(undefined);
