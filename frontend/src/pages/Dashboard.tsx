@@ -289,7 +289,7 @@ export default function Dashboard(): React.ReactElement {
       } else {
         // Use enriched metadata: if backend says is_running, force 'running'
         // regardless of the status string (avoids idle flicker during task gaps)
-        const wsAny = event as Record<string, unknown>;
+        const wsAny = event as unknown as Record<string, unknown>;
         const isRunning = wsAny.is_running === true;
         const effectiveStatus = isRunning ? 'running' : event.status;
         dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: effectiveStatus as Project['status'] });
