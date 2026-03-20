@@ -2913,9 +2913,8 @@ class OrchestratorManager:
                     turn=self.turn_count,
                     max_turns=MAX_TURNS_PER_CYCLE,
                     cost=self.total_cost_usd,
-                    max_budget=MAX_BUDGET_USD,
+                    max_budget=self._effective_budget,
                 )
-
                 await self._notify(
                     f"{AGENT_EMOJI.get('orchestrator', '🔄')} Turn {self.turn_count}/{MAX_TURNS_PER_CYCLE} — "
                     f"*orchestrator* is {'planning & delegating' if self.multi_agent else 'working'}..."

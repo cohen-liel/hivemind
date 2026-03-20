@@ -628,7 +628,7 @@ async def run_sub_agents(
                     max_turns=MAX_TURNS_PER_CYCLE,
                     cost=mgr.total_cost_usd,
                     total_tokens=mgr.total_tokens,
-                    max_budget=MAX_BUDGET_USD,
+                    max_budget=mgr._effective_budget,
                 )
 
     async def _isolated_run_role(role, dels):
