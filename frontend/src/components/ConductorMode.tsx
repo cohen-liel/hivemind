@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
 import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
 import type { AgentState, LoopProgress, ActivityEntry } from '../types';
+import type { DagGraph } from './planViewHelpers';
+import { detectRemediationChains, buildArtifactEdges, dagToPlanSteps } from './planViewHelpers';
 
 interface Props {
   agents: AgentState[];
@@ -8,6 +10,8 @@ interface Props {
   activities: ActivityEntry[];
   status: string;
   messageDraft: string; // current typed message (for forecast)
+  dagGraph?: DagGraph | null;
+  dagTaskStatus?: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled' | 'skipped'>;
 }
 
 // --- Agent accent lookup ---
@@ -51,13 +55,32 @@ function estimateForecast(msg: string, agentCount: number): { time: string; agen
   return { time: `~${minutes}m`, agents };
 }
 
-export default function ConductorMode({ agents, progress, activities, status, messageDraft }: Props) {
+export default function ConductorMode({ agents, progress, activities, status, messageDraft, dagGraph, dagTaskStatus = {} }: Props) {
   const artifacts = useMemo(() => extractArtifacts(activities), [activities]);
   const forecast = useMemo(() => estimateForecast(messageDraft, agents.length), [messageDraft, agents.length]);
   const orchestrator = agents.find(a => a.name === 'orchestrator');
   const workingAgents = agents.filter(a => a.state === 'working');
   const isActive = status === 'running' && workingAgents.length > 0;
   const orchPhase = orchestrator?.task || orchestrator?.current_tool;
+
+  // Compute remediation chains and artifact flow from DAG data
+  const planSteps = useMemo(() => {
+    if (!dagGraph?.tasks?.length) return [];
+    return dagToPlanSteps(dagGraph, dagTaskStatus, {});
+  }, [dagGraph, dagTaskStatus]);
+
+  const remediationChains = useMemo(() => detectRemediationChains(planSteps), [planSteps]);
+  const artifactEdges = useMemo(() => buildArtifactEdges(planSteps), [planSteps]);
+
+  const activeRemediations = remediationChains.filter(c => !c.isHealed);
+  const healedCount = remediationChains.filter(c => c.isHealed).length;
+
+  // Artifact flow summary for conductor view
+  const artifactFlowSummary = useMemo(() => {
+    const received = artifactEdges.filter(e => e.status === 'received').length;
+    const pending = artifactEdges.filter(e => e.status === 'missing' || e.status === 'partial').length;
+    return { received, pending, total: artifactEdges.length };
+  }, [artifactEdges]);
 
   // Progress ring values
   const turnPct = progress ? Math.min((progress.turn / Math.max(progress.max_turns, 1)) * 100, 100) : 0;
@@ -192,6 +215,49 @@ export default function ConductorMode({ agents, progress, activities, status, me
           <span className="text-xs" style={{ color: 'var(--accent-green)' }}>
             🔧 Auto-resolving issue{healingAgents.size > 1 ? 's' : ''}...
           </span>
+        </div>
+      )}
+
+      {/* === REMEDIATION CHAIN INDICATORS === */}
+      {remediationChains.length > 0 && (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg mb-2 animate-[fadeSlideIn_0.3s_ease-out]"
+          style={{
+            background: activeRemediations.length > 0 ? 'rgba(245,166,35,0.05)' : 'rgba(61,214,140,0.05)',
+            border: `1px solid ${activeRemediations.length > 0 ? 'rgba(245,166,35,0.12)' : 'rgba(61,214,140,0.12)'}`,
+          }}>
+          <span className="text-[10px] font-bold" style={{
+            color: activeRemediations.length > 0 ? 'var(--accent-amber)' : 'var(--accent-green)',
+            fontFamily: 'var(--font-mono)',
+          }}>
+            {activeRemediations.length > 0
+              ? `🔧 ${activeRemediations.length} remediation${activeRemediations.length > 1 ? 's' : ''} active`
+              : `🩹 ${healedCount} issue${healedCount > 1 ? 's' : ''} self-healed`}
+          </span>
+        </div>
+      )}
+
+      {/* === ARTIFACT FLOW SUMMARY === */}
+      {artifactFlowSummary.total > 0 && isActive && (
+        <div className="flex items-center gap-3 px-3 py-1.5 rounded-lg mb-2"
+          style={{
+            background: 'rgba(34,211,238,0.04)',
+            border: '1px solid rgba(34,211,238,0.1)',
+          }}>
+          <span className="text-[9px] font-bold tracking-wider" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+            ARTIFACTS
+          </span>
+          <div className="flex items-center gap-2">
+            {artifactFlowSummary.received > 0 && (
+              <span className="text-[10px]" style={{ color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>
+                ✓ {artifactFlowSummary.received}
+              </span>
+            )}
+            {artifactFlowSummary.pending > 0 && (
+              <span className="text-[10px]" style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
+                ◐ {artifactFlowSummary.pending}
+              </span>
+            )}
+          </div>
         </div>
       )}
 

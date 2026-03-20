@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { getProjects } from '../api';
+import { getProjects, getChatChannels } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useTheme } from '../ThemeContext';
+import SidebarHealthBadge from './SidebarHealthBadge';
 import type { Project, WSEvent } from '../types';
 
 const STATUS_CONFIG: Record<string, { color: string; label: string; pulse: boolean }> = {
@@ -19,6 +20,7 @@ interface Props {
 export default function Sidebar({ onProjectsChange }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [collapsed, setCollapsed] = useState(false);
+  const [chatUnread, setChatUnread] = useState(0);
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
@@ -32,6 +34,22 @@ export default function Sidebar({ onProjectsChange }: Props) {
       // API not ready
     }
   }, [onProjectsChange]);
+
+  // Load chat unread count
+  useEffect(() => {
+    const loadUnread = async () => {
+      try {
+        const channels = await getChatChannels();
+        const total = channels.reduce((sum, ch) => sum + (ch.unread_count || 0), 0);
+        setChatUnread(total);
+      } catch {
+        // Silent
+      }
+    };
+    loadUnread();
+    const interval = setInterval(loadUnread, 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     loadProjects();
@@ -96,6 +114,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
     {
       path: '/',
       label: 'Dashboard',
+      shortcut: '⌘ 1',
       icon: (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <rect x="2" y="2" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.3"/>
@@ -108,10 +127,35 @@ export default function Sidebar({ onProjectsChange }: Props) {
     {
       path: '/schedules',
       label: 'Schedules',
+      shortcut: '⌘ 2',
       icon: (
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3"/>
           <path d="M8 5v3l2 2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      ),
+    },
+    {
+      path: '/circles',
+      label: 'Circles',
+      icon: (
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <circle cx="6" cy="5" r="2.5" stroke="currentColor" strokeWidth="1.3"/>
+          <path d="M1 14c0-2.5 2-4.5 5-4.5s5 2 5 4.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+          <circle cx="11" cy="6" r="2" stroke="currentColor" strokeWidth="1.3"/>
+          <path d="M12 14c1.5-.5 3-2 3-3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
+    {
+      path: '/chat',
+      label: 'Chat',
+      badge: chatUnread,
+      icon: (
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v7a1.5 1.5 0 01-1.5 1.5H6l-3 2.5V12H3.5A1.5 1.5 0 012 10.5v-7z"
+            stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+          <path d="M5.5 6h5M5.5 8.5h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
         </svg>
       ),
     },
@@ -199,6 +243,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
       <nav className="px-2 mb-2 flex-shrink-0 space-y-0.5">
         {navItems.map(item => {
           const isActive = location.pathname === item.path;
+          const badge = 'badge' in item ? (item as { badge?: number }).badge : undefined;
           return (
             <button
               key={item.path}
@@ -213,14 +258,31 @@ export default function Sidebar({ onProjectsChange }: Props) {
               }}
               onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
               onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; } }}
-              aria-label={item.label}
+              aria-label={`${item.label}${badge && badge > 0 ? `, ${badge} unread` : ''}`}
               {...(collapsed ? { 'data-tooltip': item.label } : {})}
             >
-              {item.icon}
+              <span className="relative">
+                {item.icon}
+                {/* Unread badge dot (collapsed mode) */}
+                {collapsed && badge !== undefined && badge > 0 && (
+                  <span
+                    className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full"
+                    style={{ background: 'var(--accent-blue)', border: '2px solid var(--bg-panel)' }}
+                  />
+                )}
+              </span>
               {!collapsed && <span>{item.label}</span>}
-              {!collapsed && (
+              {!collapsed && badge !== undefined && badge > 0 && (
+                <span
+                  className="min-w-[18px] h-[18px] flex items-center justify-center text-[10px] font-bold rounded-full px-1 ml-auto"
+                  style={{ background: 'var(--accent-blue)', color: 'white' }}
+                >
+                  {badge > 99 ? '99+' : badge}
+                </span>
+              )}
+              {!collapsed && !badge && 'shortcut' in item && (
                 <kbd className="ml-auto text-[9px] px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
-                  {item.path === '/' ? '⌘ 1' : '⌘ 2'}
+                  {(item as { shortcut?: string }).shortcut}
                 </kbd>
               )}
             </button>
@@ -288,8 +350,11 @@ export default function Sidebar({ onProjectsChange }: Props) {
         )}
       </div>
 
-      {/* Theme toggle + Settings */}
+      {/* Health badge + Theme toggle + Settings */}
       <div className="px-2 py-3 flex-shrink-0 space-y-0.5" style={{ borderTop: '1px solid var(--border-dim)' }}>
+        <SidebarHealthBadge collapsed={collapsed} />
+      </div>
+      <div className="px-2 pb-3 flex-shrink-0 space-y-0.5">
         {/* Theme toggle */}
         <button
           onClick={toggleTheme}

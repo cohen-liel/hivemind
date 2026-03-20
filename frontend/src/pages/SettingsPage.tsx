@@ -3,6 +3,7 @@ import { getSettings, updateSettings, persistSettings } from '../api';
 import { SettingsSkeleton } from '../components/Skeleton';
 import ErrorState from '../components/ErrorState';
 import { useToast } from '../components/Toast';
+import WatchdogStatusPanel from '../components/WatchdogStatusPanel';
 import type { Settings, NumericSettingsKey } from '../types';
 
 interface ApprovedDevice {
@@ -224,6 +225,9 @@ export default function SettingsPage() {
 
         {/* Device Management Section */}
         <DeviceManagement />
+
+        {/* Watchdog Test Health */}
+        <WatchdogStatusPanel />
 
         {/* Save button - sticky */}
         {hasChanges && (
