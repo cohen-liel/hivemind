@@ -89,3 +89,26 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8080/api/health || exit 1
 
 CMD ["python", "server.py"]
+
+# ── Stage 4: E2E test runner ──────────────────────────────────────────────
+# Used by: docker compose --profile test run test-runner
+# Must use bookworm (Debian) — Playwright Chromium requires glibc (Alpine won't work)
+FROM node:20-bookworm-slim AS test-runner
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/frontend
+
+# Install frontend deps and Playwright
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund \
+    && npx playwright install --with-deps chromium
+
+# Copy frontend source (tests, config, page objects)
+COPY frontend/ .
+
+ENV CI=true
+
+CMD ["npx", "playwright", "test"]

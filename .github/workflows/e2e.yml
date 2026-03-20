@@ -1,0 +1,123 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DASHBOARD_PORT: "8080"
+      PROJECTS_BASE_DIR: "/tmp/projects"
+      CONVERSATION_STORE_DIR: "/tmp/data"
+      DEVICE_AUTH_ENABLED: "false"
+      SANDBOX_ENABLED: "false"
+      CI: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Python backend setup ────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      # ── Node / frontend setup ───────────────────────────────────────
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      # ── Playwright browser cache ────────────────────────────────────
+      - name: Get Playwright version
+        id: pw-version
+        working-directory: frontend
+        run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
+
+      - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cached)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        working-directory: frontend
+        run: npx playwright install-deps chromium
+
+      # ── Start backend ───────────────────────────────────────────────
+      - name: Create required directories
+        run: mkdir -p /tmp/projects /tmp/data
+
+      - name: Start FastAPI backend
+        run: |
+          python server.py &
+          echo "Waiting for backend to be ready…"
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/health > /dev/null 2>&1; then
+              echo "Backend ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      # ── Run E2E tests ───────────────────────────────────────────────
+      # Playwright's webServer config (playwright.config.ts) auto-starts
+      # the Vite dev server on port 5173 when CI=true (reuseExistingServer: false).
+      # The backend is already running from the step above.
+      - name: Run Playwright E2E tests
+        working-directory: frontend
+        run: npx playwright test
+
+      # ── Upload artifacts on failure ─────────────────────────────────
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 14
+
+      - name: Upload test screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-screenshots
+          path: frontend/test-results/
+          retention-days: 7
+
+      - name: Upload test traces
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: frontend/test-results/**/*.zip
+          retention-days: 7

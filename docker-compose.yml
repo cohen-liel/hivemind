@@ -35,3 +35,22 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ── E2E test runner (activated with --profile test) ──────────────────
+  # Playwright's webServer config starts Vite inside the container.
+  # The bot service provides the backend API (tests hit localhost:5173 → Vite proxy → bot:8080).
+  test-runner:
+    build:
+      context: .
+      target: test-runner
+    profiles: ["test"]
+    depends_on:
+      bot:
+        condition: service_healthy
+    environment:
+      - CI=true
+      - VITE_API_BASE_URL=http://bot:8080
+    volumes:
+      # Export test artifacts to host for inspection
+      - ./frontend/playwright-report:/app/frontend/playwright-report
+      - ./frontend/test-results:/app/frontend/test-results

@@ -54,6 +54,18 @@ test: ## Run pytest with coverage (fails if coverage < 85 %)
 test-fast: ## Run pytest without coverage (faster feedback loop)
 	$(PYTEST) tests/ -v --tb=short -x
 
+.PHONY: test-e2e
+test-e2e: ## Run Playwright E2E tests against local dev servers
+	cd frontend && npx playwright test
+
+.PHONY: test-e2e-headed
+test-e2e-headed: ## Run Playwright E2E tests in headed browser mode
+	cd frontend && npx playwright test --headed
+
+.PHONY: test-e2e-docker
+test-e2e-docker: ## Run E2E tests via docker compose test-runner service
+	docker compose --profile test run --rm test-runner
+
 .PHONY: test-ci
 test-ci: ## Same as test but outputs XML for CI artifact upload
 	$(PYTEST) tests/ \
