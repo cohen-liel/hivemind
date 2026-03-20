@@ -36,6 +36,14 @@ from typing import Any
 from config import ASYNC_WAIT_TIMEOUT, POLL_RETRY_DELAY
 from sdk_client import ErrorCategory, SDKResponse, classify_error
 
+# ── BUG-27 fix: circuit-breaker / backoff constants ──────────────────
+ISOLATED_QUERY_TIMEOUT: float = float(
+    __import__("os").getenv("HIVEMIND_ISOLATED_QUERY_TIMEOUT", "300")
+)  # Absolute timeout per isolated query (seconds)
+_BACKOFF_INITIAL: float = 0.1   # First retry delay (seconds)
+_BACKOFF_CAP: float = 5.0       # Max delay between retries (seconds)
+_BACKOFF_FACTOR: float = 2.0    # Exponential multiplier
+
 logger = logging.getLogger(__name__)
 
 # Thread pool for isolated queries.  Each thread gets its own event loop.
@@ -581,12 +589,38 @@ async def isolated_query(
     cf_future = _executor.submit(_run_in_fresh_loop, _query_factory)
     cf_future.add_done_callback(_on_cf_done)
 
-    # BUG-27: Unbounded drain-and-retry loop with 100ms sleep to yield
-    # event-loop control. Fully resilient to spurious CancelledErrors.
+    # BUG-27 FIX: Bounded wait loop with exponential backoff and absolute
+    # timeout.  Replaces the previous unbounded 100ms polling loop.
     _cancel_hits = 0
+    _wait_start = time.monotonic()
+    _backoff_delay = _BACKOFF_INITIAL  # starts at 100ms, doubles each retry up to 5s
 
     try:
         while True:
+            # ── Circuit breaker: absolute timeout ──
+            _elapsed = time.monotonic() - _wait_start
+            if _elapsed >= ISOLATED_QUERY_TIMEOUT:
+                _diag = (
+                    f"executor_done={cf_future.done()}, "
+                    f"cancel_hits={_cancel_hits}, "
+                    f"elapsed={_elapsed:.1f}s, "
+                    f"queue_size={stream_queue.qsize()}, "
+                    f"timeout={ISOLATED_QUERY_TIMEOUT}s"
+                )
+                logger.error(
+                    f"[{request_id}] CIRCUIT BREAKER: isolated query timed out "
+                    f"after {_elapsed:.1f}s. Diagnostics: {_diag}"
+                )
+                # Attempt to cancel the executor future
+                cf_future.cancel()
+                return SDKResponse(
+                    text=f"Error: Isolated query timed out after {_elapsed:.0f}s "
+                    f"(circuit breaker triggered)",
+                    is_error=True,
+                    error_message=f"Circuit breaker timeout after {_elapsed:.0f}s",
+                    error_category=ErrorCategory.TRANSIENT,
+                )
+
             try:
                 await _done_event.wait()
                 break  # Event fired — executor is done
@@ -603,7 +637,8 @@ async def isolated_query(
                 if _cancel_hits <= 5 or _cancel_hits % 25 == 0:
                     logger.warning(
                         f"[{request_id}] CancelledError during executor wait "
-                        f"(hit {_cancel_hits}x, drained {_drained}) — "
+                        f"(hit {_cancel_hits}x, drained {_drained}, "
+                        f"elapsed={time.monotonic() - _wait_start:.1f}s) — "
                         f"retrying, executor {'done' if cf_future.done() else 'running'}"
                     )
 
@@ -612,13 +647,11 @@ async def isolated_query(
                     break
 
                 # Race condition: cf_future done but callback hasn't fired yet.
-                # Extract result directly from cf_future as fallback.
                 if cf_future.done():
                     logger.warning(
                         f"[{request_id}] Executor future done but _done_event not set "
                         f"— race condition detected, extracting result directly"
                     )
-                    # Only extract if _on_cf_done hasn't already done it
                     if not _executor_result and not _executor_error:
                         try:
                             _executor_result.append(cf_future.result())
@@ -627,15 +660,15 @@ async def isolated_query(
                     _done_event.set()
                     break
 
-                # CRITICAL rate-limit: sleep 100ms to yield event-loop control.
-                # Without this, the loop spins at 26 000/s and starves the loop.
+                # Exponential backoff: sleep with increasing delay (capped at 5s)
                 try:
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(_backoff_delay)
                 except asyncio.CancelledError:
-                    # Drain the sleep's own cancellation and continue
                     if ct and hasattr(ct, "uncancel"):
                         while ct.cancelling() > 0:
                             ct.uncancel()
+                # Increase delay for next iteration (exponential, capped)
+                _backoff_delay = min(_backoff_delay * _BACKOFF_FACTOR, _BACKOFF_CAP)
 
         # ── Executor finished — extract result ──
         if _cancel_hits:

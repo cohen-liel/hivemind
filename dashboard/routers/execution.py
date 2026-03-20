@@ -17,7 +17,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import state
 from dashboard.events import event_bus
 from dashboard.routers import (
+    AddTaskRequest,
     CreateScheduleRequest,
+    PatchTaskRequest,
     SendMessageRequest,
     SetBudgetRequest,
     _create_web_manager,
@@ -31,6 +33,23 @@ from dashboard.routers import (
 logger = logging.getLogger("dashboard.api")
 
 router = APIRouter(tags=["execution"])
+
+# --- Per-project DAG mutation locks ---
+# Prevents race conditions when concurrent requests modify the same project's DAG graph.
+# Each project gets its own asyncio.Lock so different projects don't block each other.
+_dag_locks: dict[str, asyncio.Lock] = {}
+_dag_locks_guard = asyncio.Lock()  # protects _dag_locks dict creation
+
+DAG_LOCK_TIMEOUT_SECONDS = 10.0
+
+
+async def _acquire_dag_lock(project_id: str) -> asyncio.Lock:
+    """Get (or create) the per-project DAG mutation lock."""
+    if project_id not in _dag_locks:
+        async with _dag_locks_guard:
+            if project_id not in _dag_locks:
+                _dag_locks[project_id] = asyncio.Lock()
+    return _dag_locks[project_id]
 
 
 @router.post("/api/projects/{project_id}/message")
@@ -151,6 +170,7 @@ async def send_message(project_id: str, req: SendMessageRequest):
 async def enqueue_message(project_id: str, req: SendMessageRequest):
     """Add a message to the project's persistent queue."""
     if not state.session_mgr:
+        logger.error("[%s] session_mgr unavailable on POST /queue", project_id)
         return _problem(503, "Session manager unavailable.")
     manager, _ = await _find_manager(project_id)
     if not manager:
@@ -188,6 +208,7 @@ async def get_queue(project_id: str):
 
     # Fall back to session manager persistent queue
     if not state.session_mgr:
+        logger.error("[%s] session_mgr unavailable on GET /queue (fallback)", project_id)
         return _problem(503, "Session manager unavailable.")
     items = await state.session_mgr.list_queued_messages(project_id)
     return {
@@ -213,6 +234,7 @@ async def get_queue(project_id: str):
 async def delete_queued_message(project_id: str, msg_id: int):
     """Remove a specific message from the queue by ID."""
     if not state.session_mgr:
+        logger.error("[%s] session_mgr unavailable on DELETE /queue/%s", project_id, msg_id)
         return _problem(503, "Session manager unavailable.")
     deleted = await state.session_mgr.delete_queued_message(project_id, msg_id)
     if not deleted:
@@ -224,6 +246,7 @@ async def delete_queued_message(project_id: str, msg_id: int):
 async def clear_queue(project_id: str):
     """Clear all queued messages for a project."""
     if not state.session_mgr:
+        logger.error("[%s] session_mgr unavailable on DELETE /queue (clear)", project_id)
         return _problem(503, "Session manager unavailable.")
     count = await state.session_mgr.clear_queue(project_id)
     logger.info(f"[{project_id}] Cleared {count} queued message(s)")
@@ -337,6 +360,281 @@ async def set_project_budget(project_id: str, req: SetBudgetRequest):
         return _problem(500, "DB not ready")
     await state.session_mgr.set_project_budget(project_id, req.budget_usd)
     return {"ok": True, "budget_usd": req.budget_usd}
+
+
+# --- Plan Modification Endpoints ---
+
+
+def _get_task_status(manager, task_id: str) -> str | None:
+    """Return the current status of a DAG task, or None if unknown."""
+    statuses = getattr(manager, "_dag_task_statuses", {}) or {}
+    return statuses.get(task_id)
+
+
+def _is_task_pending(manager, task_id: str) -> bool:
+    """A task is pending if it exists in the graph but has no recorded status."""
+    return _get_task_status(manager, task_id) is None
+
+
+@router.patch("/api/projects/{project_id}/plan/tasks/{task_id}")
+async def patch_plan_task(project_id: str, task_id: str, req: PatchTaskRequest):
+    """Update goal/constraints for a pending DAG task.
+
+    Returns 404 if project/task not found, 409 if task is not pending.
+    Emits a dag_task_update WebSocket event on success.
+    """
+    from contracts import TaskGraph
+
+    manager, _ = await _find_manager(project_id)
+    if not manager:
+        return _problem(404, "Project not active.")
+
+    lock = await _acquire_dag_lock(project_id)
+    try:
+        async with asyncio.timeout(DAG_LOCK_TIMEOUT_SECONDS):
+            async with lock:
+                dag_data = getattr(manager, "_current_dag_graph", None)
+                if not dag_data:
+                    return _problem(404, "No active DAG plan found.")
+
+                graph = TaskGraph(**dag_data)
+                task = graph.get_task(task_id)
+                if not task:
+                    return _problem(404, f"Task '{task_id}' not found in the DAG.")
+
+                if not _is_task_pending(manager, task_id):
+                    status = _get_task_status(manager, task_id)
+                    return _problem(409, f"Cannot modify task '{task_id}': status is '{status}'. Only pending tasks can be edited.")
+
+                if req.goal is None and req.constraints is None:
+                    return _problem(400, "At least one of 'goal' or 'constraints' must be provided.")
+
+                changes: dict = {}
+                if req.goal is not None:
+                    task.goal = req.goal
+                    changes["goal"] = req.goal
+                if req.constraints is not None:
+                    task.constraints = req.constraints
+                    changes["constraints"] = req.constraints
+
+                manager._current_dag_graph = graph.model_dump()
+
+                await event_bus.publish({
+                    "type": "dag_task_update",
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "action": "modified",
+                    "changes": changes,
+                })
+
+                logger.info("[%s] Plan task '%s' modified: %s", project_id, task_id, list(changes.keys()))
+                return {"ok": True, "task_id": task_id, "changes": changes}
+    except TimeoutError:
+        logger.error(
+            "[%s] DAG lock timeout on PATCH task '%s' after %.1fs",
+            project_id, task_id, DAG_LOCK_TIMEOUT_SECONDS,
+            exc_info=True,
+        )
+        return _problem(503, f"Server busy — DAG lock acquisition timed out for project '{project_id}'.")
+
+
+@router.post("/api/projects/{project_id}/plan/tasks")
+async def add_plan_task(project_id: str, req: AddTaskRequest):
+    """Add a new task to the running DAG plan.
+
+    Validates dependency integrity, DAG acyclicity, and ID uniqueness.
+    If the DAG is actively executing, enqueues via plan_delta_queue for
+    safe between-round application. Otherwise applies directly.
+    Emits a dag_task_update WebSocket event on success.
+    """
+    from contracts import AgentRole, TaskGraph, TaskInput
+
+    manager, _ = await _find_manager(project_id)
+    if not manager:
+        return _problem(404, "Project not active.")
+
+    # Validate role before acquiring lock (cheap check)
+    try:
+        role = AgentRole(req.role)
+    except ValueError:
+        valid_roles = [r.value for r in AgentRole]
+        return _problem(400, f"Invalid role '{req.role}'. Valid roles: {valid_roles}")
+
+    new_task = TaskInput(
+        id=req.id,
+        role=role,
+        goal=req.goal,
+        constraints=req.constraints,
+        depends_on=req.depends_on,
+        files_scope=req.files_scope,
+        acceptance_criteria=req.acceptance_criteria,
+    )
+
+    lock = await _acquire_dag_lock(project_id)
+    try:
+        async with asyncio.timeout(DAG_LOCK_TIMEOUT_SECONDS):
+            async with lock:
+                dag_data = getattr(manager, "_current_dag_graph", None)
+                if not dag_data:
+                    return _problem(404, "No active DAG plan found.")
+
+                graph = TaskGraph(**dag_data)
+
+                if graph.get_task(req.id):
+                    return _problem(409, f"Task '{req.id}' already exists in the DAG.")
+
+                all_task_ids = {t.id for t in graph.tasks}
+                missing_deps = [dep for dep in req.depends_on if dep not in all_task_ids]
+                if missing_deps:
+                    return _problem(400, f"Unknown dependency task IDs: {missing_deps}")
+
+                if manager.is_running:
+                    delta_queue = getattr(manager, "_plan_delta_queue", None)
+                    if delta_queue is not None:
+                        await delta_queue.put({"add_tasks": [new_task], "skip_task_ids": []})
+                        logger.info("[%s] Task '%s' enqueued for mid-execution addition", project_id, req.id)
+                    else:
+                        errors = graph.append_tasks([new_task])
+                        if errors:
+                            return _problem(400, f"DAG validation failed: {errors}")
+                        manager._current_dag_graph = graph.model_dump()
+                else:
+                    errors = graph.append_tasks([new_task])
+                    if errors:
+                        return _problem(400, f"DAG validation failed: {errors}")
+                    manager._current_dag_graph = graph.model_dump()
+
+                await event_bus.publish({
+                    "type": "dag_task_update",
+                    "project_id": project_id,
+                    "task_id": req.id,
+                    "action": "added",
+                    "task": new_task.model_dump(),
+                })
+
+                return {"ok": True, "task_id": req.id, "action": "added"}
+    except TimeoutError:
+        logger.error(
+            "[%s] DAG lock timeout on POST add task '%s' after %.1fs",
+            project_id, req.id, DAG_LOCK_TIMEOUT_SECONDS,
+            exc_info=True,
+        )
+        return _problem(503, f"Server busy — DAG lock acquisition timed out for project '{project_id}'.")
+
+
+@router.delete("/api/projects/{project_id}/plan/tasks/{task_id}")
+async def delete_plan_task(project_id: str, task_id: str):
+    """Remove a pending task from the DAG plan.
+
+    Validates that no other pending tasks depend on this task.
+    Returns 404 if not found, 409 if not pending or has dependents.
+    If the DAG is actively executing, uses skip (via plan_delta_queue)
+    rather than removal to maintain graph consistency.
+    Emits a dag_task_update WebSocket event on success.
+    """
+    from contracts import TaskGraph
+
+    manager, _ = await _find_manager(project_id)
+    if not manager:
+        return _problem(404, "Project not active.")
+
+    lock = await _acquire_dag_lock(project_id)
+    try:
+        async with asyncio.timeout(DAG_LOCK_TIMEOUT_SECONDS):
+            async with lock:
+                dag_data = getattr(manager, "_current_dag_graph", None)
+                if not dag_data:
+                    return _problem(404, "No active DAG plan found.")
+
+                graph = TaskGraph(**dag_data)
+                task = graph.get_task(task_id)
+                if not task:
+                    return _problem(404, f"Task '{task_id}' not found in the DAG.")
+
+                if not _is_task_pending(manager, task_id):
+                    status = _get_task_status(manager, task_id)
+                    return _problem(409, f"Cannot delete task '{task_id}': status is '{status}'. Only pending tasks can be removed.")
+
+                dependents = [
+                    t.id for t in graph.tasks
+                    if task_id in t.depends_on and _is_task_pending(manager, t.id)
+                ]
+                if dependents:
+                    return _problem(
+                        409,
+                        f"Cannot delete task '{task_id}': pending tasks depend on it: {dependents}. "
+                        f"Remove or update those tasks first.",
+                    )
+
+                if manager.is_running:
+                    delta_queue = getattr(manager, "_plan_delta_queue", None)
+                    if delta_queue is not None:
+                        await delta_queue.put({"add_tasks": [], "skip_task_ids": [task_id]})
+                        action = "skipped"
+                        logger.info("[%s] Task '%s' enqueued for mid-execution skip (delete)", project_id, task_id)
+                    else:
+                        graph.skip_tasks([task_id], reason="Deleted via API")
+                        manager._current_dag_graph = graph.model_dump()
+                        action = "skipped"
+                else:
+                    graph.tasks = [t for t in graph.tasks if t.id != task_id]
+                    manager._current_dag_graph = graph.model_dump()
+                    action = "removed"
+
+                await event_bus.publish({
+                    "type": "dag_task_update",
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "action": action,
+                })
+
+                logger.info("[%s] Plan task '%s' %s", project_id, task_id, action)
+                return {"ok": True, "task_id": task_id, "action": action}
+    except TimeoutError:
+        logger.error(
+            "[%s] DAG lock timeout on DELETE task '%s' after %.1fs",
+            project_id, task_id, DAG_LOCK_TIMEOUT_SECONDS,
+            exc_info=True,
+        )
+        return _problem(503, f"Server busy — DAG lock acquisition timed out for project '{project_id}'.")
+
+
+# --- Subscriber Health Diagnostics ---
+
+
+@router.get("/api/eventbus/health")
+async def eventbus_health():
+    """Return subscriber health metrics and EventBus diagnostics.
+
+    Exposes per-subscriber delivery latency, overflow buffer state,
+    ring buffer sizing and utilization, WebSocket connection states,
+    and DB write fallback status. Designed to respond within 100ms.
+    """
+    summary = event_bus.get_subscriber_health_summary()
+    subscribers = event_bus.get_subscriber_health()
+    ring_buffer = event_bus.get_ring_buffer_utilization()
+    ws_connections = event_bus.get_ws_connection_states()
+    write_queue_info = {}
+    if event_bus._write_queue is not None:
+        wq = event_bus._write_queue
+        write_queue_info = {
+            "queue_size": wq.qsize(),
+            "max_size": wq.maxsize,
+            "total_evicted": wq.total_evicted,
+            "consecutive_db_failures": wq.consecutive_db_failures,
+            "total_fallback_writes": wq.total_fallback_writes,
+        }
+    # Trigger fallback file rotation on health check (idempotent, lightweight)
+    rotation = event_bus.rotate_fallback_files()
+    return {
+        "ok": True,
+        "summary": summary,
+        "subscribers": subscribers,
+        "ring_buffer": ring_buffer,
+        "ws_connections": ws_connections,
+        "write_queue": write_queue_info,
+        "fallback_rotation": rotation,
+    }
 
 
 # --- WebSocket ---
@@ -471,10 +769,14 @@ async def websocket_endpoint(ws: WebSocket):
 
     client_info = f"{ws.client.host}:{ws.client.port}" if ws.client else "unknown"
     logger.info("WebSocket [%s]: accepted connection from %s", ws_id, client_info)
-    queue = await event_bus.subscribe()
+    queue = await event_bus.subscribe(subscriber_id=ws_id)
 
     async def _sender():
-        """Forward events from bus to WebSocket client."""
+        """Forward events from bus to WebSocket client.
+
+        After delivering each event, drains any overflow buffer events
+        (critical events retained when the queue was full).
+        """
         try:
             while True:
                 try:
@@ -484,6 +786,16 @@ async def websocket_endpoint(ws: WebSocket):
                         queue.get(), timeout=float(WS_SENDER_TIMEOUT)
                     )
                     await ws.send_json(event)
+                    # Drain critical overflow events while queue has space
+                    drained = await event_bus.drain_overflow_to_subscriber(queue)
+                    if drained > 0:
+                        # Send overflow events that were waiting
+                        while not queue.empty():
+                            try:
+                                overflow_event = queue.get_nowait()
+                                await ws.send_json(overflow_event)
+                            except asyncio.QueueEmpty:
+                                break
                 except TimeoutError:
                     logger.debug(
                         "WebSocket [%s]: sender idle for %ss — closing stale connection",
@@ -557,6 +869,49 @@ async def websocket_endpoint(ws: WebSocket):
                         logger.debug(
                             "WebSocket [%s]: replayed %d events for project %s since seq %d",
                             ws_id, len(events), project_id, since_seq,
+                        )
+
+                elif msg_type == "replay_range":
+                    project_id = data.get("project_id", "")
+                    from_seq = data.get("from_sequence", 0)
+                    to_seq = data.get("to_sequence", 0)
+                    if not isinstance(project_id, str) or not _valid_project_id(project_id):
+                        continue
+                    if not isinstance(from_seq, int) or from_seq < 0:
+                        from_seq = 0
+                    if not isinstance(to_seq, int) or to_seq < from_seq:
+                        to_seq = from_seq + 200
+                    # Cap range to prevent excessive replay
+                    if to_seq - from_seq > 1000:
+                        to_seq = from_seq + 1000
+                    if project_id:
+                        events = event_bus.get_buffered_events_range(
+                            project_id, from_seq, to_seq
+                        )
+                        if not events and state.session_mgr:
+                            db_events = await state.session_mgr.get_activity_since(
+                                project_id, from_seq, limit=min(to_seq - from_seq, 1000)
+                            )
+                            events = [
+                                e_dict for e_dict in
+                                (_db_event_to_dict(e, project_id) for e in db_events)
+                                if e_dict.get("sequence_id", 0) <= to_seq
+                            ]
+                        await ws.send_json(
+                            {
+                                "type": "replay_range_batch",
+                                "project_id": project_id,
+                                "from_sequence": from_seq,
+                                "to_sequence": to_seq,
+                                "events": events,
+                                "count": len(events),
+                                "latest_sequence": event_bus.get_latest_sequence(project_id),
+                            }
+                        )
+                        logger.debug(
+                            "WebSocket [%s]: replayed %d events for project %s "
+                            "range [%d, %d]",
+                            ws_id, len(events), project_id, from_seq, to_seq,
                         )
 
                 elif msg_type == "get_history":
