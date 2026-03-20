@@ -15,10 +15,16 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 import state
+from dashboard.constants import (
+    ACTIVITY_DEFAULT_LIMIT,
+    ACTIVITY_MAX_LIMIT,
+    MESSAGES_DEFAULT_LIMIT,
+    MESSAGES_MAX_LIMIT,
+)
 from dashboard.events import event_bus
 from dashboard.routers import (
     CreateProjectRequest,
@@ -37,17 +43,75 @@ logger = logging.getLogger("dashboard.api")
 
 router = APIRouter(tags=["projects"])
 
+_DELETED_PROJECTS_PATH = Path("data/deleted_projects.json")
+
+
+def _read_deleted_ids_sync() -> set[str]:
+    """Read deleted project IDs from disk (synchronous, for use with asyncio.to_thread)."""
+    try:
+        if _DELETED_PROJECTS_PATH.exists():
+            return set(json.loads(_DELETED_PROJECTS_PATH.read_text()))
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Corrupt deleted_projects.json, ignoring: %s", exc)
+    except OSError as exc:
+        logger.warning("Cannot read deleted_projects.json: %s", exc)
+    return set()
+
+
+def _write_deleted_ids_sync(deleted_ids: list[str]) -> None:
+    """Write deleted project IDs to disk (synchronous, for use with asyncio.to_thread)."""
+    _DELETED_PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _DELETED_PROJECTS_PATH.write_text(json.dumps(deleted_ids))
+
+
+def _build_project_dict(
+    *,
+    project_id: str,
+    project_name: str,
+    project_dir: str = "",
+    status: str = "idle",
+    is_running: bool = False,
+    is_paused: bool = False,
+    turn_count: int = 0,
+    total_input_tokens: int = 0,
+    total_output_tokens: int = 0,
+    total_tokens: int = 0,
+    agents: list[str] | None = None,
+    last_message: dict | None = None,
+    user_id: int | str | None = 0,
+    description: str = "",
+    created_at: float | int = 0,
+    updated_at: float | int = 0,
+    message_count: int = 0,
+) -> dict:
+    """Build a standardised project dict for API responses."""
+    agent_names = agents if agents is not None else []
+    return {
+        "project_id": project_id,
+        "project_name": project_name,
+        "project_dir": project_dir,
+        "status": status,
+        "is_running": is_running,
+        "is_paused": is_paused,
+        "turn_count": turn_count,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "total_tokens": total_tokens,
+        "agents": agent_names,
+        "multi_agent": len(agent_names) > 1,
+        "last_message": last_message,
+        "user_id": user_id,
+        "description": description,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "message_count": message_count,
+    }
+
 
 @router.get("/api/projects")
 async def list_projects():
     """List all projects with live status from active_sessions + DB."""
-    _del_file = Path("data/deleted_projects.json")
-    deleted_ids: set[str] = set()
-    try:
-        if _del_file.exists():
-            deleted_ids = set(json.loads(_del_file.read_text()))
-    except Exception:
-        pass
+    deleted_ids = await asyncio.to_thread(_read_deleted_ids_sync)
 
     active_managers = state.get_all_managers()
 
@@ -81,26 +145,17 @@ async def list_projects():
         pid = dbp["project_id"]
         if pid not in seen and pid not in deleted_ids:
             projects.append(
-                {
-                    "project_id": pid,
-                    "project_name": dbp["name"],
-                    "project_dir": dbp.get("project_dir", ""),
-                    "status": "idle",
-                    "is_running": False,
-                    "is_paused": False,
-                    "turn_count": 0,
-                    "total_input_tokens": 0,
-                    "total_output_tokens": 0,
-                    "total_tokens": 0,
-                    "agents": default_agent_names,
-                    "multi_agent": len(default_agent_names) > 1,
-                    "last_message": None,
-                    "user_id": dbp.get("user_id") or 0,
-                    "description": dbp.get("description", ""),
-                    "created_at": dbp.get("created_at", 0),
-                    "updated_at": dbp.get("updated_at", 0),
-                    "message_count": dbp.get("message_count", 0),
-                }
+                _build_project_dict(
+                    project_id=pid,
+                    project_name=dbp["name"],
+                    project_dir=dbp.get("project_dir", ""),
+                    agents=default_agent_names,
+                    user_id=dbp.get("user_id") or 0,
+                    description=dbp.get("description", ""),
+                    created_at=dbp.get("created_at", 0),
+                    updated_at=dbp.get("updated_at", 0),
+                    message_count=dbp.get("message_count", 0),
+                )
             )
 
     return {"projects": projects}
@@ -143,25 +198,22 @@ async def get_project(project_id: str):
         from config import DEFAULT_AGENTS
 
         default_agent_names = [a["name"] for a in DEFAULT_AGENTS]
-        data = {
-            "project_id": project_id,
-            "project_name": db_project["name"],
-            "project_dir": db_project.get("project_dir", ""),
-            "status": saved_orch.get("status", "idle") if saved_orch else "idle",
-            "is_running": False,
-            "is_paused": False,
-            "turn_count": saved_orch.get("turn_count", 0) if saved_orch else 0,
-            "total_input_tokens": saved_orch.get("total_input_tokens", 0) if saved_orch else 0,
-            "total_output_tokens": saved_orch.get("total_output_tokens", 0) if saved_orch else 0,
-            "total_tokens": saved_orch.get("total_tokens", 0) if saved_orch else 0,
-            "agents": default_agent_names,
-            "multi_agent": len(default_agent_names) > 1,
-            "last_message": last_msg,
-            "user_id": db_project.get("user_id") or 0,
-            "conversation_log": recent_msgs,
-            "description": db_project.get("description", ""),
-            "message_count": total_msgs,
-        }
+        data = _build_project_dict(
+            project_id=project_id,
+            project_name=db_project["name"],
+            project_dir=db_project.get("project_dir", ""),
+            status=saved_orch.get("status", "idle") if saved_orch else "idle",
+            turn_count=saved_orch.get("turn_count", 0) if saved_orch else 0,
+            total_input_tokens=saved_orch.get("total_input_tokens", 0) if saved_orch else 0,
+            total_output_tokens=saved_orch.get("total_output_tokens", 0) if saved_orch else 0,
+            total_tokens=saved_orch.get("total_tokens", 0) if saved_orch else 0,
+            agents=default_agent_names,
+            last_message=last_msg,
+            user_id=db_project.get("user_id") or 0,
+            description=db_project.get("description", ""),
+            message_count=total_msgs,
+        )
+        data["conversation_log"] = recent_msgs
 
     return data
 
@@ -377,10 +429,12 @@ async def get_project_agents(project_id: str):
 
 
 @router.get("/api/projects/{project_id}/messages")
-async def get_messages(project_id: str, limit: int = 50, offset: int = 0):
+async def get_messages(
+    project_id: str,
+    limit: int = Query(default=MESSAGES_DEFAULT_LIMIT, ge=1, le=MESSAGES_MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+):
     """Conversation history (paginated, from DB)."""
-    limit = max(1, min(limit, 500))
-    offset = max(0, offset)
     if not state.session_mgr:
         return {"messages": [], "total": 0}
     messages, total = await state.session_mgr.get_messages_paginated(project_id, limit, offset)
@@ -590,15 +644,13 @@ async def create_project(req: CreateProjectRequest):
         project_dir=project_dir,
     )
 
-    _deleted_file = Path("data/deleted_projects.json")
     try:
-        if _deleted_file.exists():
-            deleted_ids = json.loads(_deleted_file.read_text())
-            if project_id in deleted_ids:
-                deleted_ids.remove(project_id)
-                _deleted_file.write_text(json.dumps(deleted_ids))
-    except Exception:
-        pass
+        deleted_ids = await asyncio.to_thread(_read_deleted_ids_sync)
+        if project_id in deleted_ids:
+            deleted_ids.discard(project_id)
+            await asyncio.to_thread(_write_deleted_ids_sync, list(deleted_ids))
+    except OSError as exc:
+        logger.warning("Could not update deleted_projects.json on create: %s", exc)
 
     manager = _create_web_manager(
         project_id=project_id,
@@ -634,17 +686,13 @@ async def delete_project(project_id: str):
     if state.session_mgr:
         await state.session_mgr.delete_project(project_id)
 
-    _deleted_file = Path("data/deleted_projects.json")
     try:
-        _deleted_file.parent.mkdir(parents=True, exist_ok=True)
-        deleted_ids: list[str] = []
-        if _deleted_file.exists():
-            deleted_ids = json.loads(_deleted_file.read_text())
-        if project_id not in deleted_ids:
-            deleted_ids.append(project_id)
-        _deleted_file.write_text(json.dumps(deleted_ids))
-    except Exception:
-        logger.warning("Could not persist deleted project ID %s", project_id)
+        deleted_ids_set = await asyncio.to_thread(_read_deleted_ids_sync)
+        if project_id not in deleted_ids_set:
+            deleted_ids_set.add(project_id)
+        await asyncio.to_thread(_write_deleted_ids_sync, list(deleted_ids_set))
+    except OSError as exc:
+        logger.warning("Could not persist deleted project ID %s: %s", project_id, exc)
 
     await event_bus.publish(
         {
@@ -822,7 +870,7 @@ async def get_file_tree(project_id: str):
                         if len(children) >= 50:
                             break
                 except PermissionError:
-                    pass
+                    logger.debug("Permission denied listing subdirectory: %s", item.name)
                 entry["children"] = children
             tree.append(entry)
             if len(tree) >= 100:
@@ -906,10 +954,12 @@ async def read_file(project_id: str, path: str):
 
 
 @router.get("/api/projects/{project_id}/activity")
-async def get_activity(project_id: str, since: int = 0, limit: int = 200):
+async def get_activity(
+    project_id: str,
+    since: int = Query(default=0, ge=0),
+    limit: int = Query(default=ACTIVITY_DEFAULT_LIMIT, ge=1, le=ACTIVITY_MAX_LIMIT),
+):
     """Get activity events after a given sequence_id."""
-    since = max(0, since)
-    limit = max(1, min(limit, 1000))
     buffered = event_bus.get_buffered_events(project_id, since_sequence=since)
     if buffered:
         return {

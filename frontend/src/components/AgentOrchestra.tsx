@@ -4,7 +4,20 @@ import type { HealingEvent, DesktopTab } from '../reducers/projectReducer';
 import type { AgentMetric } from '../hooks/useAgentMetrics';
 import AgentStatusPanel from './AgentStatusPanel';
 import AgentMetrics from './AgentMetrics';
-import { AGENT_ICONS, AGENT_LABELS, getAgentAccent } from '../constants';
+import {
+  AGENT_ICONS,
+  AGENT_LABELS,
+  getAgentAccent,
+  formatElapsed,
+  STALE_THRESHOLD_MS,
+  STATUS_DEBOUNCE_MS,
+  TOOL_MAX_WIDTH_SM,
+  TOOL_MAX_WIDTH_MD,
+  TOOL_MAX_WIDTH_LG,
+  CENTER_LABEL_WIDTH,
+  CENTER_LABEL_MAX_CHARS,
+  MAX_WORKING_AVATARS,
+} from '../constants';
 
 // ============================================================================
 // Props Interfaces
@@ -85,9 +98,9 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
   now,
   lastTicker,
 }: LiveStatusStripProps): React.ReactElement | null {
-  const workingAgents = subAgentStates.filter(a => a.state === 'working');
-  const doneAgents = subAgentStates.filter(a => a.state === 'done');
-  const errorAgents = subAgentStates.filter(a => a.state === 'error');
+  const workingAgents = useMemo(() => subAgentStates.filter(a => a.state === 'working'), [subAgentStates]);
+  const doneAgents = useMemo(() => subAgentStates.filter(a => a.state === 'done'), [subAgentStates]);
+  const errorAgents = useMemo(() => subAgentStates.filter(a => a.state === 'error'), [subAgentStates]);
   const orchestratorWorking = orchestratorState?.state === 'working' ? orchestratorState : null;
   const hasStatus = workingAgents.length > 0 || doneAgents.length > 0 || errorAgents.length > 0 || orchestratorWorking;
 
@@ -109,11 +122,11 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
             </span>
             {elapsedSec > 0 && (
               <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                {elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s` : `${elapsedSec}s`}
+                {formatElapsed(elapsedSec)}
               </span>
             )}
             {orchestratorWorking.current_tool && (
-              <span className="text-[10px] leading-tight" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)', maxWidth: '200px', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+              <span className="text-[10px] leading-tight" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)', maxWidth: `${TOOL_MAX_WIDTH_SM}px`, display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                 {orchestratorWorking.current_tool}
               </span>
             )}
@@ -123,7 +136,7 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
       {workingAgents.map(agent => {
         const ac = getAgentAccent(agent.name);
         const elapsedSec = agent.started_at ? Math.round((now - agent.started_at) / 1000) : 0;
-        const isStale = agent.last_update_at ? (now - agent.last_update_at) > 90000 : (agent.started_at ? (now - agent.started_at) > 90000 : false);
+        const isStale = agent.last_update_at ? (now - agent.last_update_at) > STALE_THRESHOLD_MS : (agent.started_at ? (now - agent.started_at) > STALE_THRESHOLD_MS : false);
         return (
           <div key={agent.name} className="flex items-center gap-2 px-2.5 py-1 rounded-lg flex-shrink-0 animate-[fadeSlideIn_0.2s_ease-out]"
             style={{ background: isStale ? 'rgba(245,166,35,0.06)' : ac.bg, border: `1px solid ${isStale ? 'rgba(245,166,35,0.25)' : ac.color + '25'}` }}>
@@ -133,7 +146,7 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
             </span>
             {elapsedSec > 0 && (
               <span className="text-[10px] font-mono" style={{ color: isStale ? 'var(--accent-amber)' : 'var(--text-muted)' }}>
-                {elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s` : `${elapsedSec}s`}
+                {formatElapsed(elapsedSec)}
               </span>
             )}
             {isStale && (
@@ -142,7 +155,7 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
               </span>
             )}
             {agent.current_tool && !isStale && (
-              <span className="text-[10px] break-all leading-tight" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)', maxWidth: '300px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+              <span className="text-[10px] break-all leading-tight" style={{ color: `${ac.color}99`, fontFamily: 'var(--font-mono)', maxWidth: `${TOOL_MAX_WIDTH_LG}px`, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                 {agent.current_tool}
               </span>
             )}
@@ -169,7 +182,7 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
       )}
       {lastTicker && (
         <span className="text-[10px] truncate ml-auto flex-shrink-0"
-          style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', maxWidth: '250px' }}>
+          style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', maxWidth: `${TOOL_MAX_WIDTH_MD}px` }}>
           {lastTicker}
         </span>
       )}
@@ -315,8 +328,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
     return lines.slice(0, MAX_ACTIVE_ANIMATIONS);
   }, [nodePositions, subAgents]);
 
-  // ---- Live status text with 500ms debounce ----
-  const MAX_CENTER_CHARS = 32;
+  // ---- Live status text with debounce ----
 
   const rawStatusText = useMemo((): string => {
     const working = subAgents.filter(a => a.state === 'working');
@@ -338,7 +350,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
   const truncateText = (text: string, max: number): string =>
     text.length > max ? text.slice(0, max - 1) + '…' : text;
 
-  // Debounced display text — waits 500ms before committing a new value
+  // Debounced display text — waits before committing a new value
   const [displayText, setDisplayText] = useState<string>(rawStatusText);
   const [textKey, setTextKey] = useState<number>(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -351,15 +363,15 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setDisplayText(rawStatusText);
-      setTextKey(k => k + 1); // re-trigger typewriter
-    }, 500);
+      setTextKey(k => k + 1);
+    }, STATUS_DEBOUNCE_MS);
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [rawStatusText]);
 
-  const centerLabel = truncateText(displayText, MAX_CENTER_CHARS);
+  const centerLabel = truncateText(displayText, CENTER_LABEL_MAX_CHARS);
   const isActiveStatus = displayText !== 'READY' && displayText !== 'idle';
 
   if (subAgents.length === 0) return null;
@@ -436,9 +448,9 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
 
         {/* Center status — dynamic live text with typewriter animation */}
         <foreignObject
-          x={VIZ_CENTER - 60}
+          x={VIZ_CENTER - CENTER_LABEL_WIDTH / 2}
           y={VIZ_CENTER - 18}
-          width={120}
+          width={CENTER_LABEL_WIDTH}
           height={36}
         >
           <div
@@ -464,7 +476,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
-                maxWidth: '120px',
+                maxWidth: `${CENTER_LABEL_WIDTH}px`,
                 textAlign: 'center',
                 borderRight: isActiveStatus ? '2px solid var(--accent-blue)' : 'none',
                 animation: isActiveStatus
@@ -647,9 +659,9 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
   onSelectAgent,
   agentMetrics,
 }: HivemindTabContentProps): React.ReactElement {
-  const workingAgents = agentStateList.filter(a => a.state === 'working' && a.name !== 'orchestrator');
-  const doneAgents = agentStateList.filter(a => a.state === 'done' && a.name !== 'orchestrator');
-  const errorAgents = agentStateList.filter(a => a.state === 'error' && a.name !== 'orchestrator');
+  const workingAgents = useMemo(() => agentStateList.filter(a => a.state === 'working' && a.name !== 'orchestrator'), [agentStateList]);
+  const doneAgents = useMemo(() => agentStateList.filter(a => a.state === 'done' && a.name !== 'orchestrator'), [agentStateList]);
+  const errorAgents = useMemo(() => agentStateList.filter(a => a.state === 'error' && a.name !== 'orchestrator'), [agentStateList]);
   const isRunning = projectStatus === 'running';
   const hasActiveAgents = agentStateList.some(a => a.state !== 'idle' && a.name !== 'orchestrator');
 
@@ -680,7 +692,7 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
           )}
           <div className="flex-1" />
           <div className="flex -space-x-2">
-            {workingAgents.slice(0, 5).map(a => {
+            {workingAgents.slice(0, MAX_WORKING_AVATARS).map(a => {
               const ac = getAgentAccent(a.name);
               return (
                 <div key={a.name} className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] ring-2 ring-[var(--bg-panel)]"

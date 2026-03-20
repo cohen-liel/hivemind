@@ -17,6 +17,25 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import state
+from dashboard.constants import (
+    ACTIVITY_DEFAULT_LIMIT,
+    ACTIVITY_MAX_LIMIT,
+    AGENT_TIMEOUT_MAX_SECONDS,
+    AGENT_TIMEOUT_MIN_SECONDS,
+    MAX_BUDGET_LIMIT,
+    MAX_ORCHESTRATOR_LOOPS_LIMIT,
+    MAX_TURNS_LIMIT,
+    MAX_USER_MESSAGE_LENGTH_MAX,
+    MAX_USER_MESSAGE_LENGTH_MIN,
+    MESSAGES_DEFAULT_LIMIT,
+    MESSAGES_MAX_LIMIT,
+    PROJECT_AGENTS_MAX,
+    PROJECT_AGENTS_MIN,
+    PROJECT_DESCRIPTION_MAX_LENGTH,
+    PROJECT_DIR_MAX_LENGTH,
+    PROJECT_NAME_MAX_LENGTH,
+    TASK_DESCRIPTION_MAX_LENGTH,
+)
 from dashboard.events import event_bus
 
 logger = logging.getLogger("dashboard.api")
@@ -144,10 +163,10 @@ class NudgeRequest(BaseModel):
 
 
 class CreateProjectRequest(BaseModel):
-    name: str = Field(max_length=200)
-    directory: str = Field(max_length=1000)
-    agents_count: int = Field(default=2, ge=1, le=20)
-    description: str = Field(default="", max_length=2000)
+    name: str = Field(max_length=PROJECT_NAME_MAX_LENGTH)
+    directory: str = Field(max_length=PROJECT_DIR_MAX_LENGTH)
+    agents_count: int = Field(default=2, ge=PROJECT_AGENTS_MIN, le=PROJECT_AGENTS_MAX)
+    description: str = Field(default="", max_length=PROJECT_DESCRIPTION_MAX_LENGTH)
 
     @field_validator("name")
     @classmethod
@@ -167,19 +186,25 @@ class CreateProjectRequest(BaseModel):
 
 
 class UpdateProjectRequest(BaseModel):
-    name: str | None = Field(default=None, max_length=200)
-    description: str | None = Field(default=None, max_length=2000)
-    agents_count: int | None = Field(default=None, ge=1, le=20)
+    name: str | None = Field(default=None, max_length=PROJECT_NAME_MAX_LENGTH)
+    description: str | None = Field(default=None, max_length=PROJECT_DESCRIPTION_MAX_LENGTH)
+    agents_count: int | None = Field(default=None, ge=PROJECT_AGENTS_MIN, le=PROJECT_AGENTS_MAX)
 
 
 class UpdateSettingsRequest(BaseModel):
-    max_turns_per_cycle: int | None = Field(default=None, ge=1, le=10000)
-    max_budget_usd: float | None = Field(default=None, gt=0, le=10000)
-    agent_timeout_seconds: int | None = Field(default=None, ge=30, le=7200)
-    sdk_max_turns_per_query: int | None = Field(default=None, ge=1, le=10000)
-    sdk_max_budget_per_query: float | None = Field(default=None, gt=0, le=10000)
-    max_user_message_length: int | None = Field(default=None, ge=100, le=100000)
-    max_orchestrator_loops: int | None = Field(default=None, ge=1, le=10000)
+    max_turns_per_cycle: int | None = Field(default=None, ge=1, le=MAX_TURNS_LIMIT)
+    max_budget_usd: float | None = Field(default=None, gt=0, le=MAX_BUDGET_LIMIT)
+    agent_timeout_seconds: int | None = Field(
+        default=None, ge=AGENT_TIMEOUT_MIN_SECONDS, le=AGENT_TIMEOUT_MAX_SECONDS
+    )
+    sdk_max_turns_per_query: int | None = Field(default=None, ge=1, le=MAX_TURNS_LIMIT)
+    sdk_max_budget_per_query: float | None = Field(default=None, gt=0, le=MAX_BUDGET_LIMIT)
+    max_user_message_length: int | None = Field(
+        default=None, ge=MAX_USER_MESSAGE_LENGTH_MIN, le=MAX_USER_MESSAGE_LENGTH_MAX
+    )
+    max_orchestrator_loops: int | None = Field(
+        default=None, ge=1, le=MAX_ORCHESTRATOR_LOOPS_LIMIT
+    )
 
 
 class SetBudgetRequest(BaseModel):
@@ -188,7 +213,7 @@ class SetBudgetRequest(BaseModel):
     model_config = ConfigDict(strict=True)
 
     budget_usd: float = Field(
-        gt=0, le=10_000, description="Budget cap in USD (0 < budget_usd ≤ 10,000)"
+        gt=0, le=MAX_BUDGET_LIMIT, description="Budget cap in USD (0 < budget_usd ≤ 10,000)"
     )
 
     @field_validator("budget_usd", mode="before")
@@ -237,9 +262,51 @@ class CreateScheduleRequest(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("task_description cannot be empty")
-        if len(v) > 2000:
-            raise ValueError("task_description too long (max 2000 chars)")
+        if len(v) > TASK_DESCRIPTION_MAX_LENGTH:
+            raise ValueError(
+                f"task_description too long (max {TASK_DESCRIPTION_MAX_LENGTH} chars)"
+            )
         return v
+
+
+# ---------------------------------------------------------------------------
+# Plan modification request models
+# ---------------------------------------------------------------------------
+
+
+class PatchTaskRequest(BaseModel):
+    """Request body for PATCH /api/projects/{project_id}/plan/tasks/{task_id}."""
+
+    goal: str | None = Field(default=None, min_length=10, max_length=5000, description="Updated task objective")
+    constraints: list[str] | None = Field(default=None, max_length=20, description="Updated constraints list")
+
+    @field_validator("goal")
+    @classmethod
+    def validate_goal(cls, v: str | None) -> str | None:
+        if v is not None:
+            v = v.strip()
+            if len(v) < 10:
+                raise ValueError("goal must be at least 10 characters")
+        return v
+
+    @field_validator("constraints")
+    @classmethod
+    def validate_constraints(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            v = [c.strip() for c in v if c.strip()]
+        return v
+
+
+class AddTaskRequest(BaseModel):
+    """Request body for POST /api/projects/{project_id}/plan/tasks."""
+
+    id: str = Field(..., pattern=r"^[a-zA-Z0-9_-]{1,64}$", description="Unique task ID")
+    role: str = Field(..., description="Agent role (e.g. 'backend_developer')")
+    goal: str = Field(..., min_length=10, max_length=5000, description="Clear task objective")
+    constraints: list[str] = Field(default_factory=list, max_length=20)
+    depends_on: list[str] = Field(default_factory=list, description="Task IDs this depends on")
+    files_scope: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=20)
 
 
 # ---------------------------------------------------------------------------

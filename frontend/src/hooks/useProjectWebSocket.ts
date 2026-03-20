@@ -102,6 +102,31 @@ export function useProjectWebSocket({
         case 'dag_task_update':
           dispatch({ type: 'WS_DAG_TASK_UPDATE', event });
           break;
+        case 'task_progress':
+          dispatch({ type: 'WS_TASK_PROGRESS', event });
+          break;
+        case 'dag_progress':
+          dispatch({ type: 'WS_DAG_PROGRESS', event });
+          break;
+        case 'plan_delta':
+          try {
+            dispatch({ type: 'WS_PLAN_DELTA', event });
+          } catch (err) {
+            console.warn('[useProjectWebSocket] Malformed plan_delta event, skipping:', err, event);
+          }
+          break;
+        case 'task_complete':
+          dispatch({
+            type: 'ADD_ACTIVITY',
+            activity: {
+              id: nextId(),
+              type: 'agent_result',
+              timestamp: event.timestamp ?? Date.now() / 1000,
+              agent: event.agent || 'system',
+              content: `DAG task complete: ${event.task_id ?? event.task_name ?? 'unknown'}`,
+            },
+          });
+          break;
         case 'execution_error':
           dispatch({ type: 'WS_EXECUTION_ERROR', event });
           toast.error(

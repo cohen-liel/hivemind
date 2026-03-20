@@ -377,6 +377,13 @@ def create_app() -> FastAPI:
     app.include_router(agents_router)
     app.include_router(execution_router)
 
+    # Circles & Chat routers
+    from dashboard.routers.circles import router as circles_router
+    from dashboard.routers.chat import router as chat_router
+
+    app.include_router(circles_router)
+    app.include_router(chat_router)
+
     # External routers from src/api/
     app.include_router(history_router)
     app.include_router(projects_router)

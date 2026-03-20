@@ -22,6 +22,61 @@ import type {
 /** Maximum activity entries kept in memory. Prevents unbounded growth during long sessions. */
 const MAX_ACTIVITIES = 2000;
 
+/** State size warning threshold in bytes (1 MB). */
+const STATE_SIZE_WARNING_BYTES = 1_048_576;
+
+/** Minimum interval (ms) between state size checks to avoid perf overhead. */
+const STATE_SIZE_CHECK_INTERVAL_MS = 5_000;
+
+/** Valid statuses for DAG tasks, including 'skipped' for incremental plan support. */
+export type DagTaskStatusValue = 'pending' | 'working' | 'completed' | 'failed' | 'cancelled' | 'skipped';
+
+/** Terminal DAG task statuses that must never be cleared during an active project. */
+const TERMINAL_DAG_STATUSES = new Set<DagTaskStatusValue>(['completed', 'failed', 'skipped', 'cancelled']);
+
+/** localStorage key prefix for persisting cumulative plan state per project. */
+const PLAN_STORAGE_PREFIX = 'hivemind_plan_';
+
+// ── localStorage persistence helpers ──
+
+interface PersistedPlanState {
+  dagGraph: WSEvent['graph'] | null;
+  dagTaskStatus: Record<string, DagTaskStatusValue>;
+  dagTaskFailureReasons: Record<string, string>;
+}
+
+/** Save cumulative plan state to localStorage scoped by project ID. */
+function persistPlanState(projectId: string, state: PersistedPlanState): void {
+  try {
+    localStorage.setItem(
+      `${PLAN_STORAGE_PREFIX}${projectId}`,
+      JSON.stringify(state),
+    );
+  } catch {
+    // localStorage full or unavailable — silently ignore
+  }
+}
+
+/** Restore cumulative plan state from localStorage for a given project ID. */
+export function restorePlanState(projectId: string): PersistedPlanState | null {
+  try {
+    const raw = localStorage.getItem(`${PLAN_STORAGE_PREFIX}${projectId}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as PersistedPlanState;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear persisted plan state for a project (e.g. on history clear). */
+export function clearPersistedPlan(projectId: string): void {
+  try {
+    localStorage.removeItem(`${PLAN_STORAGE_PREFIX}${projectId}`);
+  } catch {
+    // ignore
+  }
+}
+
 /** Append entries to activities, capping at MAX_ACTIVITIES by dropping oldest. */
 function appendActivities(existing: ActivityEntry[], ...entries: ActivityEntry[]): ActivityEntry[] {
   const combined = [...existing, ...entries];
@@ -84,7 +139,7 @@ export interface ProjectState {
 
   // DAG visualization
   dagGraph: WSEvent['graph'] | null;
-  dagTaskStatus: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
+  dagTaskStatus: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled' | 'skipped'>;
   dagTaskFailureReasons: Record<string, string>;
   healingEvents: HealingEvent[];
 
@@ -151,7 +206,7 @@ export type ProjectAction =
       activities: ActivityEntry[];
       sdkCalls: SdkCall[];
       agentStates: Record<string, AgentStateType>;
-      dagTaskStatus?: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
+      dagTaskStatus?: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled' | 'skipped'>;
       hasMoreMessages: boolean;
       messageOffset: number;
       lastSequenceId: number;
@@ -169,7 +224,7 @@ export type ProjectAction =
   | {
       type: 'HYDRATE_DAG';
       graph: WSEvent['graph'];
-      statuses: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
+      statuses: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled' | 'skipped'>;
     }
 
   // ── WebSocket events ──
@@ -183,6 +238,7 @@ export type ProjectAction =
   | { type: 'WS_AGENT_FINAL'; event: WSEvent }
   | { type: 'WS_PROJECT_STATUS'; event: WSEvent }
   | { type: 'WS_TASK_GRAPH'; event: WSEvent }
+  | { type: 'WS_PLAN_DELTA'; event: WSEvent }
   | { type: 'WS_DAG_TASK_UPDATE'; event: WSEvent }
   | { type: 'WS_EXECUTION_ERROR'; event: WSEvent }
   | { type: 'WS_SELF_HEALING'; event: WSEvent }
@@ -191,6 +247,8 @@ export type ProjectAction =
   | { type: 'WS_LIVE_STATE_SYNC'; event: WSEvent }
   | { type: 'WS_TURN_PROGRESS'; agent: string; turnsUsed: number; maxTurns: number; remaining: number }
   | { type: 'WS_PRE_TASK_QUESTION'; event: WSEvent }
+  | { type: 'WS_TASK_PROGRESS'; event: WSEvent }
+  | { type: 'WS_DAG_PROGRESS'; event: WSEvent }
   | { type: 'CLEAR_PRE_TASK_QUESTION' }
 
   // ── UI actions ──
@@ -234,11 +292,86 @@ function trackSequence(state: ProjectState, event: WSEvent): number {
   return state.lastSequenceId;
 }
 
+/**
+ * Validate event sequence ordering. Logs warnings for:
+ * - Out-of-order events (sequence_id <= lastSequenceId): skipped
+ * - Gaps in sequence (sequence_id > lastSequenceId + 1): applied with warning
+ * Returns true if the event should be processed, false if it should be skipped.
+ */
+function validateEventSequence(state: ProjectState, event: WSEvent, actionType: string): boolean {
+  if (event.sequence_id === undefined) return true; // No sequence tracking — allow
+
+  if (event.sequence_id <= state.lastSequenceId) {
+    console.warn(
+      `[projectReducer] Out-of-order event skipped: action=${actionType} ` +
+      `seq=${event.sequence_id} lastSeen=${state.lastSequenceId}`
+    );
+    return false;
+  }
+
+  const gap = event.sequence_id - state.lastSequenceId;
+  if (gap > 1) {
+    console.warn(
+      `[projectReducer] Sequence gap detected: action=${actionType} ` +
+      `expected=${state.lastSequenceId + 1} got=${event.sequence_id} (missed ${gap - 1} events)`
+    );
+  }
+
+  return true;
+}
+
+// ── State size monitoring ──
+
+let _lastSizeCheckTime = 0;
+let _lastSizeWarned = false;
+
+/**
+ * Estimate state size and warn if it exceeds the 1MB threshold.
+ * Throttled to avoid performance overhead on every dispatch.
+ */
+function checkStateSize(state: ProjectState): void {
+  const now = Date.now();
+  if (now - _lastSizeCheckTime < STATE_SIZE_CHECK_INTERVAL_MS) return;
+  _lastSizeCheckTime = now;
+
+  try {
+    const size = JSON.stringify(state).length;
+    if (size > STATE_SIZE_WARNING_BYTES) {
+      if (!_lastSizeWarned) {
+        console.warn(
+          `[projectReducer] State size warning: ${(size / 1_048_576).toFixed(2)}MB exceeds 1MB threshold. ` +
+          `activities=${state.activities.length} sdkCalls=${state.sdkCalls.length} ` +
+          `healingEvents=${state.healingEvents.length} agents=${Object.keys(state.agentStates).length}`
+        );
+        _lastSizeWarned = true;
+      }
+    } else {
+      _lastSizeWarned = false;
+    }
+  } catch {
+    // JSON.stringify may fail on circular refs — silently ignore
+  }
+}
+
 // ============================================================================
 // Reducer
 // ============================================================================
 
 export function projectReducer(state: ProjectState, action: ProjectAction): ProjectState {
+  try {
+    const result = projectReducerInner(state, action);
+    checkStateSize(result);
+    return result;
+  } catch (err) {
+    console.warn(
+      `[projectReducer] Error processing action "${action.type}" — state unchanged:`,
+      err instanceof Error ? err.message : err
+    );
+    return state;
+  }
+}
+
+function projectReducerInner(state: ProjectState, action: ProjectAction): ProjectState {
   switch (action.type) {
     // ────────────────────────── Data loading ──────────────────────────
 
@@ -358,6 +491,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_AGENT_UPDATE': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_AGENT_UPDATE')) return state;
       const updateAgent = event.agent || (event.text?.match(/\*(\w+)\*/)?.[1]);
       if (!updateAgent) return state;
 
@@ -440,6 +574,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_TOOL_USE': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_TOOL_USE')) return state;
       if (!event.agent) return state;
 
       const newActivities = isNewEvent(state, event)
@@ -477,6 +612,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_AGENT_STARTED': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_AGENT_STARTED')) return state;
       if (!event.agent) return state;
 
       const newDagTaskStatus = event.task_id
@@ -523,6 +659,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_AGENT_FINISHED': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_AGENT_FINISHED')) return state;
       if (!event.agent) return state;
 
       const newDagTaskStatus = event.task_id
@@ -606,6 +743,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_DELEGATION': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_DELEGATION')) return state;
 
       const newActivities = isNewEvent(state, event)
         ? appendActivities(state.activities, {
@@ -658,6 +796,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_LOOP_PROGRESS': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_LOOP_PROGRESS')) return state;
       return {
         ...state,
         loopProgress: {
@@ -671,6 +810,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_AGENT_RESULT': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_AGENT_RESULT')) return state;
       if (!event.text) return state;
 
       // Prefer the explicit event.agent field; fall back to regex extraction from text.
@@ -706,6 +846,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_AGENT_FINAL': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_AGENT_FINAL')) return state;
 
       const newActivities = event.text
         ? appendActivities(state.activities, {
@@ -738,6 +879,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_PROJECT_STATUS': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_PROJECT_STATUS')) return state;
 
       if (event.status === 'running') {
         // New task — reset agent cards for clean slate
@@ -751,13 +893,23 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
             last_result: undefined,
           };
         }
+        // GUARD: Preserve completed/failed/skipped task statuses and failure reasons.
+        // During incremental planning, a new 'running' status does NOT mean a fresh
+        // project — it may be an incremental merge. Only reset pending/working tasks.
+        const preservedDagTaskStatus: Record<string, DagTaskStatusValue> = {};
+        for (const [taskId, status] of Object.entries(state.dagTaskStatus)) {
+          if (TERMINAL_DAG_STATUSES.has(status)) {
+            preservedDagTaskStatus[taskId] = status;
+          }
+        }
+        const hasExistingPlan = state.dagGraph !== null;
         return {
           ...state,
           agentStates: resetAgentStates,
-          dagGraph: null,
+          dagGraph: hasExistingPlan ? state.dagGraph : null,
           healingEvents: [],
-          dagTaskStatus: {},
-          dagTaskFailureReasons: {},
+          dagTaskStatus: preservedDagTaskStatus,
+          dagTaskFailureReasons: state.dagTaskFailureReasons,
           liveAgentStream: {},
           lastAgentSummaries: {},
           lastSequenceId: trackSequence(state, event),
@@ -794,53 +946,325 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_TASK_GRAPH': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_TASK_GRAPH')) return state;
       if (!event.graph) return state;
 
-      return {
+      // Merge incoming tasks into existing graph instead of replacing.
+      // This preserves completed/failed/skipped statuses for previous tasks.
+      let mergedGraph: WSEvent['graph'];
+      let mergedStatus = { ...state.dagTaskStatus };
+      const mergedFailureReasons = { ...state.dagTaskFailureReasons };
+
+      if (state.dagGraph?.tasks && event.graph.tasks) {
+        // Build a set of existing task IDs for fast lookup
+        const existingIds = new Set(state.dagGraph.tasks.map(t => t.id));
+        const newTasks = event.graph.tasks.filter(t => !existingIds.has(t.id));
+        mergedGraph = {
+          ...event.graph,
+          tasks: [...state.dagGraph.tasks, ...newTasks],
+        };
+        // Set new tasks to pending, preserve all existing statuses
+        for (const t of newTasks) {
+          if (!mergedStatus[t.id]) {
+            mergedStatus[t.id] = 'pending';
+          }
+        }
+      } else {
+        mergedGraph = event.graph;
+      }
+
+      // If cumulative event, restore completed/failed/skipped statuses
+      if (event.cumulative) {
+        if (event.completed_task_ids) {
+          for (const id of event.completed_task_ids) {
+            mergedStatus[id] = 'completed';
+          }
+        }
+        if (event.failed_task_ids) {
+          for (const id of event.failed_task_ids) {
+            mergedStatus[id] = 'failed';
+          }
+        }
+        if (event.skipped_task_ids) {
+          for (const id of event.skipped_task_ids) {
+            mergedStatus[id] = 'skipped';
+          }
+        }
+      }
+
+      const projectId = event.project_id;
+      const newState: ProjectState = {
         ...state,
-        dagGraph: event.graph,
-        dagTaskStatus: {},
-        dagTaskFailureReasons: {},
+        dagGraph: mergedGraph,
+        dagTaskStatus: mergedStatus,
+        dagTaskFailureReasons: mergedFailureReasons,
         // Auto-switch to Plan tab so user sees execution progress
         desktopTab: 'plan',
         mobileView: 'plan',
         activities: appendActivities(state.activities, {
           id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
           agent: 'PM',
-          content: `📋 **DAG Plan:** ${event.graph.vision || 'Execution plan created'} (${event.graph.tasks?.length || 0} tasks)`,
+          content: `📋 **DAG Plan:** ${mergedGraph.vision || 'Execution plan created'} (${mergedGraph.tasks?.length || 0} tasks)`,
         }),
-        lastTicker: `Plan: ${event.graph.vision?.slice(0, 80) || 'DAG created'}`,
+        lastTicker: `Plan: ${mergedGraph.vision?.slice(0, 80) || 'DAG created'}`,
         lastSequenceId: trackSequence(state, event),
       };
+
+      // Persist cumulative plan to localStorage
+      if (projectId) {
+        persistPlanState(projectId, {
+          dagGraph: newState.dagGraph,
+          dagTaskStatus: newState.dagTaskStatus,
+          dagTaskFailureReasons: newState.dagTaskFailureReasons,
+        });
+      }
+
+      return newState;
+    }
+
+    case 'WS_PLAN_DELTA': {
+      const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_PLAN_DELTA')) return state;
+      const addTasks = event.add_tasks || [];
+      const skipTaskIds = event.skip_task_ids || [];
+
+      if (addTasks.length === 0 && skipTaskIds.length === 0) return state;
+
+      // Append new tasks to the graph
+      let mergedGraph = state.dagGraph;
+      const mergedStatus = { ...state.dagTaskStatus };
+
+      if (addTasks.length > 0) {
+        const existingTasks = mergedGraph?.tasks || [];
+        const existingIds = new Set(existingTasks.map(t => t.id));
+        const newTasks = addTasks.filter(t => !existingIds.has(t.id));
+        mergedGraph = {
+          ...mergedGraph,
+          tasks: [...existingTasks, ...newTasks],
+        };
+        for (const t of newTasks) {
+          mergedStatus[t.id] = 'pending';
+        }
+      }
+
+      // Mark skipped tasks
+      for (const id of skipTaskIds) {
+        mergedStatus[id] = 'skipped';
+      }
+
+      const projectId = event.project_id;
+      const activityContent = [
+        addTasks.length > 0 ? `+${addTasks.length} new tasks` : '',
+        skipTaskIds.length > 0 ? `${skipTaskIds.length} skipped` : '',
+      ].filter(Boolean).join(', ');
+
+      const newState: ProjectState = {
+        ...state,
+        dagGraph: mergedGraph,
+        dagTaskStatus: mergedStatus,
+        activities: appendActivities(state.activities, {
+          id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
+          agent: 'PM',
+          content: `📋 **Plan updated:** ${activityContent}${event.reason ? ` — ${event.reason}` : ''}`,
+        }),
+        lastTicker: `Plan updated: ${activityContent}`,
+        lastSequenceId: trackSequence(state, event),
+      };
+
+      // Persist updated plan to localStorage
+      if (projectId) {
+        persistPlanState(projectId, {
+          dagGraph: newState.dagGraph,
+          dagTaskStatus: newState.dagTaskStatus,
+          dagTaskFailureReasons: newState.dagTaskFailureReasons,
+        });
+      }
+
+      return newState;
     }
 
     case 'WS_DAG_TASK_UPDATE': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_DAG_TASK_UPDATE')) return state;
       const taskId = event.task_id;
+      if (!taskId) return state;
+
+      // Plan modification actions from PATCH/POST/DELETE endpoints
+      const eventRaw = event as unknown as Record<string, unknown>;
+      const eventAction = eventRaw.action as string | undefined;
+      const eventChanges = eventRaw.changes as Record<string, unknown> | undefined;
+      const eventTask = eventRaw.task as {
+        id: string; role: string; goal: string; depends_on: string[];
+        required_artifacts?: string[]; is_remediation?: boolean;
+      } | undefined;
+
+      // Handle "modified" — update task goal/constraints in the DAG graph
+      if (eventAction === 'modified' && eventChanges && state.dagGraph?.tasks) {
+        const updatedTasks = state.dagGraph.tasks.map(t =>
+          t.id === taskId ? { ...t, ...(eventChanges.goal ? { goal: eventChanges.goal as string } : {}) } : t,
+        );
+        const updatedGraph = { ...state.dagGraph, tasks: updatedTasks };
+        if (event.project_id) {
+          persistPlanState(event.project_id, {
+            dagGraph: updatedGraph,
+            dagTaskStatus: state.dagTaskStatus,
+            dagTaskFailureReasons: state.dagTaskFailureReasons,
+          });
+        }
+        return { ...state, dagGraph: updatedGraph };
+      }
+
+      // Handle "added" — append a new task to the DAG graph
+      if (eventAction === 'added' && eventTask) {
+        const existingTasks = state.dagGraph?.tasks || [];
+        if (existingTasks.some(t => t.id === eventTask.id)) return state;
+        const newTask = {
+          id: eventTask.id,
+          role: eventTask.role,
+          goal: eventTask.goal,
+          depends_on: eventTask.depends_on || [],
+          required_artifacts: eventTask.required_artifacts,
+          is_remediation: eventTask.is_remediation,
+        };
+        const updatedGraph = { ...state.dagGraph, tasks: [...existingTasks, newTask] };
+        const updatedDagStatus = { ...state.dagTaskStatus, [eventTask.id]: 'pending' as DagTaskStatusValue };
+        if (event.project_id) {
+          persistPlanState(event.project_id, {
+            dagGraph: updatedGraph,
+            dagTaskStatus: updatedDagStatus,
+            dagTaskFailureReasons: state.dagTaskFailureReasons,
+          });
+        }
+        return { ...state, dagGraph: updatedGraph, dagTaskStatus: updatedDagStatus };
+      }
+
+      // Handle "removed" — remove task from DAG graph entirely
+      if (eventAction === 'removed' && state.dagGraph?.tasks) {
+        const filteredTasks = state.dagGraph.tasks.filter(t => t.id !== taskId);
+        const updatedGraph = { ...state.dagGraph, tasks: filteredTasks };
+        const { [taskId]: _removed, ...remainingStatus } = state.dagTaskStatus;
+        const { [taskId]: _removedReason, ...remainingReasons } = state.dagTaskFailureReasons;
+        if (event.project_id) {
+          persistPlanState(event.project_id, {
+            dagGraph: updatedGraph,
+            dagTaskStatus: remainingStatus,
+            dagTaskFailureReasons: remainingReasons,
+          });
+        }
+        return { ...state, dagGraph: updatedGraph, dagTaskStatus: remainingStatus, dagTaskFailureReasons: remainingReasons };
+      }
+
+      // Standard status-change handling (existing behavior)
       const status = event.status;
-      if (!taskId || !status) return state;
+      if (!status) return state;
 
-      const mappedStatus =
-        status === 'completed' ? 'completed' as const :
-        status === 'working' ? 'working' as const :
-        status === 'failed' ? 'failed' as const :
-        status === 'cancelled' ? 'cancelled' as const :
-        'pending' as const;
+      const mappedStatus: DagTaskStatusValue =
+        status === 'completed' ? 'completed' :
+        status === 'working' ? 'working' :
+        status === 'failed' ? 'failed' :
+        status === 'cancelled' ? 'cancelled' :
+        status === 'skipped' ? 'skipped' :
+        'pending';
 
-      // Capture failure reasons for failed/cancelled tasks
-      const newFailureReasons = event.failure_reason
-        ? { ...state.dagTaskFailureReasons, [taskId]: event.failure_reason as string }
+      // Capture failure reasons for failed/cancelled tasks,
+      // and skip reasons for skipped tasks
+      const newFailureReasons = (event.failure_reason || event.reason)
+        ? { ...state.dagTaskFailureReasons, [taskId]: (event.failure_reason || event.reason) as string }
         : state.dagTaskFailureReasons;
+
+      const updatedDagStatus = { ...state.dagTaskStatus, [taskId]: mappedStatus };
+
+      // Persist to localStorage on terminal status changes
+      if (TERMINAL_DAG_STATUSES.has(mappedStatus) && event.project_id) {
+        persistPlanState(event.project_id, {
+          dagGraph: state.dagGraph,
+          dagTaskStatus: updatedDagStatus,
+          dagTaskFailureReasons: newFailureReasons,
+        });
+      }
 
       return {
         ...state,
-        dagTaskStatus: { ...state.dagTaskStatus, [taskId]: mappedStatus },
+        dagTaskStatus: updatedDagStatus,
         dagTaskFailureReasons: newFailureReasons,
+      };
+    }
+
+    case 'WS_TASK_PROGRESS': {
+      const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_TASK_PROGRESS')) return state;
+      const taskId = event.task_id;
+      if (!taskId) return state;
+
+      // Map milestone steps to dagTaskStatus so PlanView shows progress
+      const step = event.step;
+      const mappedStatus: 'working' | 'completed' | 'failed' =
+        step === 'complete' ? 'completed' as const :
+        step === 'failed' ? 'failed' as const :
+        'working' as const;
+
+      const newDagTaskStatus = { ...state.dagTaskStatus, [taskId]: mappedStatus };
+
+      // Capture failure reason if the step is 'failed'
+      const newFailureReasons = (step === 'failed' && event.failure_reason)
+        ? { ...state.dagTaskFailureReasons, [taskId]: event.failure_reason as string }
+        : state.dagTaskFailureReasons;
+
+      // Update live agent stream with step description for real-time feedback
+      let newLiveStream = state.liveAgentStream;
+      if (event.agent && event.step_description) {
+        newLiveStream = {
+          ...newLiveStream,
+          [event.agent]: {
+            ...newLiveStream[event.agent],
+            text: event.step_description.slice(0, 300),
+            timestamp: Date.now(),
+          },
+        };
+      }
+
+      // Update ticker with step info
+      const tickerAgent = event.agent || taskId;
+      const tickerStep = event.step_description || step || 'working';
+
+      return {
+        ...state,
+        dagTaskStatus: newDagTaskStatus,
+        dagTaskFailureReasons: newFailureReasons,
+        liveAgentStream: newLiveStream,
+        lastTicker: `${tickerAgent}: ${tickerStep}`,
+        lastSequenceId: trackSequence(state, event),
+      };
+    }
+
+    case 'WS_DAG_PROGRESS': {
+      const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_DAG_PROGRESS')) return state;
+
+      // Update the project's dag_progress for Dashboard and PlanView
+      const dagProgress = {
+        total: event.total ?? 0,
+        completed: event.completed ?? 0,
+        failed: event.failed ?? 0,
+        running: event.running ?? 0,
+        percent: event.percent ?? 0,
+      };
+
+      // Merge into project if it exists
+      const updatedProject = state.project
+        ? { ...state.project, dag_progress: dagProgress }
+        : state.project;
+
+      return {
+        ...state,
+        project: updatedProject,
+        lastSequenceId: trackSequence(state, event),
       };
     }
 
     case 'WS_EXECUTION_ERROR': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_EXECUTION_ERROR')) return state;
       const errorMessage = event.error_message || 'Unknown error';
       const errorType = event.error_type || 'unknown';
       const completedTasks = event.completed_tasks || 0;
@@ -862,6 +1286,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
 
     case 'WS_SELF_HEALING': {
       const event = action.event;
+      if (!validateEventSequence(state, event, 'WS_SELF_HEALING')) return state;
       return {
         ...state,
         healingEvents: [...state.healingEvents, {
@@ -965,7 +1390,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       if (event.dag_task_statuses && Object.keys(event.dag_task_statuses).length > 0) {
         newDagTaskStatus = {
           ...newDagTaskStatus,
-          ...event.dag_task_statuses as Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>,
+          ...event.dag_task_statuses as Record<string, DagTaskStatusValue>,
         };
       }
 

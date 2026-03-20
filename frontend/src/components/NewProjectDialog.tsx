@@ -1,6 +1,7 @@
-import { useEffect, useReducer, useRef, useCallback, useState } from 'react';
+import { useEffect, useReducer, useRef, useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createProject, browseDirs, getSettings } from '../api';
+import { SWARM_STAGGER_DELAY_MS } from '../constants';
 import type { DirEntry } from '../types';
 
 // ============================================================================
@@ -113,8 +114,8 @@ export default function NewProjectDialog(): React.ReactElement {
   const [pathInput, setPathInput] = useState('');
   const [browseLoading, setBrowseLoading] = useState(false);
 
-  // Load projects_base_dir from settings on mount
-  useEffect(() => {
+  // Stable callbacks for API calls
+  const loadSettings = useCallback((): void => {
     getSettings().then(s => {
       if (s.projects_base_dir) {
         dispatch({ type: 'SET_BASE_DIR', baseDir: s.projects_base_dir });
@@ -122,6 +123,28 @@ export default function NewProjectDialog(): React.ReactElement {
       }
     }).catch(() => {});
   }, []);
+
+  const loadDirEntries = useCallback((path: string): void => {
+    setBrowseLoading(true);
+    browseDirs(path).then(res => {
+      dispatch({
+        type: 'BROWSE_RESULT',
+        entries: res.entries || [],
+        currentDir: res.current,
+        parentDir: res.parent,
+        error: res.error,
+        home: res.home,
+      });
+      setPathInput(res.current);
+    }).catch((err) => {
+      dispatch({ type: 'BROWSE_ERROR', error: err.message || 'Failed to load' });
+    }).finally(() => setBrowseLoading(false));
+  }, []);
+
+  // Load projects_base_dir from settings on mount
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   // Auto-fill directory when name changes
   useEffect(() => {
@@ -137,22 +160,9 @@ export default function NewProjectDialog(): React.ReactElement {
   // Fetch directory listing when browsePath changes
   useEffect(() => {
     if (showBrowser) {
-      setBrowseLoading(true);
-      browseDirs(browsePath).then(res => {
-        dispatch({
-          type: 'BROWSE_RESULT',
-          entries: res.entries || [],
-          currentDir: res.current,
-          parentDir: res.parent,
-          error: res.error,
-          home: res.home,
-        });
-        setPathInput(res.current);
-      }).catch((err) => {
-        dispatch({ type: 'BROWSE_ERROR', error: err.message || 'Failed to load' });
-      }).finally(() => setBrowseLoading(false));
+      loadDirEntries(browsePath);
     }
-  }, [showBrowser, browsePath]);
+  }, [showBrowser, browsePath, loadDirEntries]);
 
   const handleCreate = useCallback(async (): Promise<void> => {
     dispatch({ type: 'SET_ERROR', error: '' });
@@ -221,11 +231,11 @@ export default function NewProjectDialog(): React.ReactElement {
     { label: 'RV', color: '#f87171' },
   ];
 
-  const swarmAgents = agentsCount === 1
-    ? allAgents.slice(0, 1)
-    : agentsCount === 2
-      ? allAgents.slice(0, 5)
-      : allAgents;
+  const swarmAgents = useMemo(() => {
+    if (agentsCount === 1) return allAgents.slice(0, 1);
+    if (agentsCount === 2) return allAgents.slice(0, 5);
+    return allAgents;
+  }, [agentsCount]);
 
   const isValid = name.trim() && directory.trim();
 
@@ -523,7 +533,7 @@ export default function NewProjectDialog(): React.ReactElement {
                         top: `${cy - size / 2}px`,
                         background: agent.color,
                         boxShadow: `0 0 12px ${agent.color}66`,
-                        animationDelay: `${i * 60}ms`,
+                        animationDelay: `${i * SWARM_STAGGER_DELAY_MS}ms`,
                       }}
                       title={agent.label}
                     >

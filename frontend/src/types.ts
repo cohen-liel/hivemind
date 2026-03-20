@@ -89,7 +89,8 @@ export interface WSEvent {
     | 'tool_use' | 'agent_started' | 'agent_finished' | 'delegation' | 'loop_progress'
     | 'approval_request' | 'replay_batch' | 'live_state_sync' | 'history_cleared'
     | 'task_complete' | 'task_error' | 'task_graph' | 'self_healing'
-    | 'dag_task_update' | 'execution_error' | 'turn_progress' | 'pre_task_question';
+    | 'dag_task_update' | 'execution_error' | 'turn_progress' | 'pre_task_question'
+    | 'task_progress' | 'dag_progress' | 'plan_delta';
   project_id: string;
   project_name?: string;
   text?: string;
@@ -165,6 +166,33 @@ export interface WSEvent {
   remaining?: number;
   // pre_task_question fields
   question?: string;
+  // task_progress fields (per-task milestone updates)
+  step?: string;
+  step_description?: string;
+  // dag_progress fields (aggregate DAG completion)
+  total?: number;
+  completed?: number;
+  failed?: number;
+  running?: number;
+  percent?: number;
+  eta_seconds?: number;
+  // plan_delta fields (incremental plan updates)
+  add_tasks?: Array<{
+    id: string;
+    role: string;
+    goal: string;
+    depends_on: string[];
+    required_artifacts?: string[];
+    is_remediation?: boolean;
+  }>;
+  skip_task_ids?: string[];
+  reason?: string;
+  // cumulative task_graph fields (reconnect state reconstruction)
+  cumulative?: boolean;
+  task_history?: Record<string, string>;
+  skipped_task_ids?: string[];
+  completed_task_ids?: string[];
+  failed_task_ids?: string[];
 }
 
 export type ActivityType = 'tool_use' | 'agent_started' | 'agent_finished'
@@ -459,3 +487,83 @@ export type ActivityEvent =
   | LoopProgressActivityEvent
   | TaskErrorActivityEvent
   | OtherActivityEvent;
+
+// ============================================================================
+// Connection Quality — WebSocket health indicator (WS-04)
+// ============================================================================
+
+/**
+ * Connection quality states for the WebSocket connection.
+ * Components consume this via useWSStatus() to display connectivity indicators.
+ *
+ * - connected: WebSocket is open, authenticated, and heartbeats are healthy
+ * - degraded: WebSocket is open but heartbeat responses are late (>45s)
+ * - disconnected: WebSocket is closed or not yet authenticated
+ */
+export type ConnectionQuality = 'connected' | 'degraded' | 'disconnected';
+
+// ============================================================================
+// Circles (Collaboration Groups)
+// ============================================================================
+
+export type CircleMemberRole = 'owner' | 'admin' | 'member' | 'viewer';
+
+export interface CircleMember {
+  user_id: string;
+  role: CircleMemberRole;
+  joined_at?: number;
+}
+
+export interface Circle {
+  id: string;
+  name: string;
+  description: string | null;
+  avatar_url: string | null;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  member_count: number;
+  project_count: number;
+  settings: Record<string, unknown> | null;
+}
+
+// ============================================================================
+// Chat (Real-time Messaging)
+// ============================================================================
+
+export type ChatChannelType = 'circle' | 'project' | 'dm';
+export type ChatMessageType = 'text' | 'system' | 'file' | 'code';
+
+export interface ChatChannel {
+  id: string;
+  name: string;
+  channel_type: ChatChannelType;
+  circle_id: string | null;
+  project_id: string | null;
+  description: string | null;
+  created_by: string;
+  created_at: number;
+  is_archived: boolean;
+  unread_count: number;
+  last_message?: ChatMessage | null;
+}
+
+export interface ChatMessage {
+  id: string;
+  channel_id: string;
+  sender_id: string;
+  content: string;
+  message_type: ChatMessageType;
+  parent_message_id: string | null;
+  created_at: number;
+  updated_at: number | null;
+  is_deleted: boolean;
+  metadata: Record<string, unknown> | null;
+  reactions?: Record<string, string[]>;
+  thread_count?: number;
+}
+
+export interface TypingUser {
+  user_id: string;
+  started_at: number;
+}
