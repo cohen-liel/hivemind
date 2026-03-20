@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -152,6 +153,31 @@ class User(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
+    circle_memberships: Mapped[list[CircleMember]] = relationship(
+        "CircleMember",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    circle_invitations: Mapped[list[CircleInvitation]] = relationship(
+        "CircleInvitation",
+        back_populates="invited_user",
+        cascade="all, delete-orphan",
+        lazy="select",
+        foreign_keys="CircleInvitation.invited_user_id",
+    )
+    chat_messages: Mapped[list[ChatMessage]] = relationship(
+        "ChatMessage",
+        back_populates="sender",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    message_read_receipts: Mapped[list[MessageReadReceipt]] = relationship(
+        "MessageReadReceipt",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<User id={self.id!r} email={self.email!r}>"
@@ -200,6 +226,15 @@ class Project(Base):
             "SET NULL on user delete preserves project data."
         ),
     )
+    circle_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("circles.id", ondelete="SET NULL"),
+        nullable=True,
+        doc=(
+            "FK → circles.id. Null for projects not in any circle. "
+            "SET NULL on circle delete preserves the project."
+        ),
+    )
     name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
@@ -239,6 +274,10 @@ class Project(Base):
         "User",
         back_populates="projects",
     )
+    circle: Mapped[Circle | None] = relationship(
+        "Circle",
+        back_populates="projects",
+    )
     conversations: Mapped[list[Conversation]] = relationship(
         "Conversation",
         back_populates="project",
@@ -262,6 +301,13 @@ class Project(Base):
         back_populates="project",
         cascade="all, delete-orphan",
         lazy="select",
+    )
+    chat_channels: Mapped[list[ChatChannel]] = relationship(
+        "ChatChannel",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        lazy="select",
+        foreign_keys="ChatChannel.project_id",
     )
 
     def __repr__(self) -> str:  # pragma: no cover
@@ -1102,17 +1148,658 @@ class ExecutionRun(Base):
 
 
 # ---------------------------------------------------------------------------
+# Model: circles
+# ---------------------------------------------------------------------------
+
+
+class Circle(Base):
+    """A collaborative group/workspace that contains projects and members.
+
+    Circles provide a team-level grouping above projects. Each circle has
+    members with roles (owner, admin, member, viewer), shared settings,
+    and can contain multiple projects and chat channels.
+
+    Columns:
+        id            - UUID primary key.
+        name          - Human-readable circle name (e.g. "Backend Team").
+        description   - Optional description of the circle's purpose.
+        avatar_url    - Optional URL to the circle's avatar image.
+        settings_json - Arbitrary circle-level settings (notification prefs, etc.).
+        created_by    - FK → users.id. The user who created this circle.
+        created_at    - UTC timestamp of circle creation.
+        updated_at    - UTC timestamp of last modification.
+    """
+
+    __tablename__ = "circles"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        doc="Human-readable display name for the circle.",
+    )
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc="Optional description of the circle's purpose.",
+    )
+    avatar_url: Mapped[str | None] = mapped_column(
+        String(1024),
+        nullable=True,
+        doc="Optional URL to the circle's avatar image.",
+    )
+    settings_json: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        default=dict,
+        doc="Arbitrary circle-level settings (notification prefs, default model, etc.).",
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → users.id. The user who created this circle.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when the circle was created.",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        doc="UTC timestamp of the last modification to the circle.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    creator: Mapped[User] = relationship(
+        "User",
+        foreign_keys=[created_by],
+    )
+    projects: Mapped[list[Project]] = relationship(
+        "Project",
+        back_populates="circle",
+        lazy="select",
+    )
+    members: Mapped[list[CircleMember]] = relationship(
+        "CircleMember",
+        back_populates="circle",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    invitations: Mapped[list[CircleInvitation]] = relationship(
+        "CircleInvitation",
+        back_populates="circle",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+    chat_channels: Mapped[list[ChatChannel]] = relationship(
+        "ChatChannel",
+        back_populates="circle",
+        cascade="all, delete-orphan",
+        lazy="select",
+        foreign_keys="ChatChannel.circle_id",
+    )
+
+    # ── Indexes ────────────────────────────────────────────────────────────
+    __table_args__ = (
+        Index("idx_circles_created_by", "created_by"),
+        Index("idx_circles_name", "name"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<Circle id={self.id!r} name={self.name!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Model: circle_members
+# ---------------------------------------------------------------------------
+
+
+class CircleMember(Base):
+    """Tracks membership and roles within a circle.
+
+    Roles:
+        owner  - Full control, can delete the circle.
+        admin  - Can manage members and settings.
+        member - Can view and contribute to projects.
+        viewer - Read-only access.
+
+    Columns:
+        id         - UUID primary key.
+        circle_id  - FK → circles.id (CASCADE DELETE).
+        user_id    - FK → users.id (CASCADE DELETE).
+        role       - 'owner' | 'admin' | 'member' | 'viewer'.
+        joined_at  - UTC timestamp when the user joined.
+        updated_at - UTC timestamp of last role change.
+    """
+
+    __tablename__ = "circle_members"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    circle_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("circles.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → circles.id. Deleting a circle removes all memberships.",
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → users.id. Deleting a user removes all their memberships.",
+    )
+    role: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="member",
+        doc="Membership role: 'owner' | 'admin' | 'member' | 'viewer'.",
+    )
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when the user joined this circle.",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        doc="UTC timestamp of the last role change.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    circle: Mapped[Circle] = relationship(
+        "Circle",
+        back_populates="members",
+    )
+    user: Mapped[User] = relationship(
+        "User",
+        back_populates="circle_memberships",
+    )
+
+    # ── Constraints & Indexes ──────────────────────────────────────────────
+    __table_args__ = (
+        UniqueConstraint("circle_id", "user_id", name="uq_circle_member"),
+        Index("idx_circle_members_circle_id", "circle_id"),
+        Index("idx_circle_members_user_id", "user_id"),
+        Index("idx_circle_members_circle_role", "circle_id", "role"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<CircleMember circle_id={self.circle_id!r} user_id={self.user_id!r} role={self.role!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Model: circle_invitations
+# ---------------------------------------------------------------------------
+
+
+class CircleInvitation(Base):
+    """Tracks pending, accepted, and declined invitations to circles.
+
+    Columns:
+        id              - UUID primary key.
+        circle_id       - FK → circles.id (CASCADE DELETE).
+        invited_user_id - FK → users.id (CASCADE DELETE). The invitee.
+        invited_by_id   - FK → users.id (SET NULL). The inviter.
+        role            - Role to be assigned on acceptance.
+        status          - 'pending' | 'accepted' | 'declined' | 'expired'.
+        invite_token    - Unique token for email/link-based invitations.
+        expires_at      - UTC timestamp when the invitation expires.
+        created_at      - UTC timestamp when the invitation was created.
+        updated_at      - UTC timestamp of the last status change.
+    """
+
+    __tablename__ = "circle_invitations"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    circle_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("circles.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → circles.id. Deleting a circle removes all pending invitations.",
+    )
+    invited_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → users.id. The user being invited.",
+    )
+    invited_by_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        doc="FK → users.id. The user who sent the invitation. SET NULL on delete.",
+    )
+    role: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="member",
+        doc="Role to assign on acceptance: 'admin' | 'member' | 'viewer'.",
+    )
+    status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="pending",
+        doc="Invitation status: 'pending' | 'accepted' | 'declined' | 'expired'.",
+    )
+    invite_token: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        unique=True,
+        default=_new_uuid,
+        doc="Unique token for email/link-based invitation acceptance.",
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="UTC timestamp when the invitation expires. Null for no expiry.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when the invitation was created.",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        doc="UTC timestamp of the last status change.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    circle: Mapped[Circle] = relationship(
+        "Circle",
+        back_populates="invitations",
+    )
+    invited_user: Mapped[User] = relationship(
+        "User",
+        back_populates="circle_invitations",
+        foreign_keys=[invited_user_id],
+    )
+    invited_by: Mapped[User | None] = relationship(
+        "User",
+        foreign_keys=[invited_by_id],
+    )
+
+    # ── Indexes ────────────────────────────────────────────────────────────
+    __table_args__ = (
+        Index("idx_circle_invitations_circle_id", "circle_id"),
+        Index("idx_circle_invitations_user_id", "invited_user_id"),
+        Index("idx_circle_invitations_circle_status", "circle_id", "status"),
+        Index("idx_circle_invitations_token", "invite_token"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"<CircleInvitation id={self.id!r} circle_id={self.circle_id!r} "
+            f"status={self.status!r}>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Model: chat_channels
+# ---------------------------------------------------------------------------
+
+
+class ChatChannel(Base):
+    """A chat channel scoped to a circle or project.
+
+    Channels can be:
+    - Circle-scoped: General discussion for a circle (circle_id set, project_id null).
+    - Project-scoped: Discussion about a specific project (both circle_id and project_id set,
+      or just project_id for standalone project channels).
+    - Direct message: channel_type='dm', neither circle_id nor project_id required.
+
+    Columns:
+        id           - UUID primary key.
+        circle_id    - FK → circles.id (CASCADE DELETE). Null for non-circle channels.
+        project_id   - FK → projects.id (CASCADE DELETE). Null for circle-level channels.
+        name         - Channel display name (e.g. "#general", "#backend").
+        channel_type - 'circle' | 'project' | 'dm'.
+        description  - Optional channel description/topic.
+        is_archived  - Whether the channel is archived (read-only).
+        created_by   - FK → users.id. The user who created the channel.
+        created_at   - UTC timestamp of channel creation.
+        updated_at   - UTC timestamp of last modification.
+    """
+
+    __tablename__ = "chat_channels"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    circle_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("circles.id", ondelete="CASCADE"),
+        nullable=True,
+        doc="FK → circles.id. Null for non-circle channels.",
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        doc="FK → projects.id. Null for circle-level or DM channels.",
+    )
+    name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        doc="Channel display name (e.g. '#general', '#backend').",
+    )
+    channel_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="circle",
+        doc="Channel type: 'circle' | 'project' | 'dm'.",
+    )
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc="Optional channel description or topic.",
+    )
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        doc="Whether the channel is archived (read-only).",
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        doc="FK → users.id. The user who created this channel.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when the channel was created.",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        doc="UTC timestamp of the last modification.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    circle: Mapped[Circle | None] = relationship(
+        "Circle",
+        back_populates="chat_channels",
+        foreign_keys=[circle_id],
+    )
+    project: Mapped[Project | None] = relationship(
+        "Project",
+        back_populates="chat_channels",
+        foreign_keys=[project_id],
+    )
+    creator: Mapped[User | None] = relationship(
+        "User",
+        foreign_keys=[created_by],
+    )
+    messages: Mapped[list[ChatMessage]] = relationship(
+        "ChatMessage",
+        back_populates="channel",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.created_at",
+        lazy="select",
+    )
+
+    # ── Indexes ────────────────────────────────────────────────────────────
+    __table_args__ = (
+        Index("idx_chat_channels_circle_id", "circle_id"),
+        Index("idx_chat_channels_project_id", "project_id"),
+        Index("idx_chat_channels_type", "channel_type"),
+        Index("idx_chat_channels_circle_type", "circle_id", "channel_type"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<ChatChannel id={self.id!r} name={self.name!r} type={self.channel_type!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Model: chat_messages
+# ---------------------------------------------------------------------------
+
+
+class ChatMessage(Base):
+    """A single message within a chat channel, with optional threading.
+
+    Messages support threading via parent_message_id — a self-referencing FK
+    that creates a tree structure. Top-level messages have parent_message_id=null.
+
+    Columns:
+        id                 - UUID primary key.
+        channel_id         - FK → chat_channels.id (CASCADE DELETE).
+        sender_id          - FK → users.id (CASCADE DELETE).
+        parent_message_id  - FK → chat_messages.id (SET NULL). For threading.
+        content            - Message content as plain text / markdown.
+        message_type       - 'text' | 'system' | 'file' | 'code'.
+        metadata_json      - Optional metadata (file attachments, mentions, etc.).
+        is_edited          - Whether the message has been edited.
+        deleted_at         - Soft delete timestamp. Null if not deleted.
+        created_at         - UTC timestamp of message creation.
+        updated_at         - UTC timestamp of last edit.
+    """
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    channel_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("chat_channels.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → chat_channels.id. Deleting a channel deletes all its messages.",
+    )
+    sender_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → users.id. The user who sent this message.",
+    )
+    parent_message_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("chat_messages.id", ondelete="SET NULL"),
+        nullable=True,
+        doc="FK → chat_messages.id. Self-ref for threading. Null for top-level messages.",
+    )
+    content: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        doc="Message content as plain text or markdown.",
+    )
+    message_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="text",
+        doc="Message type: 'text' | 'system' | 'file' | 'code'.",
+    )
+    metadata_json: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        doc="Optional metadata: file attachments, mentions, reactions, etc.",
+    )
+    is_edited: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        doc="Whether this message has been edited after creation.",
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        doc="Soft delete timestamp. Null if the message is active.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when the message was sent.",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        doc="UTC timestamp of the last edit.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    channel: Mapped[ChatChannel] = relationship(
+        "ChatChannel",
+        back_populates="messages",
+    )
+    sender: Mapped[User] = relationship(
+        "User",
+        back_populates="chat_messages",
+    )
+    parent_message: Mapped[ChatMessage | None] = relationship(
+        "ChatMessage",
+        remote_side="ChatMessage.id",
+        foreign_keys=[parent_message_id],
+        lazy="select",
+    )
+    read_receipts: Mapped[list[MessageReadReceipt]] = relationship(
+        "MessageReadReceipt",
+        back_populates="message",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
+
+    # ── Indexes ────────────────────────────────────────────────────────────
+    __table_args__ = (
+        Index("idx_chat_messages_channel_created", "channel_id", "created_at"),
+        Index("idx_chat_messages_sender_id", "sender_id"),
+        Index("idx_chat_messages_parent_id", "parent_message_id"),
+        Index(
+            "idx_chat_messages_channel_active",
+            "channel_id",
+            "created_at",
+            postgresql_where="deleted_at IS NULL",
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        snippet = (self.content or "")[:40].replace("\n", " ")
+        return f"<ChatMessage id={self.id!r} sender_id={self.sender_id!r} content={snippet!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Model: message_read_receipts
+# ---------------------------------------------------------------------------
+
+
+class MessageReadReceipt(Base):
+    """Tracks which user has read which message for read receipt indicators.
+
+    One row per (message, user) pair. The existence of the row means the
+    user has seen the message.
+
+    Columns:
+        id         - UUID primary key.
+        message_id - FK → chat_messages.id (CASCADE DELETE).
+        user_id    - FK → users.id (CASCADE DELETE).
+        read_at    - UTC timestamp when the user read the message.
+    """
+
+    __tablename__ = "message_read_receipts"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=_new_uuid,
+        doc="UUID primary key.",
+    )
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("chat_messages.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → chat_messages.id. Deleting a message removes its read receipts.",
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        doc="FK → users.id. Deleting a user removes their read receipts.",
+    )
+    read_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        doc="UTC timestamp when the user read this message.",
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────
+    message: Mapped[ChatMessage] = relationship(
+        "ChatMessage",
+        back_populates="read_receipts",
+    )
+    user: Mapped[User] = relationship(
+        "User",
+        back_populates="message_read_receipts",
+    )
+
+    # ── Constraints & Indexes ──────────────────────────────────────────────
+    __table_args__ = (
+        UniqueConstraint("message_id", "user_id", name="uq_read_receipt_message_user"),
+        Index("idx_read_receipts_message_id", "message_id"),
+        Index("idx_read_receipts_user_id", "user_id"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<MessageReadReceipt message_id={self.message_id!r} user_id={self.user_id!r}>"
+
+
+# ---------------------------------------------------------------------------
 # Convenience exports
 # ---------------------------------------------------------------------------
 
 __all__ = [
     "AgentAction",
     "Base",
+    "ChatChannel",
+    "ChatMessage",
+    "Circle",
+    "CircleInvitation",
+    "CircleMember",
     "Conversation",
     "ExecutionRun",
     "ExecutionSession",
     "Memory",
     "Message",
+    "MessageReadReceipt",
     "Project",
     "User",
 ]

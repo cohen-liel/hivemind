@@ -14,6 +14,27 @@ interface Props {
   lastTicker?: string;
 }
 
+/** Map orchestrator task keywords to user-friendly phase descriptions */
+function getPhaseDescription(task: string | undefined, tool: string | undefined): string | null {
+  if (!task && !tool) return null;
+  const text = (task || tool || '').toLowerCase();
+  if (text.includes('loading context') || text.includes('reading memory') || text.includes('loading project'))
+    return 'Loading project context…';
+  if (text.includes('architect') || text.includes('reviewing codebase') || text.includes('analysing architecture'))
+    return 'Reviewing architecture…';
+  if (text.includes('pm creating') || text.includes('planning') || text.includes('creating task graph') || text.includes('pm agent'))
+    return 'Planning your tasks…';
+  if (text.includes('critic') || text.includes('reviewing plan') || text.includes('plan check') || text.includes('evaluating'))
+    return 'Reviewing the plan…';
+  if (text.includes('executing') || text.includes('dag executor') || text.includes('running tasks'))
+    return 'Executing tasks…';
+  if (text.includes('memory agent') || text.includes('updating project knowledge') || text.includes('memory updated'))
+    return 'Saving to memory…';
+  if (text.includes('delegat'))
+    return 'Delegating to agents…';
+  return null;
+}
+
 export default function ConductorBar({
   projectId, projectName, status, connected, orchestrator, progress, agentSummary, lastTicker,
 }: Props) {
@@ -121,24 +142,28 @@ export default function ConductorBar({
             </div>
           </div>
 
-          {/* Orchestrator status line — show most specific info available */}
+          {/* Orchestrator status line — show descriptive phase text */}
           {isActive && (
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 conductor-status-line">
               <div className="w-1 h-1 rounded-full animate-pulse flex-shrink-0"
                 style={{ background: 'var(--accent-blue)' }} />
               <div className="text-[10px] truncate"
                 style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
-                {orchestrator?.current_tool || orchestrator?.task || lastTicker || 'orchestrating...'}
+                {getPhaseDescription(orchestrator?.task, orchestrator?.current_tool)
+                  || orchestrator?.current_tool
+                  || orchestrator?.task
+                  || lastTicker
+                  || 'Orchestrating…'}
               </div>
             </div>
           )}
           {!isActive && status === 'running' && (
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 conductor-status-line">
               <div className="w-1 h-1 rounded-full animate-pulse flex-shrink-0"
                 style={{ background: 'var(--accent-amber)' }} />
               <div className="text-[10px] truncate"
                 style={{ color: 'var(--accent-amber)', fontFamily: 'var(--font-mono)' }}>
-                {lastTicker || 'initializing agents...'}
+                {getPhaseDescription(lastTicker, undefined) || lastTicker || 'Starting up…'}
               </div>
             </div>
           )}

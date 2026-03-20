@@ -250,6 +250,112 @@ export async function getAgentRecentPerformance(agentRole: string, limit = 10): 
   return data.entries;
 }
 
+// --- Circles API ---
+
+import type { Circle, CircleMember, ChatChannel, ChatMessage } from './types';
+
+export async function getCircles(): Promise<Circle[]> {
+  const data = await fetchJSON<{ circles: Circle[] }>('/circles');
+  return data.circles;
+}
+
+export async function getCircle(id: string): Promise<Circle> {
+  return fetchJSON<Circle>(`/circles/${id}`);
+}
+
+export async function createCircle(data: {
+  name: string;
+  description?: string;
+  avatar_url?: string;
+}): Promise<Circle> {
+  return fetchJSON<Circle>('/circles', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateCircle(id: string, data: {
+  name?: string;
+  description?: string;
+}): Promise<Circle> {
+  return fetchJSON<Circle>(`/circles/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteCircle(id: string): Promise<void> {
+  await fetchJSON(`/circles/${id}`, { method: 'DELETE' });
+}
+
+export async function getCircleMembers(circleId: string): Promise<CircleMember[]> {
+  const data = await fetchJSON<{ members: CircleMember[] }>(`/circles/${circleId}/members`);
+  return data.members;
+}
+
+export async function addCircleMember(circleId: string, userId: string, role = 'member'): Promise<void> {
+  await fetchJSON(`/circles/${circleId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId, role }),
+  });
+}
+
+export async function removeCircleMember(circleId: string, userId: string): Promise<void> {
+  await fetchJSON(`/circles/${circleId}/members/${userId}`, { method: 'DELETE' });
+}
+
+export async function getCircleProjects(circleId: string): Promise<Project[]> {
+  const data = await fetchJSON<{ projects: Project[] }>(`/circles/${circleId}/projects`);
+  return data.projects;
+}
+
+// --- Chat API ---
+
+export async function getChatChannels(circleId?: string): Promise<ChatChannel[]> {
+  const params = circleId ? `?circle_id=${circleId}` : '';
+  const data = await fetchJSON<{ channels: ChatChannel[] }>(`/chat/channels${params}`);
+  return data.channels;
+}
+
+export async function createChatChannel(data: {
+  name: string;
+  channel_type?: string;
+  circle_id?: string;
+  description?: string;
+}): Promise<ChatChannel> {
+  return fetchJSON<ChatChannel>('/chat/channels', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getChatMessages(
+  channelId: string,
+  opts?: { before?: string; after?: string; limit?: number },
+): Promise<{ messages: ChatMessage[]; has_more: boolean }> {
+  const params = new URLSearchParams();
+  if (opts?.before) params.set('before', opts.before);
+  if (opts?.after) params.set('after', opts.after);
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return fetchJSON(`/chat/channels/${channelId}/messages${qs ? `?${qs}` : ''}`);
+}
+
+export async function sendChatMessage(
+  channelId: string,
+  content: string,
+  opts?: { message_type?: string; parent_message_id?: string },
+): Promise<ChatMessage> {
+  return fetchJSON<ChatMessage>(`/chat/channels/${channelId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content, ...opts }),
+  });
+}
+
+export async function markMessageRead(messageId: string): Promise<void> {
+  await fetchJSON(`/chat/messages/${messageId}/read`, { method: 'POST' });
+}
+
 // --- Activity Events (persisted to DB, used for state recovery on refresh) ---
 // ActivityEvent type is defined in types.ts as a discriminated union (TS-04).
 // Re-export here for backward-compatible imports.

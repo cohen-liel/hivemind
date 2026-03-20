@@ -118,6 +118,19 @@ const MobileTabNav = React.memo(function MobileTabNav({
         inputRef.current.style.height = 'auto'; // reset to single line
       }
       onSend(val);
+      // Dismiss iOS keyboard after sending
+      inputRef.current?.blur();
+      // Auto-scroll activity feed to bottom so user sees their sent message
+      requestAnimationFrame(() => {
+        const feedEl = document.getElementById('activity-scroll-container');
+        if (feedEl) {
+          feedEl.scrollTop = feedEl.scrollHeight;
+          // Double-rAF to catch post-render layout shifts from optimistic message insert
+          requestAnimationFrame(() => {
+            feedEl.scrollTop = feedEl.scrollHeight;
+          });
+        }
+      });
     }
   };
 

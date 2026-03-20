@@ -108,6 +108,7 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
                   activities={activities}
                   hasMore={hasMoreMessages}
                   onLoadMore={onLoadMore}
+                  processing={sending}
                 />
               </div>
               <SessionSummary projectId={projectId} projectStatus={project.status} />

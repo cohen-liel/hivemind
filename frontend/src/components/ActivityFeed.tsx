@@ -8,6 +8,8 @@ interface Props {
   activities: ActivityEntry[];
   hasMore?: boolean;
   onLoadMore?: () => void;
+  /** When true, shows a typing/processing indicator at the bottom of the feed */
+  processing?: boolean;
 }
 
 function agentIcon(name?: string): string {
@@ -210,6 +212,18 @@ const AgentTextBubble = memo(function AgentTextBubble({ entry, showAvatar }: { e
 
 // ---------- User message bubble ----------
 const UserMessageBubble = memo(function UserMessageBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
+  // Show a subtle "delivered" checkmark for messages older than 1.5s
+  const [delivered, setDelivered] = useState(false);
+  useEffect(() => {
+    const age = Date.now() - entry.timestamp * 1000;
+    if (age > 1500) {
+      setDelivered(true);
+      return;
+    }
+    const timer = setTimeout(() => setDelivered(true), 1500 - age);
+    return () => clearTimeout(timer);
+  }, [entry.timestamp]);
+
   return (
     <div className="flex items-end gap-2 justify-end animate-[fadeSlideIn_0.3s_ease-out_both]">
       <div className="max-w-[70%] min-w-[60px] overflow-hidden">
@@ -220,6 +234,22 @@ const UserMessageBubble = memo(function UserMessageBubble({ entry, showAvatar }:
             boxShadow: '0 2px 10px var(--glow-blue)',
           }}>
           {entry.content}
+        </div>
+        {/* Delivered indicator */}
+        <div className="flex justify-end mt-0.5 mr-1" style={{ minHeight: '14px' }}>
+          {delivered && (
+            <span
+              className="text-[10px] flex items-center gap-0.5"
+              style={{ color: 'var(--text-muted)', opacity: 0.7 }}
+              aria-label="Message delivered"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                style={{ color: 'var(--accent-green)', animation: 'fadeSlideIn 0.3s ease-out both' }}>
+                <path d="M2 8.5l3.5 3.5L13 4.5" />
+              </svg>
+              Delivered
+            </span>
+          )}
         </div>
       </div>
       {showAvatar ? <Avatar icon={'\u{1F464}'} side="right" /> : <AvatarSpacer />}
@@ -632,6 +662,40 @@ const MessageGroupRenderer = memo(function MessageGroupRenderer({
 });
 
 // ============================================================
+// PROCESSING INDICATOR — shows while system is working
+// ============================================================
+
+const ProcessingIndicator = memo(function ProcessingIndicator(): React.ReactElement {
+  return (
+    <div className="flex items-end gap-2 mt-4 animate-[fadeSlideIn_0.3s_ease-out_both]" aria-label="Processing your request" role="status">
+      <Avatar icon="🧠" side="left" />
+      <div className="rounded-2xl rounded-bl-md px-4 py-3"
+        style={{
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border-dim)',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+        }}>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Processing</span>
+          <span className="flex gap-1 ml-0.5">
+            {[0, 1, 2].map(i => (
+              <span
+                key={i}
+                className="w-1.5 h-1.5 rounded-full"
+                style={{
+                  background: 'var(--accent-blue)',
+                  animation: `planPulse 1.4s ease-in-out ${i * 0.2}s infinite`,
+                }}
+              />
+            ))}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// ============================================================
 // VIRTUAL SCROLL CONSTANTS
 // ============================================================
 
@@ -642,7 +706,7 @@ const OVERSCAN_COUNT = 8;
 // MAIN COMPONENT WITH VIRTUAL SCROLL
 // ============================================================
 
-export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props): React.ReactElement {
+export default function ActivityFeed({ activities, hasMore, onLoadMore, processing }: Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('detail');
 
@@ -978,6 +1042,9 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
         {offsetAfter > 0 && (
           <div style={{ height: offsetAfter, flexShrink: 0 }} aria-hidden="true" />
         )}
+
+        {/* Processing indicator — shown while system is working on user's request */}
+        {processing && <ProcessingIndicator />}
       </div>
 
       {/* Scroll to bottom indicator — shown when user scrolled up and new messages arrived */}

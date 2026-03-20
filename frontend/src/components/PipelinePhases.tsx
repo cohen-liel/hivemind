@@ -20,6 +20,8 @@ interface PipelinePhasesProps {
 interface Phase {
   id: string;
   label: string;
+  /** Shortened label for narrow screens (≤400px) */
+  shortLabel: string;
   icon: string;
   /** Keywords to match against orchestrator.task to detect this phase */
   keywords: string[];
@@ -29,36 +31,42 @@ const PHASES: Phase[] = [
   {
     id: 'context',
     label: 'Loading Context',
+    shortLabel: 'Context',
     icon: '📚',
     keywords: ['loading project context', 'reading memory', 'loading context'],
   },
   {
     id: 'architect',
     label: 'Architecture Review',
+    shortLabel: 'Architect',
     icon: '🏗️',
     keywords: ['architect', 'reviewing codebase', 'analysing architecture'],
   },
   {
     id: 'planning',
     label: 'PM Planning',
+    shortLabel: 'Planning',
     icon: '📋',
     keywords: ['pm creating', 'planning', 'creating task graph', 'pm agent'],
   },
   {
     id: 'review',
     label: 'Plan Review',
+    shortLabel: 'Review',
     icon: '🔍',
     keywords: ['critic', 'reviewing plan', 'plan check', 'evaluating'],
   },
   {
     id: 'executing',
     label: 'Executing Tasks',
+    shortLabel: 'Execute',
     icon: '⚡',
     keywords: ['executing', 'dag executor', 'running tasks'],
   },
   {
     id: 'memory',
     label: 'Updating Memory',
+    shortLabel: 'Memory',
     icon: '🧠',
     keywords: ['memory agent', 'updating project knowledge', 'memory updated'],
   },
@@ -101,14 +109,14 @@ export const PipelinePhases = React.memo(function PipelinePhases({
 
   return (
     <div
-      className="w-full px-4 py-2.5 animate-[fadeSlideIn_0.3s_ease-out]"
+      className="pipeline-phases w-full animate-[fadeSlideIn_0.3s_ease-out]"
       style={{
         background: 'linear-gradient(180deg, rgba(99,140,255,0.03), transparent)',
         borderBottom: '1px solid var(--border-dim)',
       }}
     >
       {/* Phase steps */}
-      <div className="flex items-center justify-between gap-1 mb-1.5">
+      <div className="pipeline-phases-track flex items-center justify-between gap-1">
         {PHASES.map((phase, i) => {
           const isActive = i === currentIndex;
           const isDone = i < currentIndex;
@@ -119,7 +127,7 @@ export const PipelinePhases = React.memo(function PipelinePhases({
               {/* Connector line */}
               {i > 0 && (
                 <div
-                  className="flex-1 h-[2px] rounded-full transition-all duration-500"
+                  className="pipeline-connector flex-1 h-[2px] rounded-full transition-all duration-500"
                   style={{
                     background: isDone
                       ? 'var(--accent-green)'
@@ -127,12 +135,13 @@ export const PipelinePhases = React.memo(function PipelinePhases({
                       ? 'linear-gradient(90deg, var(--accent-green), var(--accent-blue))'
                       : 'var(--border-dim)',
                     opacity: isFuture ? 0.3 : 1,
+                    minWidth: 4,
                   }}
                 />
               )}
               {/* Phase dot */}
               <div
-                className={`flex items-center justify-center flex-shrink-0 rounded-full transition-all duration-500 ${
+                className={`pipeline-phase-dot flex items-center justify-center flex-shrink-0 rounded-full transition-all duration-500 ${
                   isActive ? 'animate-pulse' : ''
                 }`}
                 style={{
@@ -155,7 +164,7 @@ export const PipelinePhases = React.memo(function PipelinePhases({
                 }}
                 title={phase.label}
               >
-                <span style={{ fontSize: isActive ? 12 : 9 }}>
+                <span className="pipeline-phase-icon" style={{ fontSize: isActive ? 12 : 9 }}>
                   {isDone ? '✓' : phase.icon}
                 </span>
               </div>
@@ -165,15 +174,17 @@ export const PipelinePhases = React.memo(function PipelinePhases({
       </div>
 
       {/* Current phase label + elapsed */}
-      <div className="flex items-center justify-center gap-2">
+      <div className="pipeline-phases-label flex items-center justify-center gap-2">
         <span
-          className="text-[10px] font-bold tracking-wider"
+          className="pipeline-label-text text-[10px] font-bold tracking-wider"
           style={{
             color: 'var(--accent-blue)',
             fontFamily: 'var(--font-mono)',
           }}
         >
-          {PHASES[currentIndex]?.icon} {PHASES[currentIndex]?.label.toUpperCase()}
+          <span className="pipeline-label-icon">{PHASES[currentIndex]?.icon}{' '}</span>
+          <span className="pipeline-label-full">{PHASES[currentIndex]?.label.toUpperCase()}</span>
+          <span className="pipeline-label-short">{PHASES[currentIndex]?.shortLabel.toUpperCase()}</span>
         </span>
         {elapsedSec > 0 && (
           <span

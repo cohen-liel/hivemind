@@ -98,10 +98,18 @@ export default function Controls({ status, onPause, onResume, onStop, onSend }: 
     try {
       await onSend(message.trim(), mode);
       setMessage('');
+      // Dismiss keyboard on mobile after sending
+      textareaRef.current?.blur();
       // Scroll the activity feed to bottom after sending so the user sees their message
       requestAnimationFrame(() => {
         const feedEl = document.getElementById('activity-scroll-container');
-        if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+        if (feedEl) {
+          feedEl.scrollTop = feedEl.scrollHeight;
+          // Double-rAF to catch post-render layout shifts
+          requestAnimationFrame(() => {
+            feedEl.scrollTop = feedEl.scrollHeight;
+          });
+        }
       });
     } catch {
       setSendError('Failed to send — tap to retry');

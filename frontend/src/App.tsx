@@ -20,6 +20,8 @@ import { lazy, Suspense, useEffect, useCallback, useState, useRef } from 'react'
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const SchedulesPage = lazy(() => import('./pages/SchedulesPage'));
+const CirclesPage = lazy(() => import('./pages/CirclesPage'));
+const ChatPage = lazy(() => import('./pages/ChatPage'));
 
 /**
  * Mounts global WS-to-toast notifications.
@@ -121,6 +123,28 @@ function MobileBottomNav() {
       ),
     },
     {
+      path: '/circles',
+      label: 'Circles',
+      icon: (
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="9" cy="8" r="3.5"/>
+          <circle cx="17" cy="9" r="2.5"/>
+          <path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/>
+          <path d="M17 20c2-.5 4-2.5 4-4.5"/>
+        </svg>
+      ),
+    },
+    {
+      path: '/chat',
+      label: 'Chat',
+      icon: (
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 5.5A2.5 2.5 0 015.5 3h13A2.5 2.5 0 0121 5.5v9a2.5 2.5 0 01-2.5 2.5H9l-4.5 3.5V17H5.5A2.5 2.5 0 013 14.5v-9z"/>
+          <path d="M8 8.5h8M8 12h5"/>
+        </svg>
+      ),
+    },
+    {
       path: '/settings',
       label: 'Settings',
       icon: (
@@ -198,6 +222,8 @@ function AnimatedRoutes(): JSX.Element {
           <Route path="/new" element={<NewProjectDialog />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/schedules" element={<SchedulesPage />} />
+          <Route path="/circles" element={<CirclesPage />} />
+          <Route path="/chat" element={<ChatPage />} />
         </Routes>
       </Suspense>
     </div>
