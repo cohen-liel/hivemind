@@ -433,7 +433,6 @@ const AgentStartedBubble = memo(function AgentStartedBubble({ entry, showAvatar 
 const AgentFinishedBubble = memo(function AgentFinishedBubble({ entry, showAvatar }: { entry: ActivityEntry; showAvatar: boolean }): React.ReactElement {
   const isError = entry.is_error;
   const stats: string[] = [];
-  if (entry.cost !== undefined) stats.push(`$${entry.cost.toFixed(4)}`);
   if (entry.turns !== undefined) stats.push(`${entry.turns} turns`);
   if (entry.duration !== undefined) stats.push(`${entry.duration}s`);
 
@@ -507,7 +506,6 @@ const LoopProgressBubble = memo(function LoopProgressBubble({ entry }: { entry: 
   const maxLoops = entry.max_loops ?? 0;
   const turn = entry.turn ?? 0;
   const maxTurns = entry.max_turns ?? 0;
-  const cost = entry.cost ?? 0;
 
   const turnPct = maxTurns > 0 ? Math.min((turn / maxTurns) * 100, 100) : 0;
 
@@ -525,9 +523,6 @@ const LoopProgressBubble = memo(function LoopProgressBubble({ entry }: { entry: 
         )}
         {maxTurns > 0 && (
           <span style={{ color: 'var(--accent-blue)' }}>Turn {turn}/{maxTurns}</span>
-        )}
-        {cost > 0 && (
-          <span style={{ color: 'var(--accent-green)' }}>${cost.toFixed(3)}</span>
         )}
         {turnPct > 0 && (
           <div className="w-12 h-1 rounded-full overflow-hidden" style={{ background: 'var(--border-dim)' }}>
@@ -870,11 +865,15 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
   if (activities.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-sm px-4">
-        <div className="w-14 h-14 rounded-full flex items-center justify-center mb-3 text-2xl"
-          style={{ background: 'var(--bg-elevated)' }}>
-          💬
+        <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)' }}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" strokeWidth="1.5" strokeLinecap="round" style={{ opacity: 0.6 }}>
+            <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+            <line x1="9" y1="9" x2="15" y2="9" opacity="0.4"/>
+            <line x1="9" y1="13" x2="12" y2="13" opacity="0.3"/>
+          </svg>
         </div>
-        <p className="font-medium" style={{ color: 'var(--text-secondary)' }}>No messages yet</p>
+        <p className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>No messages yet</p>
         <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Send a message to get started</p>
       </div>
     );

@@ -16,14 +16,6 @@ function formatDuration(seconds: number): string {
   return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
 }
 
-/** Format USD cost to appropriate precision */
-function formatCost(cost: number): string {
-  if (cost === 0) return '$0';
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  if (cost < 1) return `$${cost.toFixed(3)}`;
-  return `$${cost.toFixed(2)}`;
-}
-
 /** Stat card for individual metrics */
 function StatBadge({ label, value, color }: { label: string; value: string; color: string }): React.ReactElement {
   return (
@@ -99,9 +91,6 @@ function AgentRow({ metric }: { metric: AgentMetric }): React.ReactElement {
             {totalTasks} task{totalTasks !== 1 ? 's' : ''}
           </span>
         </div>
-        <span className="text-xs font-bold font-mono tabular-nums" style={{ color: 'var(--accent-blue)' }}>
-          {formatCost(metric.totalCost)}
-        </span>
       </div>
 
       {/* Success rate bar */}
@@ -157,7 +146,6 @@ export default function AgentMetrics({ metrics }: AgentMetricsProps): React.Reac
   if (metrics.length === 0) return null;
 
   // Compute aggregate summary
-  const totalCost = metrics.reduce((sum, m) => sum + m.totalCost, 0);
   const totalTasks = metrics.reduce((sum, m) => sum + m.tasksCompleted + m.tasksFailed, 0);
   const overallSuccessRate = totalTasks > 0
     ? metrics.reduce((sum, m) => sum + m.tasksCompleted, 0) / totalTasks
@@ -198,9 +186,6 @@ export default function AgentMetrics({ metrics }: AgentMetricsProps): React.Reac
             Agent Performance
           </h3>
           <div className="flex items-center gap-3 mt-0.5">
-            <span className="text-[10px] font-mono tabular-nums" style={{ color: 'var(--accent-blue)' }}>
-              {formatCost(totalCost)}
-            </span>
             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
               {totalTasks} tasks
             </span>

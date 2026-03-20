@@ -205,6 +205,10 @@ class WebSocketEventType:
     # ── Parallel task ingestion (task_003) ────────────────────────────
     TASK_QUEUED: str = "task_queued"
 
+    # ── Granular DAG progress (task_005) ──────────────────────────────
+    TASK_PROGRESS: str = "task_progress"
+    DAG_PROGRESS: str = "dag_progress"
+
 
 def build_task_queued_event(
     project_id: str,
@@ -252,6 +256,93 @@ def build_task_queued_event(
         "queue_depth": queue_depth,
         "running_graphs": running_graphs,
         "max_concurrent_graphs": max_concurrent_graphs,
+    }
+
+
+def build_message_queued_event(
+    project_id: str,
+    task_id: str,
+    message_preview: str,
+    queue_position: int,
+    queue_depth: int,
+    running_count: int,
+    max_concurrent: int,
+    estimated_wait_seconds: float,
+) -> dict[str, Any]:
+    """Build a ``message_queued`` WebSocket event for instant feedback.
+
+    Emitted immediately when a user message is enqueued via the REST API,
+    so the frontend can show queue position and estimated wait time before
+    any agent work starts.
+
+    Args:
+        project_id:            UUID of the project.
+        task_id:               UUID of the newly created task.
+        message_preview:       First ≤100 characters of the user message.
+        queue_position:        1-indexed position in the queue (0 if running immediately).
+        queue_depth:           Total pending items in the queue.
+        running_count:         Number of tasks currently executing.
+        max_concurrent:        Concurrency limit.
+        estimated_wait_seconds: Estimated seconds until this task starts.
+
+    Returns:
+        Dict ready to be serialised to JSON and sent via WebSocket / EventBus.
+    """
+    return {
+        "type": WebSocketEventType.MESSAGE_QUEUED,
+        "timestamp": time.time(),
+        "project_id": project_id,
+        "task_id": task_id,
+        "message_preview": message_preview[:100],
+        "queue_position": queue_position,
+        "queue_depth": queue_depth,
+        "running_count": running_count,
+        "max_concurrent": max_concurrent,
+        "estimated_wait_seconds": estimated_wait_seconds,
+    }
+
+
+def build_task_progress_event(
+    project_id: str,
+    task_id: str,
+    milestone: str,
+    elapsed_s: float,
+    est_remaining_s: float = 0.0,
+) -> dict[str, Any]:
+    """Build a lightweight ``task_progress`` event (< 200 bytes).
+
+    Milestones: preparing, agent_working, writing_files,
+    summarising, complete, failed.
+    """
+    return {
+        "type": WebSocketEventType.TASK_PROGRESS,
+        "ts": round(time.time(), 1),
+        "pid": project_id[:12],
+        "tid": task_id,
+        "ms": milestone,
+        "el": round(elapsed_s, 1),
+        "er": round(est_remaining_s, 1),
+    }
+
+
+def build_dag_progress_event(
+    project_id: str,
+    completed: int,
+    total: int,
+    elapsed_s: float,
+    est_remaining_s: float = 0.0,
+) -> dict[str, Any]:
+    """Build a lightweight ``dag_progress`` aggregate event (< 200 bytes)."""
+    pct = round(completed / total * 100, 1) if total > 0 else 0.0
+    return {
+        "type": WebSocketEventType.DAG_PROGRESS,
+        "ts": round(time.time(), 1),
+        "pid": project_id[:12],
+        "done": completed,
+        "total": total,
+        "pct": pct,
+        "el": round(elapsed_s, 1),
+        "er": round(est_remaining_s, 1),
     }
 
 

@@ -69,6 +69,7 @@ _PERSIST_EVENT_TYPES = frozenset(
         "task_error",
         # DAG execution plan — critical for state reconstruction on reconnect
         "task_graph",
+        "dag_task_update",
         "self_healing",
         "stuckness_detected",
         # Granular streaming events (persisted for replay/analytics)
@@ -80,6 +81,12 @@ _PERSIST_EVENT_TYPES = frozenset(
         "agent_activity",
         # Pre-task question surfaced to the user before agent dispatch
         "pre_task_question",
+        # Message ingestion pipeline — queued message acknowledgement
+        "message_queued",
+        "task_queued",
+        # Granular DAG progress — task milestones and aggregate completion
+        "task_progress",
+        "dag_progress",
         # NOTE: agent_text_chunk intentionally excluded — too frequent for DB
     }
 )
@@ -274,6 +281,9 @@ class EventThrottler:
 
 # Module-level throttler for text chunk events (max 4 per second per agent)
 text_chunk_throttler = EventThrottler(max_per_second=4.0)
+
+# Module-level throttler for task progress events (max 2 per second per task)
+task_progress_throttler = EventThrottler(max_per_second=2.0)
 
 
 class EventBus:
@@ -642,7 +652,7 @@ class EventBus:
             agent = event.get("agent", "")
             extra = ""
             if event_type == "agent_finished":
-                extra = f" is_error={event.get('is_error')} cost=${event.get('cost', 0):.4f} failure_reason={event.get('failure_reason', '')[:80]}"
+                extra = f" is_error={event.get('is_error')} tokens={event.get('total_tokens', 0)} failure_reason={event.get('failure_reason', '')[:80]}"
             elif event_type == "project_status":
                 extra = f" status={event.get('status')}"
             elif event_type == "agent_started":

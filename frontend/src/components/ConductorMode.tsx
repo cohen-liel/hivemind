@@ -6,7 +6,6 @@ interface Props {
   agents: AgentState[];
   progress: LoopProgress | null;
   activities: ActivityEntry[];
-  totalCost: number;
   status: string;
   messageDraft: string; // current typed message (for forecast)
 }
@@ -43,17 +42,16 @@ function extractArtifacts(activities: ActivityEntry[]): Artifact[] {
 }
 
 // --- Forecast engine ---
-function estimateForecast(msg: string, agentCount: number): { cost: string; time: string; agents: number } | null {
+function estimateForecast(msg: string, agentCount: number): { time: string; agents: number } | null {
   if (!msg || msg.length < 5) return null;
   const words = msg.split(/\s+/).length;
   const complexity = Math.min(words / 5, 10); // 1-10 scale
   const agents = Math.min(Math.ceil(complexity / 3), agentCount);
-  const cost = (agents * 0.08 * (1 + complexity * 0.1)).toFixed(2);
   const minutes = Math.max(1, Math.round(agents * 0.5 + complexity * 0.3));
-  return { cost: `$${cost}`, time: `~${minutes}m`, agents };
+  return { time: `~${minutes}m`, agents };
 }
 
-export default function ConductorMode({ agents, progress, activities, totalCost, status, messageDraft }: Props) {
+export default function ConductorMode({ agents, progress, activities, status, messageDraft }: Props) {
   const artifacts = useMemo(() => extractArtifacts(activities), [activities]);
   const forecast = useMemo(() => estimateForecast(messageDraft, agents.length), [messageDraft, agents.length]);
   const orchestrator = agents.find(a => a.name === 'orchestrator');
@@ -65,9 +63,6 @@ export default function ConductorMode({ agents, progress, activities, totalCost,
   const turnPct = progress ? Math.min((progress.turn / Math.max(progress.max_turns, 1)) * 100, 100) : 0;
   const circumference = 2 * Math.PI * 54; // radius=54
   const strokeOffset = circumference - (turnPct / 100) * circumference;
-
-  // Cost for display
-  const costDisplay = totalCost > 0 ? `$${totalCost.toFixed(2)}` : '$0.00';
 
   // Self-healing: find errors that were followed by a retry
   const healingAgents = useMemo(() => {
@@ -129,13 +124,11 @@ export default function ConductorMode({ agents, progress, activities, totalCost,
               <div className="text-[10px] font-bold tracking-wider" style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
                 {progress ? `${progress.turn}/${progress.max_turns}` : 'ACTIVE'}
               </div>
-              {orchPhase ? (
+              {orchPhase && (
                 <div className="text-[8px] max-w-[90px] text-center truncate animate-pulse"
                   style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)', opacity: 0.8 }}>
                   {orchPhase}
                 </div>
-              ) : (
-                <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{costDisplay}</div>
               )}
             </>
           ) : (
@@ -254,7 +247,7 @@ export default function ConductorMode({ agents, progress, activities, totalCost,
               style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
               LAST RUN SUMMARY
             </div>
-            <div className="grid grid-cols-3 gap-3 mb-3">
+            <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
                 <div className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>
                   {artifacts.filter(a => a.action === 'created' || a.action === 'modified').length}
@@ -266,12 +259,6 @@ export default function ConductorMode({ agents, progress, activities, totalCost,
                   {agents.filter(a => a.state === 'done' && a.name !== 'orchestrator').length}
                 </div>
                 <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Agents</div>
-              </div>
-              <div>
-                <div className="text-lg font-bold" style={{ color: 'var(--accent-green)' }}>
-                  {costDisplay}
-                </div>
-                <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>Cost</div>
               </div>
             </div>
             {/* File list */}
@@ -337,12 +324,6 @@ export default function ConductorMode({ agents, progress, activities, totalCost,
               </span>
             </div>
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1">
-                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>💰</span>
-                <span className="text-xs font-bold" style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
-                  {forecast.cost}
-                </span>
-              </div>
               <div className="flex items-center gap-1">
                 <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>⏱</span>
                 <span className="text-xs font-bold" style={{ color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)' }}>

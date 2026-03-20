@@ -154,8 +154,9 @@ class DebateEngine:
         """
         # Lazy import to avoid circular dependency
         import state
-        from config import SPECIALIST_PROMPTS, get_agent_turns
+        from config import get_agent_turns
         from isolated_query import isolated_query
+        from prompts import PROMPT_REGISTRY as SPECIALIST_PROMPTS
 
         _sdk = sdk or state.sdk_client
 

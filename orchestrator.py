@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from complexity import READER_ROLES, WRITER_ROLES
 from config import (
     AGENT_RETRY_DELAY,
     ASYNC_WAIT_TIMEOUT,
@@ -18,11 +19,11 @@ from config import (
     GIT_DIFF_TIMEOUT,
     MAX_ANYIO_RETRIES,
     MAX_BUDGET_USD,
+    MAX_CONCURRENT_PROJECTS,
     MAX_ORCHESTRATOR_LOOPS,
     MAX_TURNS_PER_CYCLE,
     RATE_LIMIT_SECONDS,
     SESSION_TIMEOUT_SECONDS,
-    SPECIALIST_PROMPTS,
     USE_DAG_EXECUTOR,
 )
 
@@ -30,6 +31,7 @@ from config import (
 # Imported lazily inside _run_dag_session to avoid circular imports
 # (orchestrator → pm_agent → state → orchestrator)
 from contracts import TaskInput, TaskOutput
+from prompts import PROMPT_REGISTRY as SPECIALIST_PROMPTS
 from sdk_client import ClaudeSDKManager, SDKResponse
 from src.storage.platform_session import PlatformSessionManager as SessionManager
 
@@ -54,13 +56,139 @@ _DELEGATE_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Project Execution Queue — sequential per project, parallel across projects
+# ---------------------------------------------------------------------------
+
+
+class ProjectExecutionQueue:
+    """Process-wide execution queue ensuring sequential execution per project
+    but parallel execution across different projects.
+
+    Each project gets a FIFO queue.  A background dispatcher processes one
+    graph at a time per project while allowing up to ``MAX_CONCURRENT_PROJECTS``
+    projects to run simultaneously.
+
+    Usage:
+        queue = ProjectExecutionQueue.instance()
+        await queue.submit(project_id, coroutine_factory)
+    """
+
+    _instance: ProjectExecutionQueue | None = None
+
+    def __new__(cls) -> ProjectExecutionQueue:
+        if cls._instance is None:
+            inst = super().__new__(cls)
+            inst._project_queues: dict[
+                str,
+                asyncio.Queue[
+                    tuple[
+                        Callable[[], Awaitable[None]],
+                        asyncio.Future[None],
+                    ]
+                ],
+            ] = {}
+            inst._project_workers: dict[str, asyncio.Task[None]] = {}
+            inst._project_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROJECTS)
+            inst._meta_lock = asyncio.Lock()
+            cls._instance = inst
+        return cls._instance
+
+    @classmethod
+    def instance(cls) -> ProjectExecutionQueue:
+        return cls()
+
+    async def submit(
+        self,
+        project_id: str,
+        coro_factory: Callable[[], Awaitable[None]],
+    ) -> asyncio.Future[None]:
+        """Submit a graph execution for *project_id*.
+
+        Returns a Future that resolves when the execution completes.
+        If there is already a running graph for this project the new
+        submission waits in a FIFO queue (sequential per project).
+        """
+        fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+
+        async with self._meta_lock:
+            if project_id not in self._project_queues:
+                self._project_queues[project_id] = asyncio.Queue()
+            self._project_queues[project_id].put_nowait((coro_factory, fut))
+
+            # Ensure a worker task exists for this project
+            worker = self._project_workers.get(project_id)
+            if worker is None or worker.done():
+                self._project_workers[project_id] = asyncio.create_task(
+                    self._project_worker(project_id),
+                    name=f"project-queue-{project_id}",
+                )
+
+        return fut
+
+    async def _project_worker(self, project_id: str) -> None:
+        """Drain the per-project queue, running one graph at a time.
+
+        Acquires a project-level semaphore slot so that at most
+        ``MAX_CONCURRENT_PROJECTS`` workers are active simultaneously.
+        """
+        q = self._project_queues[project_id]
+
+        while True:
+            try:
+                coro_factory, fut = await asyncio.wait_for(q.get(), timeout=5.0)
+            except TimeoutError:
+                # Queue idle — check if anything new arrived
+                if q.empty():
+                    logger.debug(f"[ProjectQueue] Worker for {project_id} idle — exiting")
+                    return
+                continue
+            except asyncio.CancelledError:
+                return
+
+            # Run under the cross-project semaphore
+            async with self._project_semaphore:
+                logger.info(
+                    f"[ProjectQueue] {project_id}: starting queued graph "
+                    f"(active_projects={MAX_CONCURRENT_PROJECTS - self._project_semaphore._value}"
+                    f"/{MAX_CONCURRENT_PROJECTS})"
+                )
+                try:
+                    await coro_factory()
+                    if not fut.done():
+                        fut.set_result(None)
+                except asyncio.CancelledError:
+                    if not fut.done():
+                        fut.cancel()
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        f"[ProjectQueue] {project_id}: graph execution failed: {exc}",
+                        exc_info=True,
+                    )
+                    if not fut.done():
+                        fut.set_exception(exc)
+
+    def queue_depth(self, project_id: str) -> int:
+        """Return the number of pending graphs for a project."""
+        q = self._project_queues.get(project_id)
+        return q.qsize() if q else 0
+
+    def active_projects(self) -> int:
+        """Number of projects currently executing graphs."""
+        return MAX_CONCURRENT_PROJECTS - self._project_semaphore._value  # type: ignore[attr-defined]
+
+
 @dataclass
 class Message:
     agent_name: str
     role: str
     content: str
     timestamp: float = field(default_factory=time.time)
-    cost_usd: float = 0.0
+    cost_usd: float = 0.0  # Deprecated — kept for backward compat
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
 
 
 @dataclass
@@ -108,28 +236,11 @@ class OrchestratorManager:
                 break
         return drained
 
-    # Agents that modify files — must run sequentially to avoid conflicts
-    _WRITER_ROLES = {
-        "developer",
-        "devops",
-        "backend_developer",
-        "frontend_developer",
-        "database_expert",
-        "typescript_architect",
-        "python_backend",
-    }
+    # Agents that modify files — imported from complexity.py (single source of truth)
+    _WRITER_ROLES = WRITER_ROLES
 
-    # Read-only / analysis agents — safe to run in parallel
-    # (Kept consistent with dag_executor._READER_ROLES)
-    _READER_ROLES = {
-        "researcher",
-        "reviewer",
-        "security_auditor",
-        "ux_critic",
-        "test_engineer",
-        "tester",
-        "memory",
-    }
+    # Read-only / analysis agents — imported from complexity.py (single source of truth)
+    _READER_ROLES = READER_ROLES
 
     def __init__(
         self,
@@ -183,8 +294,12 @@ class OrchestratorManager:
         )  # All agent roles that have run — persists even if log is trimmed
         self.is_running = False
         self.is_paused = False
-        self.total_cost_usd = 0.0
+        self.total_cost_usd = 0.0  # Deprecated — kept for budget enforcement backward compat
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_tokens = 0
         self.turn_count = 0
+        self._task_summaries: list[str] = []  # Short summaries per completed task
 
         # Live state tracking for dashboard
         self.current_agent: str | None = None
@@ -257,6 +372,9 @@ class OrchestratorManager:
         # Count of graph executions currently running under the semaphore
         self._active_graph_count: int = 0
 
+        # ── Project execution queue — sequential per project, parallel across ──
+        self._project_queue: ProjectExecutionQueue = ProjectExecutionQueue.instance()
+
     # Checkpoint every N orchestrator rounds (periodic safety-net)
     _CHECKPOINT_INTERVAL_ROUNDS = 3
 
@@ -316,7 +434,9 @@ class OrchestratorManager:
                     "role": m.role,
                     "content": m.content[:500],
                     "timestamp": m.timestamp,
-                    "cost_usd": m.cost_usd,
+                    "input_tokens": m.input_tokens,
+                    "output_tokens": m.output_tokens,
+                    "total_tokens": m.total_tokens,
                 }
                 for m in list(self.conversation_log)[-50:]  # last 50 messages
             ],
@@ -373,6 +493,9 @@ class OrchestratorManager:
             self._current_loop = checkpoint.get("current_loop", 0)
             self.turn_count = checkpoint.get("turn_count", 0)
             self.total_cost_usd = checkpoint.get("total_cost_usd", 0.0)
+            self.total_input_tokens = checkpoint.get("total_input_tokens", 0)
+            self.total_output_tokens = checkpoint.get("total_output_tokens", 0)
+            self.total_tokens = checkpoint.get("total_tokens", 0)
             self._last_user_message = checkpoint.get("last_user_message", "")
 
             # Restore enriched context (new dict format)
@@ -390,6 +513,9 @@ class OrchestratorManager:
                             content=msg_data.get("content", ""),
                             timestamp=msg_data.get("timestamp", 0),
                             cost_usd=msg_data.get("cost_usd", 0),
+                            input_tokens=msg_data.get("input_tokens", 0),
+                            output_tokens=msg_data.get("output_tokens", 0),
+                            total_tokens=msg_data.get("total_tokens", 0),
                         )
                     )
                 self._completed_rounds = ctx.get("completed_rounds", [])
@@ -591,11 +717,37 @@ class OrchestratorManager:
             # Fallback to on_result
             await self._send_result(text)
 
+    def _get_project_status_metadata(self) -> dict:
+        """Compute structured metadata for project_status events."""
+        active = sum(
+            1
+            for s in self.agent_states.values()
+            if isinstance(s, dict) and s.get("state") == "working"
+        )
+        total_tasks = 0
+        completed_tasks = 0
+        if self._current_dag_graph:
+            total_tasks = len(self._current_dag_graph.get("tasks", []))
+        if self._dag_task_statuses:
+            completed_tasks = sum(1 for s in self._dag_task_statuses.values() if s == "completed")
+        progress_pct = round(completed_tasks / total_tasks * 100, 1) if total_tasks > 0 else 0.0
+        return {
+            "is_running": self.is_running,
+            "is_paused": self.is_paused,
+            "agent_count": active,
+            "completed_tasks": completed_tasks,
+            "total_tasks": total_tasks,
+            "progress_percent": progress_pct,
+        }
+
     async def _emit_event(self, event_type: str, **data):
         """Emit a structured event for the dashboard."""
         if self.on_event:
             try:
                 event = {"type": event_type, "timestamp": time.time(), **data}
+                # Auto-enrich project_status events with structured metadata
+                if event_type == "project_status":
+                    event["metadata"] = self._get_project_status_metadata()
                 await self.on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}", exc_info=True)
@@ -916,8 +1068,9 @@ class OrchestratorManager:
             summary = response.text[:3000]
             if len(response.text) > 3000:
                 summary += "\n... (truncated)"
-            cost_str = f" | ${response.cost_usd:.4f}" if response.cost_usd > 0 else ""
-            await self._send_final(f"💬 *{target}*{cost_str}\n\n{summary}")
+            _resp_tokens = getattr(response, "total_tokens", 0)
+            token_str = f" | {_resp_tokens / 1000:.1f}K tokens" if _resp_tokens else ""
+            await self._send_final(f"💬 *{target}*{token_str}\n\n{summary}")
         else:
             # Enqueue — the orchestrator loop / _on_task_done will drain pending messages
             await self._message_queue.put((agent_name, message))
@@ -1036,10 +1189,21 @@ class OrchestratorManager:
 
         self._active_graph_count = 0
 
-        await self._send_final(
-            f"🛑 Project *{self.project_name}* stopped.\n"
-            f"📊 Turns: {self.turn_count} | 💰 Cost: ${self.total_cost_usd:.4f}"
-        )
+        # Build a meaningful stop summary with token counts and what was done
+        _total_k = self.total_tokens / 1000 if self.total_tokens else 0
+        _in_k = self.total_input_tokens / 1000 if self.total_input_tokens else 0
+        _out_k = self.total_output_tokens / 1000 if self.total_output_tokens else 0
+        _stop_lines = [
+            f"🛑 Project *{self.project_name}* stopped.",
+            f"📊 Turns: {self.turn_count} | "
+            f"🔤 Tokens: {_total_k:.1f}K ({_in_k:.1f}K in / {_out_k:.1f}K out)",
+        ]
+        if self._task_summaries:
+            _stop_lines.append("")
+            _stop_lines.append(f"**Completed {len(self._task_summaries)} task(s):**")
+            for s in self._task_summaries[-10:]:  # Show last 10
+                _stop_lines.append(f"  • {s}")
+        await self._send_final("\n".join(_stop_lines))
 
     async def request_approval(self, description: str) -> bool:
         """Request human approval before proceeding. Blocks until approved/rejected."""
@@ -1066,24 +1230,26 @@ class OrchestratorManager:
     async def _submit_to_graph_ingestion_queue(self, user_message: str) -> None:
         """Queue a new task graph for execution and emit 'task_queued' event.
 
-        This is the entry point for non-blocking task submission.  It returns
-        immediately — the submitted graph will execute as soon as:
-          1. The current session finishes (is_running becomes False), AND
-          2. A semaphore slot is available (active graphs < DAG_MAX_CONCURRENT_GRAPHS).
+        Submissions are routed through the ``ProjectExecutionQueue`` which
+        guarantees sequential execution per project and parallel execution
+        across different projects (up to ``MAX_CONCURRENT_PROJECTS``).
 
         Args:
             user_message: The user's message / task description.
         """
         queue_depth = self._graph_ingestion_queue.qsize()
-        queue_position = queue_depth + 1  # 1-indexed position in the queue
+        project_depth = self._project_queue.queue_depth(self.project_id)
+        queue_position = project_depth + queue_depth + 1
 
-        # Put the message in the queue (always non-blocking)
+        # Put the message in the local ingestion queue
         await self._graph_ingestion_queue.put(user_message)
 
         logger.info(
             f"[{self.project_id}] Task queued for parallel ingestion "
             f"(position={queue_position}, depth={queue_depth + 1}, "
-            f"active_graphs={self._active_graph_count})"
+            f"active_graphs={self._active_graph_count}, "
+            f"active_projects={self._project_queue.active_projects()}/"
+            f"{MAX_CONCURRENT_PROJECTS})"
         )
 
         # Emit task_queued event — frontend can show a "Task queued" indicator
@@ -1094,6 +1260,8 @@ class OrchestratorManager:
             queue_depth=queue_depth + 1,
             running_graphs=self._active_graph_count,
             max_concurrent_graphs=DAG_MAX_CONCURRENT_GRAPHS,
+            active_projects=self._project_queue.active_projects(),
+            max_concurrent_projects=MAX_CONCURRENT_PROJECTS,
         )
 
         # Notify user so they know their submission was accepted
@@ -1186,60 +1354,64 @@ class OrchestratorManager:
     async def _run_queued_graph(self, user_message: str) -> None:
         """Execute one queued graph under the concurrency semaphore.
 
-        Acquires a semaphore slot before calling ``start_session()``, and
-        releases it when the session finishes.  This guarantees that at most
-        ``DAG_MAX_CONCURRENT_GRAPHS`` sessions run in parallel across ALL
-        queued entries for this orchestrator.
-
-        Note: ``start_session()`` sets ``self.is_running = True`` during
-        execution.  For parallel execution (``DAG_MAX_CONCURRENT_GRAPHS > 1``)
-        the caller must be aware that ``is_running`` may already be True if
-        another session is in progress.  In the default single-project scenario
-        (``DAG_MAX_CONCURRENT_GRAPHS=1``) sessions execute strictly serially.
+        Uses the ``ProjectExecutionQueue`` to guarantee sequential execution
+        within this project and parallel execution across projects.  Also
+        respects the per-orchestrator ``_graph_semaphore`` for backward
+        compatibility with the per-instance concurrency limit.
         """
-        async with self._graph_semaphore:
-            self._active_graph_count += 1
-            logger.info(
-                f"[{self.project_id}] Starting queued graph "
-                f"(active_graphs={self._active_graph_count}): "
-                f"{user_message[:80]}"
+
+        async def _do_execute() -> None:
+            async with self._graph_semaphore:
+                self._active_graph_count += 1
+                logger.info(
+                    f"[{self.project_id}] Starting queued graph "
+                    f"(active_graphs={self._active_graph_count}, "
+                    f"active_projects={self._project_queue.active_projects()}): "
+                    f"{user_message[:80]}"
+                )
+                try:
+                    # Wait for any current running session to finish before starting
+                    _wait_attempts = 0
+                    while self.is_running:
+                        _wait_attempts += 1
+                        if _wait_attempts % 30 == 1:
+                            logger.info(
+                                f"[{self.project_id}] Queued graph waiting for "
+                                f"current session to finish (waited ~{_wait_attempts}s)"
+                            )
+                        await asyncio.sleep(1.0)
+
+                    if self._stop_event.is_set():
+                        logger.info(f"[{self.project_id}] Queued graph aborted — stop event set")
+                        return
+
+                    await self.start_session(user_message)
+
+                finally:
+                    self._active_graph_count = max(0, self._active_graph_count - 1)
+                    logger.info(
+                        f"[{self.project_id}] Queued graph finished "
+                        f"(remaining_active={self._active_graph_count})"
+                    )
+
+        # Route through the project queue for cross-project coordination
+        try:
+            fut = await self._project_queue.submit(
+                self.project_id,
+                _do_execute,
             )
-            try:
-                # Wait for any current running session to finish before starting
-                # (respects the existing is_running state guard in start_session).
-                _wait_attempts = 0
-                while self.is_running:
-                    _wait_attempts += 1
-                    if _wait_attempts % 30 == 1:  # Log every 30s
-                        logger.info(
-                            f"[{self.project_id}] Queued graph waiting for "
-                            f"current session to finish (waited ~{_wait_attempts}s)"
-                        )
-                    await asyncio.sleep(1.0)
-
-                # Stop event may have been set during the wait — abort if so
-                if self._stop_event.is_set():
-                    logger.info(f"[{self.project_id}] Queued graph aborted — stop event set")
-                    return
-
-                await self.start_session(user_message)
-
-            except asyncio.CancelledError:
-                logger.info(
-                    f"[{self.project_id}] Queued graph execution cancelled: {user_message[:60]}"
-                )
-                raise
-            except Exception as exc:
-                logger.error(
-                    f"[{self.project_id}] Queued graph execution failed: {exc}",
-                    exc_info=True,
-                )
-            finally:
-                self._active_graph_count = max(0, self._active_graph_count - 1)
-                logger.info(
-                    f"[{self.project_id}] Queued graph finished "
-                    f"(remaining_active={self._active_graph_count})"
-                )
+            # Wait for the execution to complete
+            await fut
+        except asyncio.CancelledError:
+            logger.info(
+                f"[{self.project_id}] Queued graph execution cancelled: {user_message[:60]}"
+            )
+            raise
+        except Exception as exc:
+            logger.error(
+                f"[{self.project_id}] Queued graph execution failed: {exc}",
+                exc_info=True,
+            )
 
     def approve(self):
         """Approve the pending request."""
@@ -1871,12 +2043,17 @@ class OrchestratorManager:
             summary += "\n\n---\n💬 Send another message to continue working on this project."
             await self._send_final(summary)
 
-            # Record outputs in conversation log for persistence
+            # Record outputs in conversation log and collect summaries
             for output in result.outputs:
                 self._record_dag_output(output)
+                if output.is_successful() and output.summary:
+                    self._task_summaries.append(output.summary[:120])
 
-            # Update total cost
+            # Update total cost and token counts
             self.total_cost_usd += result.total_cost
+            self.total_input_tokens += result.total_input_tokens
+            self.total_output_tokens += result.total_output_tokens
+            self.total_tokens += result.total_tokens
             _dag_exit_reason = "normal"  # Reached end of try block = success
 
         except asyncio.CancelledError:
@@ -2060,10 +2237,12 @@ class OrchestratorManager:
                     if task_id:
                         self._dag_task_statuses[task_id] = final_task_status
                         # Emit dag_task_update so the Plan View updates the task status
+                        _task_name_for_event = agent_state.get("task", "")[:120]
                         await self._emit_event(
                             "dag_task_update",
                             task_id=task_id,
                             status=final_task_status,
+                            task_name=_task_name_for_event,
                             agent=agent_name,
                             failure_reason=_dag_exit_reason if _abnormal_exit else "",
                         )
@@ -2071,6 +2250,9 @@ class OrchestratorManager:
                         "agent_finished",
                         agent=agent_name,
                         cost=agent_state.get("cost", 0),
+                        input_tokens=agent_state.get("input_tokens", 0),
+                        output_tokens=agent_state.get("output_tokens", 0),
+                        total_tokens=agent_state.get("total_tokens", 0),
                         turns=agent_state.get("turns", 0),
                         duration=agent_state.get("duration", 0),
                         is_error=_abnormal_exit,
@@ -2080,8 +2262,15 @@ class OrchestratorManager:
                     )
 
             # Also emit dag_task_update for tasks that never started (still pending)
-            # so the Plan View shows them as cancelled/skipped, not stuck in 'pending'
-            if _abnormal_exit and self._current_dag_graph:
+            # so the Plan View shows them as cancelled/skipped, not stuck in 'pending'.
+            # This applies to BOTH abnormal exits AND normal exits where the graph
+            # didn't fully complete (e.g. budget exhaustion is treated as "normal"
+            # by the DAG executor but leaves tasks unfinished).
+            _has_unfinished = self._current_dag_graph and any(
+                t.get("id") and t["id"] not in self._dag_task_statuses
+                for t in self._current_dag_graph.get("tasks", [])
+            )
+            if (_abnormal_exit or _has_unfinished) and self._current_dag_graph:
                 for t in self._current_dag_graph.get("tasks", []):
                     tid = t.get("id")
                     if tid and tid not in self._dag_task_statuses:
@@ -2091,8 +2280,13 @@ class OrchestratorManager:
                             "dag_task_update",
                             task_id=tid,
                             status="cancelled",
+                            task_name=(t.get("goal") or "")[:120],
                             agent=t.get("role", "unknown"),
-                            failure_reason=f"DAG terminated before task started: {_dag_exit_reason}",
+                            failure_reason=(
+                                f"DAG terminated before task started: {_dag_exit_reason}"
+                                if _abnormal_exit
+                                else "Skipped — session ended before this task could run"
+                            ),
                         )
 
             # Emit execution_error event so the frontend can show an error banner
@@ -2113,6 +2307,7 @@ class OrchestratorManager:
                     if self._current_dag_graph
                     else 0,
                     total_cost=self.total_cost_usd,
+                    total_tokens=self.total_tokens,
                 )
 
             # Emit agent_finished for the Orchestrator itself so the Trace
@@ -2122,11 +2317,15 @@ class OrchestratorManager:
                 "state": "done" if not _abnormal_exit else "error",
                 "task": _orch_final_status,
                 "cost": self.total_cost_usd,
+                "total_tokens": self.total_tokens,
             }
             await self._emit_event(
                 "agent_finished",
                 agent="orchestrator",
                 cost=self.total_cost_usd,
+                input_tokens=self.total_input_tokens,
+                output_tokens=self.total_output_tokens,
+                total_tokens=self.total_tokens,
                 turns=self.turn_count,
                 duration=0,  # frontend calculates from started_at
                 is_error=_abnormal_exit,
@@ -2163,7 +2362,13 @@ class OrchestratorManager:
             "last_activity_type": "started",
         }
         self._dag_task_statuses[task.id] = "working"
-        await self._emit_event("dag_task_update", task_id=task.id, status="working")
+        await self._emit_event(
+            "dag_task_update",
+            task_id=task.id,
+            status="working",
+            task_name=task.goal[:120],
+            agent=task.role.value,
+        )
         # Clear any prior silence alert for this agent (it just started)
         self._silence_alerted.discard(task.role.value)
         # activity feed, network trace, elapsed time, and SDK calls correctly.
@@ -2219,12 +2424,20 @@ class OrchestratorManager:
             "state": "done" if is_ok else "error",
             "task": task.goal[:120],
             "cost": output.cost_usd,
+            "input_tokens": output.input_tokens,
+            "output_tokens": output.output_tokens,
+            "total_tokens": output.total_tokens,
             "turns": output.turns_used,
             "duration": real_duration,
         }
         self._dag_task_statuses[task.id] = "completed" if is_ok else "failed"
         await self._emit_event(
-            "dag_task_update", task_id=task.id, status="completed" if is_ok else "failed"
+            "dag_task_update",
+            task_id=task.id,
+            status="completed" if is_ok else "failed",
+            task_name=task.goal[:120],
+            agent=task.role.value,
+            failure_reason=failure_reason if not is_ok else "",
         )
 
         # Emit agent_finished for Trace + Agent cards
@@ -2232,6 +2445,9 @@ class OrchestratorManager:
             "agent_finished",
             agent=task.role.value,
             cost=output.cost_usd,
+            input_tokens=getattr(output, "input_tokens", 0),
+            output_tokens=getattr(output, "output_tokens", 0),
+            total_tokens=getattr(output, "total_tokens", 0),
             turns=output.turns_used,
             duration=real_duration,
             is_error=not is_ok,
@@ -2355,7 +2571,7 @@ class OrchestratorManager:
             f"{output.summary}\n"
             f"Files: {', '.join(output.artifacts[:10]) or 'none'}\n"
             f"Structured Artifacts:\n{artifacts_str}\n"
-            f"Confidence: {output.confidence:.2f} | Cost: ${output.cost_usd:.4f}"
+            f"Confidence: {output.confidence:.2f} | Tokens: {getattr(output, 'total_tokens', 0)}"
         )
         if output.failure_category:
             content += f"\nFailure: {output.failure_category.value}"
@@ -2368,6 +2584,9 @@ class OrchestratorManager:
                 role="Agent",
                 content=content,
                 cost_usd=output.cost_usd,
+                input_tokens=getattr(output, "input_tokens", 0),
+                output_tokens=getattr(output, "output_tokens", 0),
+                total_tokens=getattr(output, "total_tokens", 0),
             )
         )
 
@@ -2793,6 +3012,9 @@ class OrchestratorManager:
                     {
                         "state": "error" if response.is_error else "done",
                         "cost": response.cost_usd,
+                        "input_tokens": response.input_tokens,
+                        "output_tokens": response.output_tokens,
+                        "total_tokens": response.total_tokens,
                         "turns": response.num_turns,
                         "duration": agent_duration,
                     }
@@ -2802,6 +3024,9 @@ class OrchestratorManager:
                     "agent_finished",
                     agent="orchestrator",
                     cost=response.cost_usd,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    total_tokens=response.total_tokens,
                     turns=response.num_turns,
                     duration=round(agent_duration, 1),
                     is_error=response.is_error,
@@ -3458,6 +3683,9 @@ class OrchestratorManager:
                         "state": final_state,
                         "task": agent_state.get("task", ""),
                         "cost": agent_state.get("cost", 0),
+                        "input_tokens": agent_state.get("input_tokens", 0),
+                        "output_tokens": agent_state.get("output_tokens", 0),
+                        "total_tokens": agent_state.get("total_tokens", 0),
                         "turns": agent_state.get("turns", 0),
                         "duration": agent_state.get("duration", 0),
                     }
@@ -3467,6 +3695,9 @@ class OrchestratorManager:
                         "agent_finished",
                         agent=agent_name,
                         cost=agent_state.get("cost", 0),
+                        input_tokens=agent_state.get("input_tokens", 0),
+                        output_tokens=agent_state.get("output_tokens", 0),
+                        total_tokens=agent_state.get("total_tokens", 0),
                         turns=agent_state.get("turns", 0),
                         duration=agent_state.get("duration", 0),
                         is_error=_abnormal_exit,

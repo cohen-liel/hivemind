@@ -1,7 +1,7 @@
 import type {
   Project, ProjectMessage, FileChanges, TaskHistoryItem, Stats,
   FileTreeEntry, FileContent, Settings, BrowseDirsResponse, Schedule,
-  LiveState, AgentPerformanceEntry, ProjectCostSummary, ActivityEvent,
+  LiveState, AgentPerformanceEntry, ActivityEvent,
 } from './types';
 
 const BASE = '/api';
@@ -229,23 +229,14 @@ export async function deleteSchedule(id: number): Promise<void> {
   await fetchJSON(`/schedules/${id}`, { method: 'DELETE' });
 }
 
-// --- Agent Performance & Cost Analytics ---
+// --- Agent Performance Analytics ---
 
 export interface AgentStats {
   agent_role: string;
   total_runs: number;
   success_rate: number;
   avg_duration: number;
-  avg_cost: number;
-  total_cost: number;
   last_run: number;
-}
-
-export interface CostBreakdown {
-  by_agent: { agent_role: string; cost: number; runs: number }[];
-  by_day: { day: string; cost: number; runs: number }[];
-  total_cost: number;
-  total_runs: number;
 }
 
 export async function getAgentStats(projectId?: string): Promise<AgentStats[]> {
@@ -257,17 +248,6 @@ export async function getAgentStats(projectId?: string): Promise<AgentStats[]> {
 export async function getAgentRecentPerformance(agentRole: string, limit = 10): Promise<AgentPerformanceEntry[]> {
   const data = await fetchJSON<{ entries: AgentPerformanceEntry[] }>(`/agent-stats/${agentRole}/recent?limit=${limit}`);
   return data.entries;
-}
-
-export async function getCostBreakdown(projectId?: string, days = 30): Promise<CostBreakdown> {
-  const params = new URLSearchParams();
-  if (projectId) params.set('project_id', projectId);
-  params.set('days', String(days));
-  return fetchJSON<CostBreakdown>(`/cost-breakdown?${params}`);
-}
-
-export async function getCostSummary(): Promise<{ projects: ProjectCostSummary[] }> {
-  return fetchJSON<{ projects: ProjectCostSummary[] }>('/cost-summary');
 }
 
 // --- Activity Events (persisted to DB, used for state recovery on refresh) ---

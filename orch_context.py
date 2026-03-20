@@ -54,13 +54,13 @@ def classify_context_priority(entry: str) -> int:
         3 (CRITICAL) — FAILED, ERROR, BLOCKED entries (never trim)
         2 (HIGH)     — NEEDS_FOLLOWUP, warnings, recent rounds
         0 (INFO)     — Success/informational entries (trim first)
+
+    Delegates to the unified classifier in blackboard.classify_complexity().
     """
-    upper = entry.upper()
-    if any(kw in upper for kw in ("FAILED", "ERROR", "BLOCKED", "CRITICAL")):
-        return PRIORITY_CRITICAL
-    if any(kw in upper for kw in ("NEEDS_FOLLOWUP", "WARNING", "⚠")):
-        return PRIORITY_HIGH
-    return PRIORITY_INFO
+    from blackboard import classify_complexity
+
+    result = classify_complexity(context_entry=entry)
+    return result.context_priority
 
 
 def compress_context_entry(entry: str) -> str:

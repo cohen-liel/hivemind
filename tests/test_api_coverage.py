@@ -80,6 +80,9 @@ def _make_mock_manager(
     is_paused=False,
     turn_count=0,
     total_cost_usd=0.0,
+    total_input_tokens=0,
+    total_output_tokens=0,
+    total_tokens=0,
 ):
     """Mock OrchestratorManager with realistic attributes."""
     mgr = MagicMock()
@@ -89,6 +92,9 @@ def _make_mock_manager(
     mgr.is_paused = is_paused
     mgr.turn_count = turn_count
     mgr.total_cost_usd = total_cost_usd
+    mgr.total_input_tokens = total_input_tokens
+    mgr.total_output_tokens = total_output_tokens
+    mgr.total_tokens = total_tokens
     mgr.agent_names = ["orchestrator", "developer"]
     mgr.is_multi_agent = True
     mgr.conversation_log = []
@@ -436,70 +442,6 @@ class TestAgentRecent:
             resp = await c.get("/api/agent-stats/orchestrator/recent?limit=5")
         assert resp.status_code == 200
         assert len(resp.json()["entries"]) == 1
-
-
-# ---------------------------------------------------------------------------
-# GET /api/cost-breakdown
-# ---------------------------------------------------------------------------
-
-
-class TestCostBreakdown:
-    @pytest.mark.asyncio
-    async def test_cost_breakdown_when_no_session_mgr_should_return_empty(self):
-        import state
-
-        app, _, _ = _setup_app()
-        state.session_mgr = None
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.get("/api/cost-breakdown")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["total_cost"] == 0
-
-    @pytest.mark.asyncio
-    async def test_cost_breakdown_when_session_mgr_available_should_call_db(self):
-        app, mock_smgr, _ = _setup_app()
-        mock_smgr.get_cost_breakdown = AsyncMock(
-            return_value={
-                "by_agent": [{"agent": "orch", "cost": 1.0}],
-                "by_day": [],
-                "total_cost": 1.0,
-                "total_runs": 3,
-            }
-        )
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.get("/api/cost-breakdown?days=7")
-        assert resp.status_code == 200
-        assert resp.json()["total_cost"] == 1.0
-
-
-# ---------------------------------------------------------------------------
-# GET /api/cost-summary
-# ---------------------------------------------------------------------------
-
-
-class TestCostSummary:
-    @pytest.mark.asyncio
-    async def test_cost_summary_when_no_session_mgr_should_return_empty(self):
-        import state
-
-        app, _, _ = _setup_app()
-        state.session_mgr = None
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.get("/api/cost-summary")
-        assert resp.status_code == 200
-        assert resp.json()["projects"] == []
-
-    @pytest.mark.asyncio
-    async def test_cost_summary_when_session_mgr_available_should_return_projects(self):
-        app, mock_smgr, _ = _setup_app()
-        mock_smgr.get_project_cost_summary = AsyncMock(
-            return_value=[{"project_id": "p1", "total": 0.5}]
-        )
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.get("/api/cost-summary")
-        assert resp.status_code == 200
-        assert len(resp.json()["projects"]) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -103,7 +103,7 @@ export default function WSReconnectBanner(): React.ReactElement | null {
           >
             <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
           </svg>
-          <span>Reconnecting to server — live updates paused</span>
+          <span>Reconnecting — updates will resume shortly</span>
         </>
       ) : (
         <>
@@ -122,7 +122,7 @@ export default function WSReconnectBanner(): React.ReactElement | null {
           >
             <path d="M20 6L9 17l-5-5" />
           </svg>
-          <span>Connection restored — live updates active</span>
+          <span>Connected — you're up to date</span>
         </>
       )}
     </div>

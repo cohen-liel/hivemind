@@ -57,6 +57,7 @@ export interface ProjectContextValue {
   // ── DAG ──
   dagGraph: WSEvent['graph'] | null;
   dagTaskStatus: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
+  dagTaskFailureReasons: Record<string, string>;
   healingEvents: HealingEvent[];
 
   // ── UI view state ──

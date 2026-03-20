@@ -11,7 +11,7 @@ import WSReconnectBanner from './components/WSReconnectBanner';
 import RouteLoadingFallback from './components/RouteLoadingFallback';
 import LoginScreen from './components/LoginScreen';
 import { useWSConnectionToast } from './hooks/useWSConnectionToast';
-import { lazy, Suspense, useEffect, useCallback, useState } from 'react';
+import { lazy, Suspense, useEffect, useCallback, useState, useRef } from 'react';
 
 // ── Lazy-loaded route chunks (ARCH-01) ───────────────────────────
 // Dashboard, SettingsPage, and SchedulesPage are code-split into
@@ -170,11 +170,29 @@ function MobileBottomNav() {
 }
 
 /** Page wrapper with fade-in animation and Suspense for lazy routes */
-function AnimatedRoutes() {
+function AnimatedRoutes(): JSX.Element {
+  const location = useLocation();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const prevPathRef = useRef<string>(location.pathname);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    // Only animate when the top-level route segment changes
+    if (prevPathRef.current === location.pathname) return;
+    prevPathRef.current = location.pathname;
+
+    // Re-trigger the pageEnter animation by removing then re-adding the class
+    el.classList.remove('page-enter');
+    // Force a reflow so the browser registers the class removal
+    void el.offsetHeight;
+    el.classList.add('page-enter');
+  }, [location.pathname]);
+
   return (
-    <div className="h-full">
+    <div ref={containerRef} className="h-full page-enter">
       <Suspense fallback={<RouteLoadingFallback />}>
-        <Routes>
+        <Routes location={location}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/project/:id" element={<ProjectView />} />
           <Route path="/new" element={<NewProjectDialog />} />

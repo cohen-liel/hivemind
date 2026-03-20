@@ -2355,14 +2355,16 @@ class TestQueueOperationsWithSessionMgr:
         from httpx import ASGITransport, AsyncClient
 
         smgr = _make_mock_session_mgr()
-        smgr.list_queued_messages = AsyncMock(return_value=["msg1", "msg2"])
+        smgr.list_queued_messages = AsyncMock(
+            return_value=[{"message": "msg1"}, {"message": "msg2"}]
+        )
         app = self._make_app_with_smgr(smgr)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/api/projects/test-proj/queue")
         assert resp.status_code == 200
         body = resp.json()
         assert body.get("ok") is True
-        assert body.get("queue_size") == 2
+        assert body.get("queue_depth") == 2
 
     @pytest.mark.asyncio
     async def test_delete_queued_message_when_found_should_return_ok(self):

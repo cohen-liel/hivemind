@@ -212,7 +212,6 @@ const SessionSummary = React.memo(function SessionSummary({
 
   const summaryText = data!.summary_text!;
   const turnCount = data!.turn_count;
-  const costUsd = data!.total_cost_usd;
 
   return (
     <div
@@ -280,9 +279,6 @@ const SessionSummary = React.memo(function SessionSummary({
       >
         {turnCount > 0 && (
           <StatPill label="turns" value={String(turnCount)} />
-        )}
-        {costUsd > 0 && (
-          <StatPill label="cost" value={`$${costUsd.toFixed(4)}`} />
         )}
       </div>
     </div>

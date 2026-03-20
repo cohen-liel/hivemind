@@ -6,9 +6,8 @@ import { AGENT_ICONS } from '../constants';
 import { DashboardSkeleton } from '../components/Skeleton';
 import ErrorState from '../components/ErrorState';
 import { useToast } from '../components/Toast';
-import CostChart from '../components/CostChart';
 import AgentLogPanel from '../components/AgentLogPanel';
-import { useAnimatedNumber, formatCost } from '../hooks/useAnimatedNumber';
+import WelcomeHero from '../components/WelcomeHero';
 import { usePageTitle } from '../hooks/usePageTitle';
 import { useTheme } from '../ThemeContext';
 import type { Project, WSEvent, TaskHistoryItem } from '../types';
@@ -54,7 +53,6 @@ interface DashboardState {
   logExpandedId: string | null;
   loading: boolean;
   error: string | null;
-  costExpanded: boolean;
 }
 
 const initialDashboardState: DashboardState = {
@@ -65,7 +63,6 @@ const initialDashboardState: DashboardState = {
   logExpandedId: null,
   loading: true,
   error: null,
-  costExpanded: false,
 };
 
 type DashboardAction =
@@ -75,7 +72,6 @@ type DashboardAction =
   | { type: 'SET_SEARCH'; query: string }
   | { type: 'SET_STATUS_FILTER'; filter: string }
   | { type: 'TOGGLE_LOG'; projectId: string }
-  | { type: 'TOGGLE_COST_PANEL' }
   | { type: 'SET_PROJECT_STATUS'; projectId: string; status: Project['status'] }
   | { type: 'SET_LIVE_STATE'; projectId: string; liveState: DashboardLiveState }
   | { type: 'CLEAR_LIVE_STATE'; projectId: string }
@@ -110,8 +106,6 @@ function dashboardReducer(state: DashboardState, action: DashboardAction): Dashb
         ...state,
         logExpandedId: state.logExpandedId === action.projectId ? null : action.projectId,
       };
-    case 'TOGGLE_COST_PANEL':
-      return { ...state, costExpanded: !state.costExpanded };
     case 'SET_PROJECT_STATUS':
       return {
         ...state,
@@ -194,7 +188,7 @@ export default function Dashboard(): React.ReactElement {
   const [state, dispatch] = useReducer(dashboardReducer, initialDashboardState);
   const {
     projects, liveStates, searchQuery, statusFilter,
-    logExpandedId, loading, error, costExpanded,
+    logExpandedId, loading, error,
   } = state;
 
   const navigate = useNavigate();
@@ -286,13 +280,14 @@ export default function Dashboard(): React.ReactElement {
       });
     } else if (event.type === 'project_status' && event.status) {
       if (event.status === 'deleted') {
-        // Remove the project from the list immediately
+        // Remove the project from the list immediately — do NOT reload
+        // because the API may still return it before cleanup finishes.
         dispatch({ type: 'REMOVE_PROJECT', projectId: pid });
         dispatch({ type: 'CLEAR_LIVE_STATE', projectId: pid });
       } else {
         dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: event.status as Project['status'] });
+        loadData();
       }
-      loadData();
     } else if (event.type === 'agent_final') {
       loadData();
       dispatch({ type: 'CLEAR_LIVE_STATE', projectId: pid });
@@ -361,10 +356,6 @@ export default function Dashboard(): React.ReactElement {
   }, []);  // statusConfig has no external deps — stable reference
 
   const runningCount = useMemo(() => projects.filter(p => p.status === 'running').length, [projects]);
-  const totalCost = useMemo(() => projects.reduce((sum, p) => sum + (p.total_cost_usd || 0), 0), [projects]);
-
-  // Animated stat values
-  const animatedCost = useAnimatedNumber(totalCost, 700, totalCost < 1 ? 3 : 2);
 
   // Loading state
   if (loading && projects.length === 0) {
@@ -395,9 +386,9 @@ export default function Dashboard(): React.ReactElement {
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-3 mb-1">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
-                  style={{ background: 'var(--glow-blue)', boxShadow: '0 0 20px var(--glow-blue)' }}>
-                  ⚡
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                  style={{ boxShadow: '0 0 20px var(--glow-blue)' }}>
+                  <img src="/favicon-32x32.png" alt="Hivemind" width="36" height="36" style={{ borderRadius: '8px' }} />
                 </div>
                 <div>
                   <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
@@ -421,11 +412,6 @@ export default function Dashboard(): React.ReactElement {
                       {runningCount} active
                     </span>
                   </div>
-                )}
-                {totalCost > 0 && (
-                  <span className="telemetry" style={{ color: 'var(--text-muted)' }}>
-                    Total: ${animatedCost}
-                  </span>
                 )}
               </div>
 
@@ -533,90 +519,11 @@ export default function Dashboard(): React.ReactElement {
       {/* Project cards */}
       <main className="max-w-5xl mx-auto px-3 sm:px-6 py-4 sm:py-6">
         {projects.length === 0 ? (
-          /* ── Welcome empty state ── */
-          <div className="flex items-center justify-center py-12 sm:py-16">
-            <div
-              className="relative max-w-sm w-full rounded-2xl p-6 sm:p-8 text-center glass-panel"
-              style={{
-                boxShadow: '0 0 80px rgba(99, 140, 255, 0.06), 0 25px 50px rgba(0,0,0,0.3)',
-              }}
-              role="region"
-              aria-label="Welcome to Hivemind — no projects yet"
-            >
-              {/* Subtle glow behind the card */}
-              <div className="absolute inset-0 -z-10 rounded-2xl"
-                style={{
-                  background: 'radial-gradient(ellipse at 50% 0%, rgba(99,140,255,0.08) 0%, transparent 70%)',
-                  filter: 'blur(20px)',
-                }} />
-
-              {/* Network constellation SVG illustration */}
-              <svg
-                width="160"
-                height="120"
-                viewBox="0 0 160 120"
-                fill="none"
-                className="mx-auto mb-5"
-                aria-hidden="true"
-              >
-                {/* Connection lines (animated dashes) */}
-                <line x1="80" y1="60" x2="30" y2="28" stroke="var(--accent-blue)" strokeWidth="1" opacity="0.2" strokeDasharray="4 4" className="empty-state-line" />
-                <line x1="80" y1="60" x2="130" y2="25" stroke="var(--accent-purple)" strokeWidth="1" opacity="0.2" strokeDasharray="4 4" className="empty-state-line" />
-                <line x1="80" y1="60" x2="125" y2="95" stroke="var(--accent-green)" strokeWidth="1" opacity="0.2" strokeDasharray="4 4" className="empty-state-line" />
-                <line x1="80" y1="60" x2="35" y2="92" stroke="var(--accent-cyan)" strokeWidth="1" opacity="0.15" strokeDasharray="4 4" className="empty-state-line" />
-                {/* Central hub node */}
-                <circle cx="80" cy="60" r="16" fill="var(--glow-blue)" />
-                <circle cx="80" cy="60" r="16" stroke="var(--accent-blue)" strokeWidth="1.5" fill="none" opacity="0.4" />
-                {/* Lightning bolt icon */}
-                <path d="M83 53L77 61H83L77 69" stroke="var(--accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                {/* Satellite agent nodes */}
-                <circle cx="30" cy="28" r="8" fill="var(--glow-blue)" />
-                <circle cx="30" cy="28" r="8" stroke="var(--accent-blue)" strokeWidth="1" fill="none" opacity="0.3" />
-                <circle cx="130" cy="25" r="7" fill="var(--glow-blue)" />
-                <circle cx="130" cy="25" r="7" stroke="var(--accent-purple)" strokeWidth="1" fill="none" opacity="0.3" />
-                <circle cx="125" cy="95" r="9" fill="var(--glow-green)" />
-                <circle cx="125" cy="95" r="9" stroke="var(--accent-green)" strokeWidth="1" fill="none" opacity="0.3" />
-                <circle cx="35" cy="92" r="6" fill="var(--glow-blue)" />
-                <circle cx="35" cy="92" r="6" stroke="var(--accent-cyan)" strokeWidth="1" fill="none" opacity="0.2" />
-                {/* Tiny agent emojis inside nodes */}
-                <text x="30" y="31" textAnchor="middle" fontSize="8">🎨</text>
-                <text x="130" y="28" textAnchor="middle" fontSize="7">⚡</text>
-                <text x="125" y="98" textAnchor="middle" fontSize="8">🔍</text>
-                <text x="35" y="95" textAnchor="middle" fontSize="6">🧪</text>
-              </svg>
-
-              <h2 className="text-lg font-bold mb-2" style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
-                Welcome to Hivemind
-              </h2>
-              <p className="text-sm mb-6 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                Orchestrate multi-agent AI teams to build, review, and ship code.
-                Create your first project to get started.
-              </p>
-
-              <button
-                onClick={() => navigate('/new')}
-                className="px-6 py-3 text-sm font-semibold rounded-xl transition-all duration-200 text-white active:scale-[0.97]"
-                style={{
-                  background: 'linear-gradient(135deg, var(--accent-blue), #4f6ef5)',
-                  boxShadow: '0 4px 20px var(--glow-blue), inset 0 1px 0 rgba(255,255,255,0.12)',
-                }}
-                aria-label="Create a new project"
-                onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 6px 30px rgba(99,140,255,0.4), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-                onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 20px var(--glow-blue), inset 0 1px 0 rgba(255,255,255,0.12)'; e.currentTarget.style.transform = 'translateY(0)'; }}
-              >
-                <span className="flex items-center gap-2">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-                  </svg>
-                  New Project
-                </span>
-              </button>
-
-              <p className="text-[10px] mt-4" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                ⌘N to quick-create &bull; ? for shortcuts
-              </p>
-            </div>
-          </div>
+          <WelcomeHero
+            onNewProject={() => navigate('/new')}
+            onSelectTemplate={() => navigate('/new')}
+            projectCount={projects.length}
+          />
         ) : filteredProjects.length === 0 ? (
           <div className="text-center py-16" style={{ color: 'var(--text-muted)' }}>
             <p className="text-sm mb-1">No projects match your filter</p>
@@ -802,15 +709,12 @@ export default function Dashboard(): React.ReactElement {
                           return (
                             <div
                               key={name}
-                              className="w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all duration-500"
+                              className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm transition-all duration-500 ${isActive ? 'agent-icon-active' : 'agent-icon-idle'}`}
                               style={{
                                 background: isActive ? 'var(--glow-blue)' : 'var(--bg-elevated)',
                                 border: isActive ? '1px solid rgba(99,140,255,0.3)' : '1px solid var(--border-dim)',
-                                boxShadow: isActive ? '0 0 12px var(--glow-blue)' : 'none',
-                                opacity: isActive ? 1 : 0.5,
-                                transform: isActive ? 'scale(1.1)' : 'scale(1)',
                               }}
-                              title={name}
+                              title={`${name}${isActive ? ' (working)' : ''}`}
                               aria-label={`${name}${isActive ? ' (active)' : ''}`}
                             >
                               {icon}
@@ -895,11 +799,6 @@ export default function Dashboard(): React.ReactElement {
 
                     {/* Stats row */}
                     <div className="flex items-center gap-2 sm:gap-3 flex-wrap pt-2" style={{ borderTop: '1px solid var(--border-dim)' }}>
-                      {project.total_cost_usd > 0 && (
-                        <span className="telemetry stat-item" style={{ color: 'var(--accent-green)' }}>
-                          {formatCost(project.total_cost_usd)}
-                        </span>
-                      )}
                       {project.turn_count > 0 && (
                         <span className="telemetry stat-item">{project.turn_count} turns</span>
                       )}
@@ -997,58 +896,6 @@ export default function Dashboard(): React.ReactElement {
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {/* ── Cost Analytics (collapsible) ── */}
-        {projects.length > 0 && (
-          <div
-            className="mt-6 rounded-2xl overflow-hidden transition-all duration-300 glass-panel"
-          >
-            <button
-              onClick={() => dispatch({ type: 'TOGGLE_COST_PANEL' })}
-              aria-expanded={costExpanded}
-              aria-label="Toggle cost analytics panel"
-              className="w-full flex items-center justify-between px-5 py-4 transition-colors"
-              style={{ color: 'var(--text-primary)' }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-sm"
-                  style={{ background: 'var(--glow-green)' }}
-                >
-                  💰
-                </div>
-                <div className="text-left">
-                  <h3 className="text-sm font-bold" style={{ fontFamily: 'var(--font-display)' }}>
-                    Cost Analytics
-                  </h3>
-                  <p className="text-[10px]" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                    Last 7 days
-                  </p>
-                </div>
-              </div>
-              <svg
-                className={`w-4 h-4 transition-transform duration-300 ${costExpanded ? 'rotate-180' : ''}`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth="2"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-            {costExpanded && (
-              <div
-                className="px-5 pb-5 animate-[fadeSlideIn_0.25s_ease-out]"
-                style={{ borderTop: '1px solid var(--border-dim)' }}
-              >
-                <CostChart />
-              </div>
-            )}
           </div>
         )}
       </main>

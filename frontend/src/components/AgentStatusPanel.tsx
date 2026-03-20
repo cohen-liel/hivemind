@@ -518,10 +518,9 @@ function ToolActivity({ tool, agentName }: { tool: string; agentName: string }) 
 
 /** Telemetry-style stats row */
 function AgentStats({ agent }: { agent: AgentState }) {
-  if (agent.cost <= 0 && agent.turns <= 0 && agent.duration <= 0) return null;
+  if (agent.turns <= 0 && agent.duration <= 0) return null;
   return (
     <div className="flex items-center gap-3 mt-3 pt-2" style={{ borderTop: '1px solid var(--border-dim)' }}>
-      {agent.cost > 0 && <span className="telemetry">${agent.cost.toFixed(3)}</span>}
       {agent.turns > 0 && <span className="telemetry" style={{ color: 'var(--text-muted)' }}>{agent.turns} turns</span>}
       {agent.duration > 0 && <span className="telemetry" style={{ color: 'var(--text-muted)' }}>{Math.round(agent.duration)}s</span>}
     </div>

@@ -254,6 +254,110 @@ class ProjectTaskQueue:
         """Number of tasks currently being executed (semaphore slots used)."""
         return self.max_concurrent - self._semaphore._value  # type: ignore[attr-defined]
 
+    def queue_position_of(self, task_id: str) -> int:
+        """Return the 1-indexed queue position of a task, or 0 if not queued.
+
+        Position is computed from all tasks with status ``queued``, ordered by
+        ``created_at``.  A task that is already running or finished returns 0.
+        """
+        queued = sorted(
+            (r for r in self._tasks.values() if r.status == TaskStatus.queued),
+            key=lambda r: r.created_at,
+        )
+        for idx, rec in enumerate(queued, 1):
+            if rec.task_id == task_id:
+                return idx
+        return 0
+
+    def estimated_wait_seconds(self, queue_position: int) -> float:
+        """Estimate wait time based on queue position and recent task durations.
+
+        Uses the average duration of the last 10 completed tasks as the per-task
+        estimate.  Falls back to 30 seconds if no history is available.
+
+        Args:
+            queue_position: 1-indexed position in the queue.
+
+        Returns:
+            Estimated seconds until this task starts executing.
+        """
+        if queue_position <= 0:
+            return 0.0
+
+        # Calculate average task duration from recent completions
+        completed = [
+            r
+            for r in self._tasks.values()
+            if r.status in (TaskStatus.done, TaskStatus.failed)
+            and r.started_at is not None
+            and r.completed_at is not None
+        ]
+        if completed:
+            completed.sort(key=lambda r: r.completed_at, reverse=True)  # type: ignore[arg-type]
+            recent = completed[:10]
+            avg_duration = sum(
+                (r.completed_at - r.started_at)
+                for r in recent  # type: ignore[operator]
+            ) / len(recent)
+        else:
+            avg_duration = 30.0  # default estimate
+
+        # Tasks ahead in queue / max_concurrent slots = batches to wait
+        batches_ahead = max(0, (queue_position - 1)) / max(self.max_concurrent, 1)
+        return round(batches_ahead * avg_duration, 1)
+
+    async def get_queue_state(self) -> dict[str, Any]:
+        """Return structured queue state for the /queue GET endpoint.
+
+        Returns a dict with:
+        - pending_tasks: list of queued task summaries
+        - active_tasks: list of currently running task summaries
+        - queue_depth: number of pending tasks
+        - running_count: number of running tasks
+        - max_concurrent: concurrency limit
+        - estimated_drain_seconds: estimated time to clear the queue
+        """
+        async with self._tasks_lock:
+            all_tasks = list(self._tasks.values())
+
+        pending = sorted(
+            (r for r in all_tasks if r.status == TaskStatus.queued),
+            key=lambda r: r.created_at,
+        )
+        active = [r for r in all_tasks if r.status == TaskStatus.running]
+
+        now = time.time()
+        pending_summaries = [
+            {
+                "task_id": r.task_id,
+                "message_preview": r.message[:100],
+                "queue_position": idx,
+                "created_at": r.created_at,
+                "estimated_wait_seconds": self.estimated_wait_seconds(idx),
+            }
+            for idx, r in enumerate(pending, 1)
+        ]
+        active_summaries = [
+            {
+                "task_id": r.task_id,
+                "message_preview": r.message[:100],
+                "started_at": r.started_at,
+                "elapsed_seconds": round(now - r.started_at, 1) if r.started_at else 0,
+            }
+            for r in active
+        ]
+
+        total_drain = self.estimated_wait_seconds(len(pending) + 1) if pending else 0.0
+
+        return {
+            "pending_tasks": pending_summaries,
+            "active_tasks": active_summaries,
+            "queue_depth": len(pending),
+            "running_count": len(active),
+            "max_concurrent": self.max_concurrent,
+            "estimated_drain_seconds": total_drain,
+        }
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

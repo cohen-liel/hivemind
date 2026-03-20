@@ -51,6 +51,7 @@ frontend/dist/
 
 # Hivemind agent metadata (internal project state)
 .hivemind/
+.hivemind_token_secret
 hivemind_*.log
 hivemind_*.tmp
 
@@ -59,3 +60,12 @@ hivemind_auth.db-shm
 hivemind_auth.db-wal
 *.db-shm
 *.db-wal
+
+# Orchestration metadata artifacts (plans, tasks, notes)
+*.plan.md
+notes.json
+.notes.json
+NOTES.md
+task_*.json
+plans/
+tasks/

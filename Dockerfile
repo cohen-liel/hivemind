@@ -2,8 +2,12 @@
 # Pinned to minor version for reproducible builds (build-only — not in final image)
 FROM node:20.18-alpine AS frontend-builder
 WORKDIR /frontend
+
+# Install deps first (cached unless package files change)
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
+
+# Then copy source and build
 COPY frontend/ .
 RUN npx tsc && npx vite build
 
@@ -26,6 +30,11 @@ RUN uv pip install --system --no-cache -r requirements.txt
 
 # ── Stage 3: Production runtime ──────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
+
+LABEL org.opencontainers.image.title="Hivemind" \
+      org.opencontainers.image.description="AI engineering team orchestrator" \
+      org.opencontainers.image.source="https://github.com/cohen-liel/hivemind"
+
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -33,26 +42,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
 
 # Minimal system deps: curl (health-check probe), nodejs + npm (Claude CLI)
+# Combined into single RUN for fewer layers
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        curl \
        nodejs \
        npm \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Claude CLI globally (best-effort — set CLAUDE_CLI_PATH if not available)
-RUN npm install -g @anthropic-ai/claude-code 2>/dev/null \
-    || echo "WARN: Claude CLI npm install failed — set CLAUDE_CLI_PATH if needed"
+    && npm install -g @anthropic-ai/claude-code 2>/dev/null \
+       || echo "WARN: Claude CLI npm install failed — set CLAUDE_CLI_PATH if needed" \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /root/.npm
 
 # Pull compiled Python packages from builder stage (keeps this layer small)
 COPY --from=py-builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
 COPY --from=py-builder /usr/local/bin /usr/local/bin
 
 # ── Application source ──────────────────────────────────────────────────────
-# Pattern-based copy: all root-level Python modules are copied via *.py glob.
-# .dockerignore excludes test files, dev scripts, docs, and build artifacts.
-# This avoids fragile file-by-file COPY that breaks when modules are added/removed.
-COPY *.py ./
+# Copy in dependency order: least-changing first for better layer caching
+
+# Copy skills directory (agent skill prompts / system messages)
+COPY .claude/ ./.claude/
 
 # src/ package — contains api, db, models, storage, workers (critical runtime code)
 COPY src/ ./src/
@@ -60,9 +69,8 @@ COPY src/ ./src/
 # Dashboard API module
 COPY dashboard/ ./dashboard/
 
-# Copy skills directory (agent skill prompts / system messages)
-# Note: .claude/plans/ is excluded via .dockerignore; skills/ and settings are included
-COPY .claude/ ./.claude/
+# Root-level Python modules
+COPY *.py ./
 
 # Copy pre-built frontend assets from Stage 1
 COPY --from=frontend-builder /frontend/dist ./frontend/dist

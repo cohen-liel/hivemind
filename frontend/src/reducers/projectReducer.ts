@@ -39,6 +39,7 @@ export interface SdkCall {
   cost?: number;
   status: string;
   taskId?: string;      // DAG task ID (e.g. "task_003") — distinguishes multiple calls by same role
+  taskName?: string;    // Human-readable task name/goal
   turns?: number;       // Number of turns used
   failureReason?: string; // Why the call failed (if status === 'error')
 }
@@ -59,7 +60,7 @@ export interface LiveAgentEntry {
 }
 
 export type MobileView = 'orchestra' | 'activity' | 'code' | 'changes' | 'plan' | 'trace';
-export type DesktopTab = 'hivemind' | 'agents' | 'plan' | 'code' | 'diff' | 'trace';
+export type DesktopTab = 'hivemind' | 'plan' | 'code' | 'diff' | 'trace';
 
 // ============================================================================
 // State
@@ -84,6 +85,7 @@ export interface ProjectState {
   // DAG visualization
   dagGraph: WSEvent['graph'] | null;
   dagTaskStatus: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
+  dagTaskFailureReasons: Record<string, string>;
   healingEvents: HealingEvent[];
 
   // UI view state
@@ -120,6 +122,7 @@ export const initialProjectState: ProjectState = {
   lastAgentSummaries: {},
   dagGraph: null,
   dagTaskStatus: {},
+  dagTaskFailureReasons: {},
   healingEvents: [],
   mobileView: 'orchestra',
   desktopTab: 'hivemind',
@@ -505,7 +508,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         },
         sdkCalls: state.sdkCalls.some(c => c.agent === event.agent && c.status === 'running' && (!event.task_id || c.taskId === event.task_id))
           ? state.sdkCalls  // Already tracked from delegation event
-          : [...state.sdkCalls, { agent: event.agent, startTime: event.timestamp, status: 'running', taskId: event.task_id }],
+          : [...state.sdkCalls, { agent: event.agent, startTime: event.timestamp, status: 'running', taskId: event.task_id, taskName: event.task_name || event.task?.slice(0, 120) }],
         liveAgentStream: {
           ...state.liveAgentStream,
           [event.agent]: {
@@ -525,6 +528,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       const newDagTaskStatus = event.task_id
         ? { ...state.dagTaskStatus, [event.task_id]: event.is_error ? 'failed' as const : 'completed' as const }
         : state.dagTaskStatus;
+
+      const newDagTaskFailureReasons = (event.task_id && event.is_error && event.failure_reason)
+        ? { ...state.dagTaskFailureReasons, [event.task_id]: event.failure_reason }
+        : state.dagTaskFailureReasons;
 
       // Remove from live stream
       const newLiveStream = { ...state.liveAgentStream };
@@ -576,6 +583,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ...state,
         activities: newActivities,
         dagTaskStatus: newDagTaskStatus,
+        dagTaskFailureReasons: newDagTaskFailureReasons,
         liveAgentStream: newLiveStream,
         agentStates: {
           ...state.agentStates,
@@ -749,6 +757,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           dagGraph: null,
           healingEvents: [],
           dagTaskStatus: {},
+          dagTaskFailureReasons: {},
           liveAgentStream: {},
           lastAgentSummaries: {},
           lastSequenceId: trackSequence(state, event),
@@ -791,6 +800,10 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         ...state,
         dagGraph: event.graph,
         dagTaskStatus: {},
+        dagTaskFailureReasons: {},
+        // Auto-switch to Plan tab so user sees execution progress
+        desktopTab: 'plan',
+        mobileView: 'plan',
         activities: appendActivities(state.activities, {
           id: nextId(), type: 'agent_text' as const, timestamp: event.timestamp,
           agent: 'PM',
@@ -814,9 +827,15 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         status === 'cancelled' ? 'cancelled' as const :
         'pending' as const;
 
+      // Capture failure reasons for failed/cancelled tasks
+      const newFailureReasons = event.failure_reason
+        ? { ...state.dagTaskFailureReasons, [taskId]: event.failure_reason as string }
+        : state.dagTaskFailureReasons;
+
       return {
         ...state,
         dagTaskStatus: { ...state.dagTaskStatus, [taskId]: mappedStatus },
+        dagTaskFailureReasons: newFailureReasons,
       };
     }
 
@@ -886,6 +905,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         messageOffset: 0,
         dagGraph: null,
         dagTaskStatus: {},
+        dagTaskFailureReasons: {},
         healingEvents: [],
         liveAgentStream: {},
         hasMoreMessages: false,
@@ -1014,6 +1034,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         lastAgentSummaries: {},
         dagGraph: null,
         dagTaskStatus: {},
+        dagTaskFailureReasons: {},
         healingEvents: [],
         liveAgentStream: {},
         lastSequenceId: 0,

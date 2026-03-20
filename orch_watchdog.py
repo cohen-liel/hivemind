@@ -332,82 +332,13 @@ def estimate_task_complexity(task: str) -> str:
     """Classify task complexity to set the right orchestrator expectations.
 
     Returns: 'SIMPLE' | 'MEDIUM' | 'LARGE' | 'EPIC'
+
+    Delegates to the unified classifier in blackboard.classify_complexity().
     """
-    t = task.lower()
+    from blackboard import classify_complexity
 
-    # EPIC: building entire apps / systems / platforms
-    epic_patterns = [
-        "build an app",
-        "build a app",
-        "create an app",
-        "develop an app",
-        "build a system",
-        "create a system",
-        "full application",
-        "complete app",
-        "full stack",
-        "fullstack",
-        "from scratch",
-        "entire system",
-        "build a website",
-        "create a website",
-        "build a platform",
-        "saas",
-        "e-commerce",
-        "ecommerce",
-        "real-time app",
-        "microservice",
-        "full implementation",
-        "complete system",
-        "build me",
-        "create me",
-        "write me a complete",
-    ]
-    if any(p in t for p in epic_patterns):
-        return "EPIC"
-
-    # LARGE: significant features / services
-    large_patterns = [
-        "authentication",
-        "auth system",
-        "new feature",
-        "add feature",
-        "refactor",
-        "add module",
-        "create service",
-        "implement",
-        "integrate",
-        "database schema",
-        "api endpoint",
-        "rest api",
-        "graphql",
-        "user management",
-        "payment",
-        "notification",
-    ]
-    word_count = len(task.split())
-    if word_count > 60 or any(p in t for p in large_patterns):
-        return "LARGE"
-
-    # MEDIUM: adding things, updates, moderate work
-    medium_patterns = [
-        "add",
-        "update",
-        "change",
-        "modify",
-        "improve",
-        "enhance",
-        "create",
-        "write",
-        "make",
-        "implement",
-        "migrate",
-    ]
-    if any(p in t for p in medium_patterns):
-        return "MEDIUM"
-
-    # Default: simple bug fixes, config changes, explanations
-    return "SIMPLE"
+    result = classify_complexity(text=task)
+    return result.level
 
 
 # ── Premature completion check ───────────────────────────────────────────

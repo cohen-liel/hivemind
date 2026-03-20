@@ -105,6 +105,7 @@ export interface WSEvent {
   // agent_started/finished fields
   task?: string;
   task_id?: string;       // DAG task ID (e.g. "task_001") for live plan tracking
+  task_name?: string;     // Human-readable task name/goal from backend
   task_status?: string;   // DAG task status ("completed", "failed", etc.)
   is_remediation?: boolean;
   cost?: number;
@@ -350,20 +351,6 @@ export interface AgentPerformanceEntry {
   round_number: number;
   /** Unix timestamp (seconds) when the run was recorded */
   created_at: number;
-}
-
-/** Per-project cost summary entry, returned by /api/cost-summary. */
-export interface ProjectCostSummary {
-  /** Unique project identifier */
-  project_id: string;
-  /** Human-readable project name */
-  project_name: string;
-  /** Cumulative cost in USD across all agent runs */
-  total_cost: number;
-  /** Total number of agent runs for this project */
-  total_runs: number;
-  /** Unix timestamp (seconds) of the most recent agent activity */
-  last_activity: number;
 }
 
 // ============================================================================
