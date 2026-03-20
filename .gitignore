@@ -69,3 +69,4 @@ NOTES.md
 task_*.json
 plans/
 tasks/
+frontend/playwright-report/
