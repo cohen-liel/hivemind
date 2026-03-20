@@ -722,7 +722,7 @@ class OrchestratorManager:
         active = sum(
             1
             for s in self.agent_states.values()
-            if isinstance(s, dict) and s.get("state") == "working"
+            if isinstance(s, dict) and s.get("state") in ("working", "waiting")
         )
         total_tasks = 0
         completed_tasks = 0
@@ -773,7 +773,7 @@ class OrchestratorManager:
         for name, state in list(
             self.agent_states.items()
         ):  # snapshot prevents RuntimeError if dict is modified concurrently
-            if state.get("state") == "working" and name != "orchestrator":
+            if state.get("state") in ("working", "waiting") and name != "orchestrator":
                 affected_agent = name
                 break
 
@@ -2068,9 +2068,9 @@ class OrchestratorManager:
                 _dag_exit_reason = "cancelled"
                 # Log agent state snapshot at cancellation for debugging
                 _working_agents = [
-                    f"{name}(task={st.get('task', '?')[:60]}, cost=${st.get('cost', 0):.4f}, turns={st.get('turns', 0)})"
+                    f"{name}[{st.get('state')}](task={st.get('task', '?')[:60]}, cost=${st.get('cost', 0):.4f}, turns={st.get('turns', 0)})"
                     for name, st in self.agent_states.items()
-                    if st.get("state") == "working"
+                    if st.get("state") in ("working", "waiting")
                 ]
                 _working_tasks = [
                     f"{tid}={tstat}"
@@ -2126,9 +2126,9 @@ class OrchestratorManager:
             )
             # Log the full state snapshot at crash time for post-mortem debugging
             _working_agents = [
-                f"{name}(task={st.get('task', '?')[:60]}, cost=${st.get('cost', 0):.4f}, turns={st.get('turns', 0)}, duration={st.get('duration', 0):.1f}s)"
+                f"{name}[{st.get('state')}](task={st.get('task', '?')[:60]}, cost=${st.get('cost', 0):.4f}, turns={st.get('turns', 0)}, duration={st.get('duration', 0):.1f}s)"
                 for name, st in self.agent_states.items()
-                if st.get("state") == "working"
+                if st.get("state") in ("working", "waiting")
             ]
             _all_agent_states = [
                 f"{name}={st.get('state', '?')}" for name, st in self.agent_states.items()
@@ -2199,10 +2199,10 @@ class OrchestratorManager:
                     f"Marking still-working agents as error/cancelled."
                 )
 
-            # Emit agent_finished for ALL agents still in 'working' state
-            # so the frontend never shows stale ACTIVE cards after task ends.
+            # Emit agent_finished for ALL agents still in 'working' or 'waiting' state
+            # so the frontend never shows stale ACTIVE/WAITING cards after task ends.
             for agent_name, agent_state in list(self.agent_states.items()):
-                if agent_state.get("state") == "working":
+                if agent_state.get("state") in ("working", "waiting"):
                     # Find the task_id for this agent from dag_task_statuses
                     task_id = None
                     for tid, tstat in self._dag_task_statuses.items():
@@ -3519,9 +3519,9 @@ class OrchestratorManager:
             logger.error(f"Orchestrator loop error: {e}", exc_info=True)
             # Full state dump for post-mortem debugging
             _working_agents = [
-                f"{name}(task={st.get('task', '?')[:60]}, cost=${st.get('cost', 0):.4f}, turns={st.get('turns', 0)})"
+                f"{name}[{st.get('state')}](task={st.get('task', '?')[:60]}, cost=${st.get('cost', 0):.4f}, turns={st.get('turns', 0)})"
                 for name, st in self.agent_states.items()
-                if st.get("state") == "working"
+                if st.get("state") in ("working", "waiting")
             ]
             _all_agent_states = [
                 f"{name}={st.get('state', '?')}" for name, st in self.agent_states.items()
@@ -3655,10 +3655,10 @@ class OrchestratorManager:
             if not self.is_paused:
                 self.is_running = False
 
-            # Emit agent_finished for ALL agents still in 'working' state
-            # so the frontend never shows stale ACTIVE cards after task ends.
+            # Emit agent_finished for ALL agents still in 'working' or 'waiting' state
+            # so the frontend never shows stale ACTIVE/WAITING cards after task ends.
             for agent_name, agent_state in list(self.agent_states.items()):
-                if agent_state.get("state") == "working":
+                if agent_state.get("state") in ("working", "waiting"):
                     task_id = None
                     for tid, tstat in self._dag_task_statuses.items():
                         if tstat == "working":

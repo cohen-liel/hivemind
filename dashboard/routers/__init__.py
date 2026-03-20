@@ -303,7 +303,7 @@ def _manager_to_dict(manager, project_id: str) -> dict:
                 statuses = getattr(manager, "_dag_task_statuses", {}) or {}
                 completed = sum(1 for s in statuses.values() if s in ("completed", "skipped"))
                 failed = sum(1 for s in statuses.values() if s == "failed")
-                running = sum(1 for s in statuses.values() if s == "running")
+                running = sum(1 for s in statuses.values() if s == "working")
                 dag_progress = {
                     "total": total,
                     "completed": completed,
