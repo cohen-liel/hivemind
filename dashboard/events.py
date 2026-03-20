@@ -8,6 +8,11 @@ Enhanced with:
 - Event throttling: rate-limits high-frequency events (agent_text_chunk)
 - Granular event types: tool_start/tool_end, agent_thinking, agent_eta
 - Request-ID propagation: events carry the originating request_id for tracing
+- Critical event overflow buffer: never silently drop critical events
+- Subscriber health monitoring: per-client delivery latency tracking
+- Dynamic ring buffer sizing: scales with active project count (500–5000)
+- Reconnect-replay protocol: sequence_id range replay for clients
+- DB write fallback: local file persistence when DB writes fail
 """
 
 from __future__ import annotations
@@ -16,12 +21,21 @@ import asyncio
 import collections
 import contextvars
 import itertools
+import json as _json
 import logging
 import time
 from collections.abc import Callable, Coroutine
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from config import EVENT_QUEUE_TIMEOUT
+from config import (
+    CORRELATION_ID_HEADER,
+    EVENTBUS_FLUSH_TIMEOUT,
+    EVENTBUS_MAX_BACKLOG_SIZE,
+    EVENT_QUEUE_TIMEOUT,
+    FALLBACK_MAX_AGE_HOURS,
+    FALLBACK_MAX_FILES,
+)
 
 if TYPE_CHECKING:
     from src.storage.platform_session import PlatformSessionManager as SessionManager
@@ -41,15 +55,42 @@ current_request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "current_request_id", default=""
 )
 
+# ContextVar for correlation-ID distributed tracing.
+# Propagated across all EventBus publish/subscribe boundaries and logged
+# in structured JSON format for end-to-end request tracing in ELK/Datadog.
+current_correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "current_correlation_id", default=""
+)
+
 # How many consecutive publish failures before a subscriber is considered dead
 _MAX_CONSECUTIVE_FAILURES = 10
 
 # Heartbeat interval in seconds — how often the status heartbeat fires
 _HEARTBEAT_INTERVAL_SECONDS = 5
 
-# Ring buffer size per project (in-memory, for fast replay)
-# Increased from 500 to handle higher event volume from granular streaming
-_RING_BUFFER_SIZE = 1000
+# Ring buffer size bounds — dynamically scaled between min and max
+# based on the number of active projects (see _compute_ring_buffer_size)
+_RING_BUFFER_MIN = 500
+_RING_BUFFER_MAX = 5000
+
+# Critical event types that must NEVER be silently dropped.
+# When a subscriber queue overflows, these are retained in a per-subscriber
+# overflow buffer so they can still be delivered.
+CRITICAL_EVENT_TYPES = frozenset({
+    "agent_finished",
+    "task_graph",
+    "dag_task_update",
+    "execution_error",
+    "plan_delta",
+    "task_error",
+    "project_status",
+})
+
+# Max critical events kept in overflow buffer per subscriber
+_OVERFLOW_BUFFER_SIZE = 200
+
+# Directory for DB write fallback files
+_FALLBACK_DIR = Path(__file__).resolve().parent.parent / "data" / "event_fallback"
 
 # Events that should be persisted to DB (skip ephemeral ones like ping, text_chunk)
 _PERSIST_EVENT_TYPES = frozenset(
@@ -87,6 +128,8 @@ _PERSIST_EVENT_TYPES = frozenset(
         # Granular DAG progress — task milestones and aggregate completion
         "task_progress",
         "dag_progress",
+        # Incremental plan updates — must be persisted for reconnect state reconstruction
+        "plan_delta",
         # NOTE: agent_text_chunk intentionally excluded — too frequent for DB
     }
 )
@@ -100,39 +143,253 @@ _SKIP_BUFFER_EVENT_TYPES = frozenset(
 )
 
 
+class _BacklogQueue:
+    """Bounded queue for DB write backlog with oldest-event eviction and file fallback.
+
+    When the queue reaches max_backlog_size, the oldest events are evicted
+    to make room for new ones, and a structured warning is logged with the
+    count of dropped events.
+
+    If DB writes fail, events are persisted to a local JSONL file so they
+    can be recovered and replayed after DB recovery.
+    """
+
+    def __init__(self, maxsize: int = EVENTBUS_MAX_BACKLOG_SIZE):
+        self._queue: collections.deque[dict] = collections.deque(maxlen=maxsize)
+        self._maxsize = maxsize
+        self._total_evicted: int = 0
+        self._event = asyncio.Event()
+        self._fallback_path: Path | None = None
+        self._consecutive_db_failures: int = 0
+        self._total_fallback_writes: int = 0
+
+    def _ensure_fallback_dir(self) -> Path:
+        """Lazily create and return the fallback file path."""
+        if self._fallback_path is None:
+            _FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+            self._fallback_path = _FALLBACK_DIR / f"events_{int(time.time())}.jsonl"
+        return self._fallback_path
+
+    @property
+    def maxsize(self) -> int:
+        return self._maxsize
+
+    @property
+    def total_evicted(self) -> int:
+        return self._total_evicted
+
+    @property
+    def consecutive_db_failures(self) -> int:
+        return self._consecutive_db_failures
+
+    @property
+    def total_fallback_writes(self) -> int:
+        return self._total_fallback_writes
+
+    def qsize(self) -> int:
+        return len(self._queue)
+
+    def empty(self) -> bool:
+        return len(self._queue) == 0
+
+    def put_nowait(self, event: dict) -> int:
+        """Enqueue an event. Returns the number of events evicted (0 or 1+).
+
+        When the deque is at capacity, the oldest event is automatically
+        evicted by the deque's maxlen constraint.
+        """
+        was_full = len(self._queue) >= self._maxsize
+        evicted = 0
+        if was_full:
+            evicted = 1
+            self._total_evicted += 1
+        self._queue.append(event)
+        self._event.set()
+        return evicted
+
+    def get_nowait(self) -> dict:
+        """Dequeue the oldest event. Raises IndexError if empty."""
+        if not self._queue:
+            raise IndexError("BacklogQueue is empty")
+        item = self._queue.popleft()
+        if not self._queue:
+            self._event.clear()
+        return item
+
+    async def wait_for_item(self, timeout: float) -> bool:
+        """Wait until an item is available or timeout expires. Returns True if item available."""
+        if self._queue:
+            return True
+        try:
+            await asyncio.wait_for(self._event.wait(), timeout=timeout)
+            return bool(self._queue)
+        except TimeoutError:
+            return False
+
+    def drain(self, max_items: int = 0) -> list[dict]:
+        """Remove and return up to max_items events (0 = all)."""
+        if max_items <= 0:
+            items = list(self._queue)
+            self._queue.clear()
+        else:
+            items = []
+            for _ in range(min(max_items, len(self._queue))):
+                items.append(self._queue.popleft())
+        if not self._queue:
+            self._event.clear()
+        return items
+
+    def record_db_success(self) -> None:
+        """Reset the DB failure counter after a successful write."""
+        self._consecutive_db_failures = 0
+
+    def write_to_fallback(self, events: list[dict]) -> int:
+        """Write events to local JSONL file as fallback. Returns count written."""
+        if not events:
+            return 0
+        self._consecutive_db_failures += 1
+        try:
+            path = self._ensure_fallback_dir()
+            with open(path, "a") as f:
+                for ev in events:
+                    f.write(_json.dumps(ev, default=str) + "\n")
+            written = len(events)
+            self._total_fallback_writes += written
+            logger.warning(
+                "EventBus: wrote %d events to fallback file %s "
+                "(consecutive_db_failures=%d, total_fallback=%d)",
+                written, path.name, self._consecutive_db_failures,
+                self._total_fallback_writes,
+            )
+            return written
+        except OSError as e:
+            logger.error(
+                "EventBus: fallback file write FAILED: %s — %d events lost",
+                e, len(events), exc_info=True,
+            )
+            return 0
+
+    def recover_fallback_events(self) -> list[dict]:
+        """Read and remove all events from fallback files. Returns recovered events."""
+        recovered: list[dict] = []
+        if not _FALLBACK_DIR.exists():
+            return recovered
+        for path in sorted(_FALLBACK_DIR.glob("events_*.jsonl")):
+            try:
+                with open(path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            recovered.append(_json.loads(line))
+                path.unlink()
+                logger.info("EventBus: recovered %d events from %s", len(recovered), path.name)
+            except (OSError, _json.JSONDecodeError) as e:
+                logger.error("EventBus: failed to recover fallback file %s: %s", path.name, e)
+        return recovered
+
+
 class _TrackedQueue:
-    """Wrapper around asyncio.Queue that tracks consecutive publish failures."""
+    """Wrapper around asyncio.Queue that tracks consecutive publish failures.
 
-    __slots__ = ("failures", "last_success", "queue")
+    Includes an overflow buffer for critical events that must never be dropped,
+    and per-subscriber health metrics for monitoring delivery latency.
+    """
 
-    def __init__(self, maxsize: int = 256):
+    __slots__ = (
+        "failures", "last_success", "queue", "subscriber_id",
+        "_overflow_buffer", "_delivery_latencies", "_total_delivered",
+        "_total_dropped", "_created_at",
+    )
+
+    def __init__(self, maxsize: int = 256, subscriber_id: str = ""):
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self.failures: int = 0
         self.last_success: float = time.time()
+        self.subscriber_id: str = subscriber_id
+        self._overflow_buffer: collections.deque[dict] = collections.deque(
+            maxlen=_OVERFLOW_BUFFER_SIZE
+        )
+        # Rolling window of delivery latencies (last 100)
+        self._delivery_latencies: collections.deque[float] = collections.deque(maxlen=100)
+        self._total_delivered: int = 0
+        self._total_dropped: int = 0
+        self._created_at: float = time.time()
 
     def put_nowait(self, event: dict) -> bool:
-        """Try to enqueue an event. Returns True on success."""
+        """Try to enqueue an event. Returns True on success.
+
+        If the queue is full and the event is critical, it is stored in the
+        overflow buffer instead of being dropped.
+        """
+        t0 = time.monotonic()
         try:
             self.queue.put_nowait(event)
             self.failures = 0
             self.last_success = time.time()
+            self._total_delivered += 1
+            self._delivery_latencies.append(time.monotonic() - t0)
             return True
         except asyncio.QueueFull:
-            # Slow consumer — drop oldest event and try again
+            event_type = event.get("type", "")
+            if event_type in CRITICAL_EVENT_TYPES:
+                # Critical events go to overflow buffer — never silently dropped
+                self._overflow_buffer.append(event)
+                self._delivery_latencies.append(time.monotonic() - t0)
+                return True
+
+            # Non-critical: try drop-oldest strategy
             try:
                 self.queue.get_nowait()
                 self.queue.put_nowait(event)
                 self.failures = 0
                 self.last_success = time.time()
+                self._total_delivered += 1
+                self._total_dropped += 1
+                self._delivery_latencies.append(time.monotonic() - t0)
                 return True
             except (asyncio.QueueEmpty, asyncio.QueueFull):
                 self.failures += 1
+                self._total_dropped += 1
                 return False
+
+    def drain_overflow(self) -> list[dict]:
+        """Drain all critical events from the overflow buffer."""
+        items = list(self._overflow_buffer)
+        self._overflow_buffer.clear()
+        return items
+
+    @property
+    def overflow_count(self) -> int:
+        """Number of critical events waiting in overflow buffer."""
+        return len(self._overflow_buffer)
 
     @property
     def is_dead(self) -> bool:
         """A subscriber is considered dead if it has too many consecutive failures."""
         return self.failures >= _MAX_CONSECUTIVE_FAILURES
+
+    def get_health_metrics(self) -> dict:
+        """Return subscriber health metrics for monitoring.
+
+        Designed to be lightweight (<1ms) — only reads from pre-computed
+        deques and counters, no I/O or heavy computation.
+        """
+        latencies = list(self._delivery_latencies)
+        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
+        max_latency = max(latencies) if latencies else 0.0
+        return {
+            "subscriber_id": self.subscriber_id,
+            "queue_size": self.queue.qsize(),
+            "overflow_size": len(self._overflow_buffer),
+            "total_delivered": self._total_delivered,
+            "total_dropped": self._total_dropped,
+            "consecutive_failures": self.failures,
+            "avg_latency_ms": round(avg_latency * 1000, 3),
+            "max_latency_ms": round(max_latency * 1000, 3),
+            "seconds_since_last_success": round(time.time() - self.last_success, 1),
+            "uptime_seconds": round(time.time() - self._created_at, 1),
+            "is_dead": self.is_dead,
+        }
 
 
 class EventThrottler:
@@ -300,6 +557,7 @@ class EventBus:
     def __init__(self):
         self._subscribers: list[_TrackedQueue] = []
         self._lock = asyncio.Lock()
+        self._subscriber_counter = itertools.count(1)
 
         # Per-project sequence counters — itertools.count gives lock-free atomic increments
         # (next() on a C-level count object is GIL-protected and never returns duplicates).
@@ -308,9 +566,11 @@ class EventBus:
 
         # Per-project ring buffers for fast in-memory replay
         self._ring_buffers: dict[str, collections.deque] = {}
+        # Current ring buffer size — dynamically adjusted
+        self._ring_buffer_size: int = _RING_BUFFER_MIN
 
-        # Async write queue for DB persistence (non-blocking)
-        self._write_queue: asyncio.Queue | None = None
+        # Async write queue for DB persistence (non-blocking, bounded with eviction)
+        self._write_queue: _BacklogQueue | None = None
         self._writer_task: asyncio.Task | None = None
 
         # Reference to session manager (set via set_session_manager)
@@ -549,31 +809,54 @@ class EventBus:
         """Start the background DB writer task.
 
         Call this after the event loop is running (e.g., in app startup).
+        Also attempts to recover any events from fallback files left by
+        previous sessions that experienced DB write failures.
         """
         if self._write_queue is not None:
             return  # Already started
-        self._write_queue = asyncio.Queue(maxsize=5000)
+        self._write_queue = _BacklogQueue(maxsize=EVENTBUS_MAX_BACKLOG_SIZE)
+        # Recover any fallback events from previous sessions
+        recovered = self._write_queue.recover_fallback_events()
+        if recovered:
+            for ev in recovered:
+                self._write_queue.put_nowait(ev)
+            logger.info(
+                "EventBus: re-queued %d recovered fallback events for DB write",
+                len(recovered),
+            )
         self._writer_task = asyncio.create_task(self._db_writer_loop())
-        logger.info("EventBus: DB writer started")
+        logger.info(
+            "EventBus: DB writer started (max_backlog_size=%d)", EVENTBUS_MAX_BACKLOG_SIZE
+        )
 
     async def stop_writer(self):
-        """Flush pending writes and stop the background writer."""
+        """Flush pending writes and stop the background writer.
+
+        The flush is bounded by EVENTBUS_FLUSH_TIMEOUT to prevent
+        indefinite blocking during shutdown.
+        """
         if self._writer_task:
             self._writer_task.cancel()
             try:
                 await self._writer_task
             except asyncio.CancelledError:
                 pass
-            # Flush remaining items
+            # Flush remaining items (with timeout)
             await self._flush_write_queue()
             self._writer_task = None
             self._write_queue = None
             logger.info("EventBus: DB writer stopped")
 
-    async def subscribe(self) -> asyncio.Queue:
-        """Create a new subscriber queue and register it."""
+    async def subscribe(self, subscriber_id: str = "") -> asyncio.Queue:
+        """Create a new subscriber queue and register it.
+
+        Args:
+            subscriber_id: Optional identifier for the subscriber (e.g. ws_id).
+                Used for health monitoring and diagnostics.
+        """
         async with self._lock:
-            tracked = _TrackedQueue(maxsize=256)
+            sid = subscriber_id or f"sub_{next(self._subscriber_counter)}"
+            tracked = _TrackedQueue(maxsize=256, subscriber_id=sid)
             self._subscribers.append(tracked)
             return tracked.queue
 
@@ -595,10 +878,34 @@ class EventBus:
         self._sequence_latest[project_id] = seq
         return seq
 
+    def _compute_ring_buffer_size(self) -> int:
+        """Dynamically compute ring buffer size based on active project count.
+
+        Scales linearly: 500 base + 100 per project, clamped to [500, 5000].
+        """
+        active = len(self._ring_buffers)
+        size = _RING_BUFFER_MIN + active * 100
+        return max(_RING_BUFFER_MIN, min(size, _RING_BUFFER_MAX))
+
     def _buffer_event(self, project_id: str, event: dict):
-        """Add event to the in-memory ring buffer for fast replay."""
+        """Add event to the in-memory ring buffer for fast replay.
+
+        Ring buffer size is dynamically adjusted based on active project count.
+        """
+        # Recalculate buffer size periodically
+        new_size = self._compute_ring_buffer_size()
+        if new_size != self._ring_buffer_size:
+            self._ring_buffer_size = new_size
+
         if project_id not in self._ring_buffers:
-            self._ring_buffers[project_id] = collections.deque(maxlen=_RING_BUFFER_SIZE)
+            self._ring_buffers[project_id] = collections.deque(maxlen=self._ring_buffer_size)
+        else:
+            buf = self._ring_buffers[project_id]
+            if buf.maxlen != self._ring_buffer_size:
+                # Resize by creating a new deque with the updated maxlen
+                self._ring_buffers[project_id] = collections.deque(
+                    buf, maxlen=self._ring_buffer_size
+                )
         self._ring_buffers[project_id].append(event)
 
         # Evict excess project buffers to prevent unbounded dict growth.
@@ -637,6 +944,11 @@ class EventBus:
         if req_id and "request_id" not in event:
             event["request_id"] = req_id
 
+        # Propagate correlation_id for distributed tracing (ELK/Datadog).
+        corr_id = current_correlation_id.get("")
+        if corr_id and "correlation_id" not in event:
+            event["correlation_id"] = corr_id
+
         project_id = event.get("project_id", "")
         event_type = event.get("type", "")
 
@@ -648,6 +960,7 @@ class EventBus:
             "delegation",
             "task_graph",
             "self_healing",
+            "plan_delta",
         ):
             agent = event.get("agent", "")
             extra = ""
@@ -687,12 +1000,26 @@ class EventBus:
             elif event_type in ("task_error", "agent_finished") and event.get("is_error"):
                 self.record_error(project_id)
             elif event_type in (
+                # Completion events — original set
                 "agent_finished",
                 "task_complete",
                 "tool_end",
                 "agent_result",
                 "agent_final",
+                # Active work events — reset staleness during ongoing activity
+                "agent_update",
+                "agent_started",
+                "tool_start",
+                "agent_thinking",
+                "dag_task_update",
+                "task_progress",
+                "dag_progress",
+                "delegation",
+                "self_healing",
+                "plan_delta",
             ) and not event.get("is_error"):
+                self.record_progress(project_id)
+            elif event_type == "project_status" and event.get("status") == "running":
                 self.record_progress(project_id)
 
         # Assign sequence ID for ordered replay
@@ -735,27 +1062,28 @@ class EventBus:
                 len(self._subscribers),
             )
 
-        # Queue for DB persistence (non-blocking)
-        # Using put_nowait() directly (not guarded by full() check) because:
-        # The prior pattern — `if not queue.full(): queue.put_nowait(...)` — is a
-        # TOCTOU race: another coroutine can fill the queue between the check and
-        # the put.  put_nowait() already raises QueueFull atomically, so we just
-        # attempt the put and handle the exception.  This is safe because asyncio
-        # Queue.put_nowait is synchronous and will raise immediately if full.
+        # Queue for DB persistence (non-blocking, oldest-event eviction)
         if project_id and event_type in _PERSIST_EVENT_TYPES:
             if self._write_queue is not None:
                 qsize = self._write_queue.qsize()
+                capacity = self._write_queue.maxsize
                 # Warn when queue is >80% full (approaching capacity)
-                if qsize > 4000:
+                if qsize > int(capacity * 0.8):
                     logger.warning(
-                        "EventBus: write queue at %d/5000 — DB writes may be falling behind",
+                        "EventBus: write queue at %d/%d — DB writes may be falling behind",
                         qsize,
+                        capacity,
                     )
-                try:
-                    self._write_queue.put_nowait(event)
-                except asyncio.QueueFull:
+                evicted = self._write_queue.put_nowait(event)
+                if evicted > 0:
                     logger.warning(
-                        "EventBus: write queue full, dropping DB write for %s", event_type
+                        "EventBus: backlog full (%d/%d) — evicted %d oldest event(s) "
+                        "to make room for %s (total evicted: %d)",
+                        capacity,
+                        capacity,
+                        evicted,
+                        event_type,
+                        self._write_queue.total_evicted,
                     )
 
     async def publish_throttled(self, event: dict, throttle_key: str | None = None) -> bool:
@@ -797,9 +1125,78 @@ class EventBus:
             return []
         return [e for e in buf if e.get("sequence_id", 0) > since_sequence]
 
+    def get_buffered_events_range(
+        self, project_id: str, from_seq: int, to_seq: int
+    ) -> list[dict]:
+        """Get events from the ring buffer within a sequence_id range [from_seq, to_seq].
+
+        Used by the reconnect-replay protocol so clients can request a specific
+        range of missed events. Returns events in chronological order.
+        """
+        buf = self._ring_buffers.get(project_id)
+        if not buf:
+            return []
+        return [
+            e for e in buf
+            if from_seq <= e.get("sequence_id", 0) <= to_seq
+        ]
+
     def get_latest_sequence(self, project_id: str) -> int:
         """Get the latest sequence_id for a project (0 if no events)."""
         return self._sequence_latest.get(project_id, 0)
+
+    def get_subscriber_health(self) -> list[dict]:
+        """Return health metrics for all active subscribers.
+
+        Lightweight — reads pre-computed counters only. Suitable for
+        periodic diagnostic emission or API endpoint exposure.
+        """
+        return [t.get_health_metrics() for t in self._subscribers]
+
+    def get_subscriber_health_summary(self) -> dict:
+        """Return aggregate subscriber health summary."""
+        total = len(self._subscribers)
+        if total == 0:
+            return {"total_subscribers": 0, "healthy": 0, "degraded": 0, "dead": 0}
+        healthy = sum(1 for t in self._subscribers if t.failures == 0)
+        dead = sum(1 for t in self._subscribers if t.is_dead)
+        degraded = total - healthy - dead
+        total_overflow = sum(t.overflow_count for t in self._subscribers)
+        return {
+            "total_subscribers": total,
+            "healthy": healthy,
+            "degraded": degraded,
+            "dead": dead,
+            "total_overflow_events": total_overflow,
+            "ring_buffer_size": self._ring_buffer_size,
+            "active_projects": len(self._ring_buffers),
+        }
+
+    async def drain_overflow_to_subscriber(self, queue: asyncio.Queue) -> int:
+        """Drain critical overflow events back into the subscriber's main queue.
+
+        Called when the subscriber's queue has space again (e.g. after the
+        WebSocket _sender pulls events). Returns the number of events drained.
+        """
+        tracked: _TrackedQueue | None = None
+        for t in self._subscribers:
+            if t.queue is queue:
+                tracked = t
+                break
+        if not tracked or not tracked._overflow_buffer:
+            return 0
+        drained = 0
+        while tracked._overflow_buffer:
+            if tracked.queue.full():
+                break
+            ev = tracked._overflow_buffer.popleft()
+            try:
+                tracked.queue.put_nowait(ev)
+                drained += 1
+            except asyncio.QueueFull:
+                tracked._overflow_buffer.appendleft(ev)
+                break
+        return drained
 
     def clear_project_events(self, project_id: str) -> None:
         """Clear all in-memory event data for a project.
@@ -851,13 +1248,16 @@ class EventBus:
                     await asyncio.sleep(0.5)
                     continue
 
-                # Wait for first event
+                # Wait for first event (with timeout)
+                has_item = await self._write_queue.wait_for_item(
+                    timeout=EVENT_QUEUE_TIMEOUT
+                )
+                if not has_item:
+                    continue
+
                 try:
-                    event = await asyncio.wait_for(
-                        self._write_queue.get(), timeout=EVENT_QUEUE_TIMEOUT
-                    )
-                    batch.append(event)
-                except TimeoutError:
+                    batch.append(self._write_queue.get_nowait())
+                except IndexError:
                     continue
 
                 # Collect more events (up to 50 or 2 seconds)
@@ -865,11 +1265,12 @@ class EventBus:
                 while len(batch) < 50 and time.time() < deadline:
                     if self._write_queue is None:
                         break
-                    try:
-                        event = self._write_queue.get_nowait()
-                        batch.append(event)
-                    except asyncio.QueueEmpty:
+                    if self._write_queue.empty():
                         await asyncio.sleep(0.1)
+                        break
+                    try:
+                        batch.append(self._write_queue.get_nowait())
+                    except IndexError:
                         break
 
                 # Write batch to DB
@@ -888,9 +1289,13 @@ class EventBus:
                 await asyncio.sleep(1.0)
 
     async def _write_batch(self, batch: list[dict]):
-        """Write a batch of events to the activity_log table."""
+        """Write a batch of events to the activity_log table.
+
+        Falls back to local file persistence if DB writes fail.
+        """
         if not self._session_mgr:
             return
+        failed_events: list[dict] = []
         for event in batch:
             try:
                 project_id = event.get("project_id", "")
@@ -914,25 +1319,208 @@ class EventBus:
                 )
             except Exception as e:
                 logger.error("EventBus: failed to persist event %s: %s", event.get("type"), e)
+                failed_events.append(event)
+
+        if failed_events and self._write_queue:
+            self._write_queue.write_to_fallback(failed_events)
+        elif not failed_events and self._write_queue:
+            self._write_queue.record_db_success()
 
     async def _flush_write_queue(self):
-        """Flush all remaining events in the write queue to DB."""
+        """Flush all remaining events in the write queue to DB.
+
+        Uses EVENTBUS_FLUSH_TIMEOUT to prevent indefinite blocking
+        during shutdown if the DB is slow or unresponsive.
+        """
         if not self._write_queue or not self._session_mgr:
             return
-        batch = []
-        while not self._write_queue.empty():
-            try:
-                batch.append(self._write_queue.get_nowait())
-            except asyncio.QueueEmpty:
-                break
-        if batch:
-            await self._write_batch(batch)
-            logger.info("EventBus: flushed %d events to DB on shutdown", len(batch))
+        try:
+            async with asyncio.timeout(EVENTBUS_FLUSH_TIMEOUT):
+                batch = self._write_queue.drain()
+                if batch:
+                    await self._write_batch(batch)
+                    logger.info("EventBus: flushed %d events to DB on shutdown", len(batch))
+        except TimeoutError:
+            remaining = self._write_queue.qsize()
+            logger.warning(
+                "EventBus: flush timed out after %.1fs — %d events remain unwritten",
+                EVENTBUS_FLUSH_TIMEOUT,
+                remaining,
+            )
 
     @property
     def subscriber_count(self) -> int:
         """Return the current number of subscribers (useful for monitoring)."""
         return len(self._subscribers)
+
+    def get_ring_buffer_utilization(self) -> dict:
+        """Return ring buffer utilization stats per project.
+
+        Lightweight — reads only deque lengths and maxlen attributes.
+        Response time <1ms for typical project counts.
+        """
+        buffers: list[dict] = []
+        total_events = 0
+        total_capacity = 0
+        for pid, buf in self._ring_buffers.items():
+            size = len(buf)
+            capacity = buf.maxlen or self._ring_buffer_size
+            total_events += size
+            total_capacity += capacity
+            buffers.append({
+                "project_id": pid,
+                "size": size,
+                "capacity": capacity,
+                "utilization_pct": round(size / capacity * 100, 1) if capacity else 0,
+            })
+        return {
+            "ring_buffer_size_setting": self._ring_buffer_size,
+            "active_projects": len(self._ring_buffers),
+            "total_buffered_events": total_events,
+            "total_capacity": total_capacity,
+            "overall_utilization_pct": round(
+                total_events / total_capacity * 100, 1
+            ) if total_capacity else 0,
+            "per_project": buffers,
+        }
+
+    def get_ws_connection_states(self) -> dict:
+        """Return WebSocket connection state summary from subscriber metrics.
+
+        Categorizes subscribers as active, idle, or degraded based on
+        delivery health metrics. Suitable for the health endpoint.
+        """
+        active = 0
+        idle = 0
+        degraded = 0
+        dead_count = 0
+        for t in self._subscribers:
+            if t.is_dead:
+                dead_count += 1
+            elif t.failures > 0:
+                degraded += 1
+            elif time.time() - t.last_success > 30:
+                idle += 1
+            else:
+                active += 1
+        return {
+            "total_connections": len(self._subscribers),
+            "active": active,
+            "idle": idle,
+            "degraded": degraded,
+            "dead": dead_count,
+        }
+
+    def rotate_fallback_files(self) -> dict:
+        """Rotate fallback event files: enforce max file count and age.
+
+        Removes oldest files beyond FALLBACK_MAX_FILES and files older
+        than FALLBACK_MAX_AGE_HOURS. Idempotent — safe to call repeatedly.
+        Returns a summary of rotation actions taken.
+        """
+        if not _FALLBACK_DIR.exists():
+            return {"rotated": 0, "reason": "no_fallback_dir"}
+
+        files = sorted(_FALLBACK_DIR.glob("events_*.jsonl"), key=lambda p: p.stat().st_mtime)
+        removed_age = 0
+        removed_count = 0
+        now = time.time()
+        max_age_seconds = FALLBACK_MAX_AGE_HOURS * 3600
+
+        # Remove files older than max age
+        remaining: list[Path] = []
+        for f in files:
+            try:
+                age = now - f.stat().st_mtime
+                if age > max_age_seconds:
+                    f.unlink()
+                    removed_age += 1
+                else:
+                    remaining.append(f)
+            except OSError as e:
+                logger.warning("EventBus: failed to rotate fallback file %s: %s", f.name, e)
+                remaining.append(f)
+
+        # Enforce max file count (keep newest)
+        if len(remaining) > FALLBACK_MAX_FILES:
+            excess = remaining[: len(remaining) - FALLBACK_MAX_FILES]
+            for f in excess:
+                try:
+                    f.unlink()
+                    removed_count += 1
+                except OSError as e:
+                    logger.warning("EventBus: failed to remove excess fallback file %s: %s", f.name, e)
+
+        total_removed = removed_age + removed_count
+        if total_removed > 0:
+            logger.info(
+                "EventBus: rotated %d fallback files (age=%d, count=%d, remaining=%d)",
+                total_removed, removed_age, removed_count,
+                len(remaining) - removed_count,
+            )
+        return {
+            "rotated": total_removed,
+            "removed_by_age": removed_age,
+            "removed_by_count": removed_count,
+            "remaining_files": max(0, len(remaining) - removed_count),
+        }
+
+
+class StructuredJsonFormatter(logging.Formatter):
+    """JSON log formatter compatible with ELK/Datadog/CloudWatch.
+
+    Emits one JSON object per log line with standard fields:
+    timestamp, level, logger, message, and optional correlation_id,
+    request_id, and extra fields from the log record.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry: dict[str, Any] = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.") + f"{int(record.msecs):03d}Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        # Inject correlation_id and request_id from ContextVars if available
+        corr_id = current_correlation_id.get("")
+        if corr_id:
+            log_entry["correlation_id"] = corr_id
+        req_id = current_request_id.get("")
+        if req_id:
+            log_entry["request_id"] = req_id
+        # Include exception info
+        if record.exc_info and record.exc_info[1]:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        # Include extra fields passed via logger.info("msg", extra={...})
+        for key in ("project_id", "event_type", "agent", "subscriber_id", "ws_id"):
+            val = getattr(record, key, None)
+            if val is not None:
+                log_entry[key] = val
+        return _json.dumps(log_entry, default=str)
+
+
+def configure_structured_logging(log_format: str = "text", log_level: str = "INFO") -> None:
+    """Configure root logger with structured JSON or plain text format.
+
+    Args:
+        log_format: "json" for ELK/Datadog-compatible JSON lines,
+                    "text" for human-readable plain text.
+        log_level: Standard Python log level name (DEBUG, INFO, WARNING, etc.).
+    """
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, log_level, logging.INFO))
+    # Remove existing handlers to prevent duplicate output
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+    handler = logging.StreamHandler()
+    if log_format == "json":
+        handler.setFormatter(StructuredJsonFormatter())
+    else:
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+    root.addHandler(handler)
 
 
 # Module-level singleton

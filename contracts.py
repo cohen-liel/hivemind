@@ -16,6 +16,7 @@ import logging
 import re
 from enum import Enum
 from typing import Any
+from collections.abc import Callable
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -35,6 +36,7 @@ class TaskStatus(str, Enum):
     BLOCKED = "blocked"
     NEEDS_FOLLOWUP = "needs_followup"
     REMEDIATION = "remediation"  # Auto-generated fix task
+    SKIPPED = "skipped"  # Task explicitly skipped — treated as resolved for dependency purposes
 
 
 class AgentRole(str, Enum):
@@ -109,6 +111,11 @@ class FailureCategory(str, Enum):
     # --- Subcategory of EXTERNAL ---
     EXTERNAL_RATE_LIMIT = "external_rate_limit"  # Third-party API rate limit
 
+    # --- New categories (v3: enhanced failure classification) ---
+    ARTIFACT_INVALID = "artifact_invalid"  # Upstream artifact is malformed or unusable
+    CONTEXT_INSUFFICIENT = "context_insufficient"  # Agent lacks enough context to complete task
+    AGENT_TIMEOUT_IDLE = "agent_timeout_idle"  # Agent timed out due to idle/no progress
+
 
 # Mapping: subcategory → parent category (for fallback lookups)
 _SUBCATEGORY_PARENT: dict[FailureCategory, FailureCategory] = {
@@ -119,6 +126,7 @@ _SUBCATEGORY_PARENT: dict[FailureCategory, FailureCategory] = {
     FailureCategory.TEST_ASSERTION: FailureCategory.TEST_FAILURE,
     FailureCategory.TEST_RUNTIME_ERROR: FailureCategory.TEST_FAILURE,
     FailureCategory.EXTERNAL_RATE_LIMIT: FailureCategory.EXTERNAL,
+    FailureCategory.AGENT_TIMEOUT_IDLE: FailureCategory.TIMEOUT,
 }
 
 
@@ -173,6 +181,11 @@ _RETRY_STRATEGY: dict[FailureCategory, dict[str, int | float | bool]] = {
         "backoff_seconds": 10,
         "remediation_allowed": False,
     },
+    FailureCategory.AGENT_TIMEOUT_IDLE: {
+        "max_retries": 1,
+        "backoff_seconds": 5,
+        "remediation_allowed": True,
+    },
     # --- Top-level defaults ---
     FailureCategory.BUILD_ERROR: {
         "max_retries": 2,
@@ -198,6 +211,16 @@ _RETRY_STRATEGY: dict[FailureCategory, dict[str, int | float | bool]] = {
     FailureCategory.MISSING_CONTEXT: {
         "max_retries": 1,
         "backoff_seconds": 2,
+        "remediation_allowed": True,
+    },
+    FailureCategory.ARTIFACT_INVALID: {
+        "max_retries": 1,
+        "backoff_seconds": 2,
+        "remediation_allowed": True,
+    },
+    FailureCategory.CONTEXT_INSUFFICIENT: {
+        "max_retries": 0,
+        "backoff_seconds": 0,
         "remediation_allowed": True,
     },
     FailureCategory.UNKNOWN: {"max_retries": 1, "backoff_seconds": 3, "remediation_allowed": True},
@@ -340,6 +363,36 @@ class TaskInput(BaseModel):
         return v.strip()
 
 
+class StructuredErrorContext(BaseModel):
+    """Structured error context attached to failed task outputs.
+
+    Provides actionable details so downstream remediation agents understand
+    exactly what went wrong, where, and what to try next.
+    """
+
+    category: FailureCategory = Field(
+        default=FailureCategory.UNKNOWN,
+        description="Classified failure category",
+    )
+    traceback: str = Field(
+        default="",
+        description="Relevant traceback or error output (truncated to 1000 chars)",
+    )
+    suggestion: str = Field(
+        default="",
+        description="Actionable suggestion for the remediation agent",
+    )
+    failed_file: str = Field(
+        default="",
+        description="Primary file that caused the failure (if identifiable)",
+    )
+    failed_line: int = Field(
+        default=0,
+        ge=0,
+        description="Line number of the error (if identifiable)",
+    )
+
+
 class TaskOutput(BaseModel):
     """What an agent returns — the contract coming OUT."""
 
@@ -382,6 +435,18 @@ class TaskOutput(BaseModel):
     failure_details: str = Field(
         default="", description="Detailed explanation of the failure for remediation agent"
     )
+    # v3: Structured error context for downstream remediation agents
+    error_context: StructuredErrorContext | None = Field(
+        default=None,
+        description="Structured error context with category, traceback, and suggestion",
+    )
+    # v4: Quality score from Brain Hive QualityScorer (0-100)
+    quality_score: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+        description="Composite quality score (0-100) computed by QualityScorer post-completion",
+    )
 
     def is_successful(self) -> bool:
         """Return True if the task result indicates success."""
@@ -389,7 +454,7 @@ class TaskOutput(BaseModel):
 
     def is_terminal(self) -> bool:
         """True if this task cannot be retried meaningfully."""
-        return self.status in (TaskStatus.COMPLETED, TaskStatus.BLOCKED)
+        return self.status in (TaskStatus.COMPLETED, TaskStatus.BLOCKED, TaskStatus.SKIPPED)
 
     def get_artifact(self, artifact_type: ArtifactType) -> Artifact | None:
         """Find a specific artifact by type."""
@@ -482,25 +547,34 @@ class TaskGraph(BaseModel):
         default_factory=list, description="High-level epics (3-7 items)"
     )
     tasks: list[TaskInput] = Field(..., description="All tasks with dependency wiring")
+    task_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Cumulative record of all tasks with their final statuses across rounds",
+    )
 
     def get_task(self, task_id: str) -> TaskInput | None:
         """Return the task node with the given ID, or None."""
         return next((t for t in self.tasks if t.id == task_id), None)
 
     def ready_tasks(self, completed: dict[str, TaskOutput] | set[str]) -> list[TaskInput]:
-        """Return tasks whose dependencies are all successfully completed.
+        """Return tasks whose dependencies are all successfully completed or skipped.
 
         `completed` can be either:
-        - dict[str, TaskOutput]: checks that each dep is successful
+        - dict[str, TaskOutput]: checks that each dep is successful or skipped
         - set[str]: assumes all listed task IDs are successful
         """
         is_dict = isinstance(completed, dict)
+        # Build set of skipped task IDs for fast lookup
+        skipped_ids = self._skipped_task_ids()
         result = []
         for task in self.tasks:
-            if task.id in completed:
+            if task.id in completed or task.id in skipped_ids:
                 continue
             deps_ok = True
             for dep in task.depends_on:
+                # Skipped deps count as resolved
+                if dep in skipped_ids:
+                    continue
                 if dep not in completed:
                     deps_ok = False
                     break
@@ -512,11 +586,13 @@ class TaskGraph(BaseModel):
         return result
 
     def is_complete(self, completed: dict[str, TaskOutput]) -> bool:
-        """Return True if all tasks in the graph have finished."""
-        return all(t.id in completed for t in self.tasks)
+        """Return True if all tasks in the graph have finished or been skipped."""
+        skipped_ids = self._skipped_task_ids()
+        return all(t.id in completed or t.id in skipped_ids for t in self.tasks)
 
     def has_failed(self, completed: dict[str, TaskOutput]) -> bool:
         """True if a blocked/failed task has no downstream path to completion."""
+        skipped_ids = self._skipped_task_ids()
         blocked = {
             t.id
             for t in self.tasks
@@ -525,8 +601,8 @@ class TaskGraph(BaseModel):
         }
         if not blocked:
             return False
-        # Check if any pending task depends on a blocked task
-        pending_ids = {t.id for t in self.tasks if t.id not in completed}
+        # Check if any pending task depends on a blocked task (skipped deps don't count)
+        pending_ids = {t.id for t in self.tasks if t.id not in completed and t.id not in skipped_ids}
         for tid in pending_ids:
             task = self.get_task(tid)
             if task and any(dep in blocked for dep in task.depends_on):
@@ -584,6 +660,83 @@ class TaskGraph(BaseModel):
 
         return errors
 
+    def _skipped_task_ids(self) -> set[str]:
+        """Return the set of task IDs that have been recorded as SKIPPED in history."""
+        return {
+            entry["task_id"]
+            for entry in self.task_history
+            if entry.get("status") == TaskStatus.SKIPPED.value
+        }
+
+    def append_tasks(
+        self,
+        new_tasks: list[TaskInput],
+        completed: dict[str, TaskOutput] | None = None,
+    ) -> list[str]:
+        """Merge new tasks into the graph without resetting completed/running tasks.
+
+        - Preserves all existing tasks and their states.
+        - New task IDs must not collide with existing IDs.
+        - New task dependencies may reference existing tasks (already completed or pending).
+        - Validates DAG acyclicity after merge; rolls back on error.
+
+        Returns a list of validation errors (empty on success).
+        """
+        existing_ids = {t.id for t in self.tasks}
+        new_ids = {t.id for t in new_tasks}
+
+        # Check for ID collisions
+        collisions = existing_ids & new_ids
+        if collisions:
+            return [f"Cannot append task with duplicate ID: '{tid}'" for tid in sorted(collisions)]
+
+        # Tentatively add new tasks
+        self.tasks.extend(new_tasks)
+
+        # Validate the merged graph
+        errors = self.validate_dag()
+        if errors:
+            # Roll back: remove the appended tasks
+            self.tasks = [t for t in self.tasks if t.id not in new_ids]
+            return errors
+
+        return []
+
+    def skip_tasks(
+        self,
+        task_ids: list[str],
+        reason: str = "",
+    ) -> list[str]:
+        """Mark specified tasks as SKIPPED and record in task_history.
+
+        Skipped tasks are treated as resolved for dependency purposes,
+        unblocking any downstream tasks that depend on them.
+
+        Returns a list of task IDs that were actually skipped (ignores unknown IDs).
+        """
+        known_ids = {t.id for t in self.tasks}
+        skipped: list[str] = []
+        for tid in task_ids:
+            if tid not in known_ids:
+                logger.warning("skip_tasks: unknown task ID '%s', ignoring", tid)
+                continue
+            # Record in history
+            self.task_history.append({
+                "task_id": tid,
+                "status": TaskStatus.SKIPPED.value,
+                "reason": reason,
+            })
+            skipped.append(tid)
+        return skipped
+
+    def record_task_result(self, task_id: str, status: TaskStatus, details: str = "") -> None:
+        """Record a task's final status in the cumulative history."""
+        self.task_history.append({
+            "task_id": task_id,
+            "status": status.value,
+            "details": details,
+        })
+
 
 # ---------------------------------------------------------------------------
 # DAG Checkpoint — durable state for resuming interrupted graph executions
@@ -615,6 +768,14 @@ class DAGCheckpoint(BaseModel):
     healing_history: list[dict[str, str]] = Field(default_factory=list)
     round_num: int = Field(default=0, ge=0, description="Last completed round number")
     created_at: float = Field(default=0.0, description="Epoch timestamp of checkpoint creation")
+    cumulative_task_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Cumulative record of all task statuses across orchestration rounds",
+    )
+    skipped_task_ids: list[str] = Field(
+        default_factory=list,
+        description="Task IDs that have been skipped in this execution",
+    )
     status: str = Field(
         default="running",
         description="Checkpoint status: running, completed, failed, interrupted",
@@ -738,6 +899,18 @@ _FAILURE_PATTERNS: list[tuple[FailureCategory, list[str]]] = [
             "quota exceeded",
         ],
     ),
+    (
+        FailureCategory.AGENT_TIMEOUT_IDLE,
+        [
+            "idle timeout",
+            "no progress",
+            "agent idle",
+            "stalled",
+            "no output produced",
+            "agent unresponsive",
+            "idle for",
+        ],
+    ),
     # --- Top-level categories (broader patterns) ---
     (
         FailureCategory.DEPENDENCY_MISSING,
@@ -755,6 +928,36 @@ _FAILURE_PATTERNS: list[tuple[FailureCategory, list[str]]] = [
             "package not found",
             "could not resolve",
             "unresolved import",
+        ],
+    ),
+    (
+        FailureCategory.ARTIFACT_INVALID,
+        [
+            "artifact invalid",
+            "malformed artifact",
+            "corrupt artifact",
+            "artifact parse error",
+            "invalid json",
+            "schema validation failed",
+            "artifact format",
+            "unexpected artifact",
+            "artifact missing required",
+            "truncated artifact",
+        ],
+    ),
+    (
+        FailureCategory.CONTEXT_INSUFFICIENT,
+        [
+            "insufficient context",
+            "not enough context",
+            "missing information",
+            "cannot determine",
+            "need more context",
+            "context too vague",
+            "underspecified",
+            "not enough information",
+            "lacking context",
+            "context incomplete",
         ],
     ),
     (
@@ -867,10 +1070,81 @@ _FAILURE_PATTERNS: list[tuple[FailureCategory, list[str]]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Structured Failure Checks — heuristics beyond keyword matching
+# ---------------------------------------------------------------------------
+
+_STRUCTURED_CHECKS: list[tuple[FailureCategory, Callable]] = []
+
+
+def _register_check(category: FailureCategory):
+    """Decorator to register a structured failure check function."""
+    def decorator(fn: Callable[[str, TaskOutput], bool]):
+        _STRUCTURED_CHECKS.append((category, fn))
+        return fn
+    return decorator
+
+
+@_register_check(FailureCategory.ARTIFACT_INVALID)
+def _check_artifact_invalid(text: str, output: "TaskOutput") -> bool:
+    """Detect malformed upstream artifacts from structured fields."""
+    markers = ["truncated", "partial", "malformed", "invalid artifact"]
+    if any(m in text for m in markers):
+        return True
+    # Check if any structured artifact has validation issues noted in blockers
+    for blocker in output.blockers:
+        bl = blocker.lower()
+        if "artifact" in bl and any(w in bl for w in ("invalid", "corrupt", "malformed", "parse")):
+            return True
+    return False
+
+
+@_register_check(FailureCategory.CONTEXT_INSUFFICIENT)
+def _check_context_insufficient(text: str, output: "TaskOutput") -> bool:
+    """Detect agent could not complete because of insufficient context."""
+    if output.confidence < 0.2 and output.status == TaskStatus.FAILED:
+        context_words = ["context", "information", "understand", "unclear"]
+        if any(w in text for w in context_words):
+            return True
+    for issue in output.issues:
+        il = issue.lower()
+        if any(p in il for p in ("not enough context", "insufficient", "lacking context", "need more")):
+            return True
+    return False
+
+
+@_register_check(FailureCategory.AGENT_TIMEOUT_IDLE)
+def _check_agent_timeout_idle(text: str, output: "TaskOutput") -> bool:
+    """Detect idle timeout (agent stalled without producing output)."""
+    if "idle" in text and ("timeout" in text or "timed out" in text):
+        return True
+    if output.turns_used == 0 and "timeout" in text:
+        return True
+    if "no progress" in text or "stalled" in text:
+        return True
+    return False
+
+
+@_register_check(FailureCategory.DEPENDENCY_MISSING)
+def _check_dependency_missing(text: str, output: "TaskOutput") -> bool:
+    """Detect missing upstream dependency from structured blockers."""
+    for blocker in output.blockers:
+        bl = blocker.lower()
+        if "upstream" in bl and ("missing" in bl or "not completed" in bl or "failed" in bl):
+            return True
+        if "dependency" in bl and ("not found" in bl or "missing" in bl):
+            return True
+    return False
+
+
 def classify_failure(output: TaskOutput) -> FailureCategory:
     """Auto-classify a failed task's failure category from its output text.
 
-    Scans the summary, issues, blockers, and failure_details for known patterns.
+    Uses a two-phase approach:
+    1. Structured checks that inspect typed fields (confidence, turns_used, blockers)
+    2. Keyword scoring across summary, issues, blockers, and failure_details
+
+    Structured checks take priority over keyword matches when they fire.
     Returns the most specific category found, or UNKNOWN.
     """
     if output.failure_category and output.failure_category != FailureCategory.UNKNOWN:
@@ -889,17 +1163,97 @@ def classify_failure(output: TaskOutput) -> FailureCategory:
     if not search_text.strip():
         return FailureCategory.UNKNOWN
 
-    # Score each category by number of pattern matches
+    # Phase 1: Structured checks (higher priority — use typed fields)
+    structured_hits: list[FailureCategory] = []
+    for category, check_fn in _STRUCTURED_CHECKS:
+        try:
+            if check_fn(search_text, output):
+                structured_hits.append(category)
+        except Exception:
+            pass  # Don't let a check crash classification
+
+    # If exactly one structured check fires, use it directly
+    if len(structured_hits) == 1:
+        return structured_hits[0]
+
+    # Phase 2: Keyword scoring (original regex approach)
     scores: dict[FailureCategory, int] = {}
     for category, patterns in _FAILURE_PATTERNS:
         score = sum(1 for p in patterns if p in search_text)
         if score > 0:
             scores[category] = score
 
+    # Boost scores for categories that also matched structured checks
+    for cat in structured_hits:
+        scores[cat] = scores.get(cat, 0) + 3  # Structured match bonus
+
     if not scores:
-        return FailureCategory.UNKNOWN
+        # Only structured hits remain — pick the first
+        return structured_hits[0] if structured_hits else FailureCategory.UNKNOWN
 
     return max(scores, key=scores.get)
+
+
+# Suggestion templates for structured error context
+_FAILURE_SUGGESTIONS: dict[FailureCategory, str] = {
+    FailureCategory.BUILD_TYPE_ERROR: "Check type annotations and Pydantic models. Run mypy/tsc to identify the exact mismatch.",
+    FailureCategory.BUILD_IMPORT_ERROR: "Verify module exists and import path is correct. Check __init__.py files.",
+    FailureCategory.BUILD_SYNTAX_ERROR: "Fix the syntax error at the indicated line. Run py_compile or tsc to verify.",
+    FailureCategory.BUILD_MISSING_DEP: "Install the missing package and add to requirements.txt/package.json.",
+    FailureCategory.TEST_ASSERTION: "Fix the implementation (not the test) to produce the expected output.",
+    FailureCategory.TEST_RUNTIME_ERROR: "Check test fixtures and setup. Run pytest -x --tb=long for full traceback.",
+    FailureCategory.EXTERNAL_RATE_LIMIT: "Add retry with exponential backoff or implement caching.",
+    FailureCategory.AGENT_TIMEOUT_IDLE: "Break the task into smaller steps. Check git status for partial progress.",
+    FailureCategory.DEPENDENCY_MISSING: "Install missing packages or fix import paths.",
+    FailureCategory.API_MISMATCH: "Read the api_contract artifact and align implementation to match.",
+    FailureCategory.TEST_FAILURE: "Run the failing tests, fix the implementation, then re-run to verify.",
+    FailureCategory.BUILD_ERROR: "Read the error output, fix syntax/type errors, and verify the build passes.",
+    FailureCategory.TIMEOUT: "Check git diff for partial work, then complete the remaining steps.",
+    FailureCategory.PERMISSION: "Check file permissions and access rights.",
+    FailureCategory.MISSING_CONTEXT: "Check if the file needs to be created or if an upstream task failed.",
+    FailureCategory.UNCLEAR_GOAL: "Task goal needs clarification. Review the original requirements.",
+    FailureCategory.EXTERNAL: "Check network connectivity and service availability.",
+    FailureCategory.ARTIFACT_INVALID: "Re-read upstream task output and regenerate or fix the artifact.",
+    FailureCategory.CONTEXT_INSUFFICIENT: "Read all referenced files and upstream artifacts to build full context.",
+    FailureCategory.UNKNOWN: "Review the full error output and identify the root cause.",
+}
+
+
+def build_error_context(output: TaskOutput) -> StructuredErrorContext:
+    """Build a StructuredErrorContext from a failed TaskOutput.
+
+    Classifies the failure, extracts relevant traceback info, and provides
+    an actionable suggestion for remediation agents.
+    """
+    category = classify_failure(output)
+
+    # Extract traceback-like content from failure_details
+    traceback = output.failure_details[:1000] if output.failure_details else ""
+    if not traceback and output.issues:
+        traceback = " | ".join(output.issues)[:1000]
+
+    suggestion = _FAILURE_SUGGESTIONS.get(category, _FAILURE_SUGGESTIONS[FailureCategory.UNKNOWN])
+
+    # Try to extract file/line from common error patterns
+    failed_file = ""
+    failed_line = 0
+    # Match patterns like "File 'foo.py', line 42" or "foo.ts(42,10)"
+    file_line_match = re.search(
+        r'(?:File ["\']([^"\']+)["\'],\s*line\s*(\d+))|(?:([^\s]+\.\w+)\((\d+),\d+\))',
+        output.failure_details or output.summary,
+    )
+    if file_line_match:
+        failed_file = file_line_match.group(1) or file_line_match.group(3) or ""
+        line_str = file_line_match.group(2) or file_line_match.group(4) or "0"
+        failed_line = int(line_str)
+
+    return StructuredErrorContext(
+        category=category,
+        traceback=traceback,
+        suggestion=suggestion,
+        failed_file=failed_file,
+        failed_line=failed_line,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1410,42 @@ _REMEDIATION_STRATEGIES: dict[FailureCategory, dict[str, Any]] = {
             "Create the file if it's a new requirement, or fix the import path",
         ],
     },
+    FailureCategory.ARTIFACT_INVALID: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Fix invalid artifact from task {task_id}: {failure_details}. "
+            "An upstream artifact was malformed or failed validation. "
+            "Re-read the upstream task output and regenerate or fix the artifact."
+        ),
+        "constraints": [
+            "Validate artifact format before completing",
+            "Ensure the artifact matches the expected schema",
+        ],
+    },
+    FailureCategory.CONTEXT_INSUFFICIENT: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Complete task {task_id} with enriched context: {failure_details}. "
+            "The previous attempt failed due to insufficient context. "
+            "Read all referenced files and upstream artifacts to build full context."
+        ),
+        "constraints": [
+            "Read all files in files_scope before starting implementation",
+            "Check upstream task artifacts for additional context",
+        ],
+    },
+    FailureCategory.AGENT_TIMEOUT_IDLE: {
+        "role": AgentRole.BACKEND_DEVELOPER,
+        "goal_template": (
+            "Complete the stalled work from task {task_id}: {failure_details}. "
+            "The agent timed out due to idle/no progress. Break the task into "
+            "smaller steps and execute them incrementally."
+        ),
+        "constraints": [
+            "Check git status first to understand what was already done",
+            "Break remaining work into smaller, achievable steps",
+        ],
+    },
 }
 
 
@@ -1090,6 +1480,17 @@ def create_remediation_task(
         failure_details=failure_details[:300],
     )
 
+    # Build structured error context for the remediation agent
+    err_ctx = build_error_context(failed_output)
+
+    # Build enriched failure context with structured details
+    ctx_parts = [f"[{category.value}] {failure_details[:500]}"]
+    if err_ctx.failed_file:
+        ctx_parts.append(f"File: {err_ctx.failed_file}, Line: {err_ctx.failed_line}")
+    if err_ctx.suggestion:
+        ctx_parts.append(f"Suggestion: {err_ctx.suggestion}")
+    enriched_failure_context = "\n".join(ctx_parts)
+
     # Ensure remediation ID stays within 64-char limit
     prefix = f"fix_{task_counter:03d}_"
     max_suffix_len = 64 - len(prefix)
@@ -1112,7 +1513,7 @@ def create_remediation_task(
         input_artifacts=([a.file_path for a in failed_output.structured_artifacts if a.file_path]),
         is_remediation=True,
         original_task_id=failed_task.id,
-        failure_context=f"[{category.value}] {failure_details[:500]}",
+        failure_context=enriched_failure_context,
     )
 
 

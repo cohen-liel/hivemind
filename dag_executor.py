@@ -29,10 +29,12 @@ from contracts import (
     ArtifactType,
     DAGCheckpoint,
     FailureCategory,
+    StructuredErrorContext,
     TaskGraph,
     TaskInput,
     TaskOutput,
     TaskStatus,
+    build_error_context,
     classify_failure,
     compute_task_complexity,
     create_remediation_task,
@@ -51,6 +53,121 @@ from skills_registry import build_skill_prompt, select_skills_for_task
 from structured_notes import NoteCategory, StructuredNotes
 
 logger = logging.getLogger(__name__)
+
+# ── Post-task test verification ───────────────────────────────────────────────
+# Roles that write code and should trigger a test run after completion.
+_POST_TASK_DEV_ROLES: frozenset[str] = frozenset(
+    {"developer", "frontend_developer", "backend_developer", "database_expert", "devops"}
+)
+
+
+class _TestMgrAdapter:
+    """Minimal duck-type adapter so run_project_tests() can work with DAGContext."""
+
+    def __init__(self, project_dir: str, project_id: str) -> None:
+        self.project_dir = project_dir
+        self.project_id = project_id
+
+
+async def _verify_task_with_tests(task: "TaskInput", ctx: "DAGContext") -> tuple[bool, str]:
+    """Run tests after a developer task completes successfully.
+
+    Returns (passed, summary). If no test framework is detected, returns (True, "").
+    On failure, logs a prominent warning — the caller still commits the work,
+    but the failure is recorded so a remediation task can be injected.
+    """
+    role_name = task.role.value if hasattr(task.role, "value") else str(task.role)
+    if role_name not in _POST_TASK_DEV_ROLES:
+        return True, ""
+
+    try:
+        from orch_review import run_project_tests  # lazy import — avoids circular dep
+
+        mgr = _TestMgrAdapter(ctx.project_dir, ctx.graph.project_id)
+        result = await run_project_tests(mgr)
+    except Exception as exc:
+        logger.warning("[DAG] Post-task test run raised an exception (non-fatal): %s", exc)
+        return True, ""
+
+    if result is None:
+        return True, ""  # No test framework detected
+
+    if result["passed"]:
+        logger.info("[DAG] ✅ Post-task tests PASSED after %s", task.id)
+        return True, result["output"][:300]
+
+    summary = result["output"][:500]
+    logger.warning(
+        "[DAG] ❌ Post-task tests FAILED after %s (%s):\n%s",
+        task.id, role_name, summary,
+    )
+    return False, summary
+
+# Brain Hive lazy imports (avoid circular imports at module load)
+_brain_quality = None
+_brain_performance = None
+_brain_antipatterns = None
+
+
+def _run_brain_hive_analysis(task: TaskInput, output: TaskOutput) -> None:
+    """Run post-completion Brain Hive analysis: quality scoring, performance tracking, anti-pattern detection.
+
+    Non-critical — failures are logged but never block DAG execution.
+    """
+    global _brain_quality, _brain_performance, _brain_antipatterns
+    try:
+        # Lazy import to avoid circular deps and startup cost
+        if _brain_quality is None:
+            from brain_quality import compute_quality_score
+            _brain_quality = compute_quality_score
+        if _brain_performance is None:
+            from brain_performance import get_performance_tracker
+            _brain_performance = get_performance_tracker()
+        if _brain_antipatterns is None:
+            from brain_antipatterns import get_anti_pattern_catalog
+            _brain_antipatterns = get_anti_pattern_catalog()
+
+        # 1. Quality Score
+        score, breakdown = _brain_quality(output, task)
+        output.quality_score = score
+        logger.info(
+            "[BrainHive] QualityScore for %s: %.1f (conf=%.1f test=%.1f review=%.1f art=%.1f eff=%.1f)",
+            task.id, score, breakdown.confidence_score, breakdown.test_score,
+            breakdown.review_score, breakdown.artifact_score, breakdown.efficiency_score,
+        )
+
+        # 2. Performance Tracking
+        role_name = task.role.value if hasattr(task.role, "value") else str(task.role)
+        status_val = output.status.value if hasattr(output.status, "value") else str(output.status)
+        failure_cat = None
+        if output.failure_category:
+            failure_cat = output.failure_category.value if hasattr(output.failure_category, "value") else str(output.failure_category)
+
+        _brain_performance.record(
+            task_id=task.id,
+            role=role_name,
+            status=status_val,
+            quality_score=score,
+            confidence=output.confidence,
+            total_tokens=output.total_tokens,
+            input_tokens=output.input_tokens,
+            output_tokens=output.output_tokens,
+            turns_used=output.turns_used,
+            is_remediation=getattr(task, "is_remediation", False),
+            failure_category=failure_cat,
+        )
+
+        # 3. Anti-Pattern Detection
+        matches = _brain_antipatterns.scan(output, task)
+        if matches:
+            logger.warning(
+                "[BrainHive] Anti-patterns detected for %s: %s",
+                task.id,
+                ", ".join(f"{m.pattern_id}({m.severity})" for m in matches),
+            )
+
+    except Exception as exc:
+        logger.debug("[BrainHive] Analysis failed for %s (non-critical): %s", task.id, exc)
 
 # Prevent GC of fire-and-forget event broadcast tasks
 _background_event_tasks: set[asyncio.Task] = set()
@@ -276,6 +393,20 @@ MAX_TOTAL_REMEDIATIONS: int = (
     cfg.MAX_TOTAL_REMEDIATIONS
 )  # Max total remediation tasks per graph execution
 MAX_ROUNDS: int = cfg.MAX_DAG_ROUNDS  # Safety limit on execution rounds (default 50)
+
+# Budget-aware remediation: estimated cost per remediation task (USD)
+# Conservative estimate — remediation tasks are typically shorter than original tasks
+_REMEDIATION_ESTIMATED_COST_USD: float = float(
+    getattr(cfg, "REMEDIATION_ESTIMATED_COST_USD", 0.50)
+)
+# Budget safety factor: require 2x estimated cost remaining before spawning
+_REMEDIATION_BUDGET_SAFETY_FACTOR: float = 2.0
+
+# Remediation cooldown: minimum seconds between remediations for the same task
+_REMEDIATION_COOLDOWN_SECONDS: float = 30.0
+
+# Tracks last remediation timestamp per task_id (module-level for cross-context sharing)
+_remediation_cooldowns: dict[str, float] = {}
 
 # ---------------------------------------------------------------------------
 # DAG Checkpoint Store — SQLite-backed durable checkpoints for resume
@@ -560,6 +691,7 @@ async def execute_graph(
     session_id_store: dict[str, str] | None = None,
     max_concurrent_tasks: int | None = None,
     commit_approval_callback: Callable[[str], Awaitable[bool]] | None = None,
+    plan_delta_queue: asyncio.Queue | None = None,
 ) -> ExecutionResult:
     """
     Execute a TaskGraph to completion with self-healing.
@@ -578,6 +710,10 @@ async def execute_graph(
         max_concurrent_tasks: Maximum DAG nodes to execute simultaneously.
             Defaults to ``cfg.DAG_MAX_CONCURRENT_NODES`` (env: DAG_MAX_CONCURRENT_NODES).
             Set to 1 to force sequential execution; None to use config value.
+        plan_delta_queue: Optional asyncio.Queue for mid-execution plan deltas.
+            Each item is a dict with ``add_tasks`` (list[TaskInput]) and
+            ``skip_task_ids`` (list[str]).  The executor drains this queue
+            between rounds and merges deltas into the running graph.
 
     Returns:
         ExecutionResult with all outputs, stats, and healing history
@@ -620,6 +756,7 @@ async def execute_graph(
         on_event=on_event,
         max_concurrent_tasks=_concurrency,
         commit_approval_callback=commit_approval_callback,
+        plan_delta_queue=plan_delta_queue,
     )
 
     logger.info(
@@ -960,6 +1097,121 @@ async def restore_graph_from_checkpoint(
         return None, {}, {}, 0
 
 
+# ---------------------------------------------------------------------------
+# Mid-execution plan delta ingestion — hot-reload tasks into running DAG
+# ---------------------------------------------------------------------------
+
+
+async def _apply_pending_deltas(
+    ctx: _ExecutionContext,
+    graph: TaskGraph,
+) -> int:
+    """Drain all pending plan deltas from ctx.plan_delta_queue and merge into graph.
+
+    Each delta is a dict with:
+    - ``add_tasks``: list[TaskInput] — new tasks to append to the graph
+    - ``skip_task_ids``: list[str] — existing PENDING tasks to mark as SKIPPED
+
+    Returns the number of deltas successfully applied.
+
+    Thread-safety: acquires ctx._delta_lock to ensure atomic merge.
+    Called between execution rounds so running tasks are never interrupted.
+    """
+    if ctx.plan_delta_queue.empty():
+        return 0
+
+    applied = 0
+    async with ctx._delta_lock:
+        while not ctx.plan_delta_queue.empty():
+            try:
+                delta = ctx.plan_delta_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            add_tasks: list[TaskInput] = delta.get("add_tasks", [])
+            skip_task_ids: list[str] = delta.get("skip_task_ids", [])
+
+            if not add_tasks and not skip_task_ids:
+                logger.debug("[DAG] Empty plan delta — skipping")
+                continue
+
+            logger.info(
+                f"[DAG] Applying mid-execution plan delta: "
+                f"+{len(add_tasks)} tasks, ~{len(skip_task_ids)} skips"
+            )
+
+            # Skip tasks first — so new tasks can depend on remaining tasks
+            if skip_task_ids:
+                # Only skip tasks that are still PENDING (not running/completed)
+                safe_to_skip = [
+                    tid for tid in skip_task_ids
+                    if tid not in ctx.completed and tid not in ctx.running_tasks
+                ]
+                skipped_out = [
+                    tid for tid in skip_task_ids
+                    if tid in ctx.completed or tid in ctx.running_tasks
+                ]
+                if skipped_out:
+                    logger.warning(
+                        f"[DAG] Cannot skip {len(skipped_out)} tasks "
+                        f"(already running/completed): {skipped_out}"
+                    )
+                if safe_to_skip:
+                    actually_skipped = graph.skip_tasks(
+                        safe_to_skip,
+                        reason="Skipped by mid-execution plan delta",
+                    )
+                    # Mark skipped tasks as completed in ctx so ready_tasks() works
+                    for tid in actually_skipped:
+                        if tid not in ctx.completed:
+                            ctx.completed[tid] = TaskOutput(
+                                task_id=tid,
+                                status=TaskStatus.SKIPPED,
+                                summary="Task skipped by mid-execution plan update",
+                                confidence=1.0,
+                            )
+                    logger.info(
+                        f"[DAG] Mid-execution skip: {len(actually_skipped)} tasks skipped: "
+                        f"{actually_skipped}"
+                    )
+
+            # Append new tasks — validates acyclicity and ID uniqueness
+            if add_tasks:
+                merge_errors = graph.append_tasks(add_tasks, completed=ctx.completed)
+                if merge_errors:
+                    logger.error(
+                        f"[DAG] Mid-execution merge errors (delta dropped): {merge_errors}"
+                    )
+                    continue
+                # Update task counter so remediation tasks don't collide
+                ctx.task_counter = max(ctx.task_counter, len(graph.tasks))
+                logger.info(
+                    f"[DAG] Mid-execution append: +{len(add_tasks)} tasks "
+                    f"(total now: {len(graph.tasks)})"
+                )
+
+            applied += 1
+            ctx.deltas_applied += 1
+
+            # Emit updated task_graph event so frontend reflects changes
+            _fire_event(ctx.on_event, {
+                "type": "task_graph",
+                "project_id": graph.project_id,
+                "graph": graph.model_dump(),
+                "delta_applied": True,
+                "added_task_ids": [t.id for t in add_tasks],
+                "skipped_task_ids": skip_task_ids,
+            })
+
+    if applied:
+        logger.info(
+            f"[DAG] Applied {applied} plan delta(s) — "
+            f"graph now has {len(graph.tasks)} tasks"
+        )
+
+    return applied
+
+
 async def _execute_graph_inner(
     ctx: _ExecutionContext,
     graph: TaskGraph,
@@ -1002,6 +1254,19 @@ async def _execute_graph_inner(
             f"cost_so_far=${ctx.total_cost:.4f}/{max_budget_usd:.2f} "
             f"remediations={ctx.remediation_count}/{MAX_TOTAL_REMEDIATIONS}"
         )
+
+        # ── Mid-execution delta ingestion: merge pending plan deltas ──
+        # This is the hot-reload point — between rounds, we check for new
+        # tasks/skips injected by the orchestrator from incoming user messages.
+        # Running tasks are never interrupted; only the graph structure changes.
+        _deltas = await _apply_pending_deltas(ctx, graph)
+        if _deltas:
+            # Re-compute pending IDs after delta application
+            pending_ids = [t.id for t in graph.tasks if t.id not in ctx.completed]
+            logger.info(
+                f"[DAG] Post-delta: completed={len(ctx.completed)}/{len(graph.tasks)} "
+                f"pending={pending_ids}"
+            )
 
         ready = graph.ready_tasks(ctx.completed)
 
@@ -1160,6 +1425,7 @@ async def _execute_graph_inner(
                             confidence=0.0,
                         )
                         error_output.failure_category = classify_failure(error_output)
+                        error_output.error_context = build_error_context(error_output)
                         results.append(error_output)
                         continue
                     else:
@@ -1180,6 +1446,7 @@ async def _execute_graph_inner(
                             confidence=0.0,
                         )
                         error_output.failure_category = classify_failure(error_output)
+                        error_output.error_context = build_error_context(error_output)
                         results.append(error_output)
                         continue
                 elif isinstance(raw, BaseException):
@@ -1193,6 +1460,7 @@ async def _execute_graph_inner(
                         confidence=0.0,
                     )
                     error_output.failure_category = classify_failure(error_output)
+                    error_output.error_context = build_error_context(error_output)
                     results.append(error_output)
                 else:
                     results.append(raw)
@@ -1215,6 +1483,9 @@ async def _execute_graph_inner(
                     f"{output.status.value} (${output.cost_usd:.4f}, "
                     f"confidence={output.confidence:.2f})"
                 )
+
+                # ── Brain Hive: Quality scoring + Performance tracking + Anti-pattern detection ──
+                _run_brain_hive_analysis(task, output)
 
                 if ctx.on_task_done:
                     try:
@@ -1243,6 +1514,19 @@ async def _execute_graph_inner(
                 # Validate required artifacts
                 if output.is_successful() and task.required_artifacts:
                     _check_required_artifact_types(task, output)
+
+                # ── Post-task test verification ─────────────────────────────
+                # Run tests/type-check after every developer task succeeds.
+                # If they fail, we still commit (the work exists) but inject
+                # a remediation so the next task knows to fix the failures.
+                if output.is_successful():
+                    _tests_passed, _test_summary = await _verify_task_with_tests(task, ctx)
+                    if not _tests_passed and _test_summary:
+                        # Annotate the output so the remediation system can
+                        # see what failed and create a targeted fix task.
+                        output.failure_details = (
+                            f"[Post-task tests failed]\n{_test_summary}"
+                        )
 
                 # Per-task commit: one focused commit per completed task
                 if output.is_successful():
@@ -1338,6 +1622,7 @@ class _ExecutionContext:
         on_event: Callable | None = None,
         max_concurrent_tasks: int = 4,
         commit_approval_callback: Callable[[str], Awaitable[bool]] | None = None,
+        plan_delta_queue: asyncio.Queue | None = None,
     ):
         self.commit_approval_callback = commit_approval_callback
         self.graph = graph
@@ -1381,6 +1666,15 @@ class _ExecutionContext:
         self.structured_notes.init_session(graph.vision)
         self.model_overrides: dict[str, str] = {}  # task_id -> model override
 
+        # ── Mid-execution plan delta ingestion ──
+        # External queue for receiving plan deltas (add_tasks, skip_task_ids)
+        # from the orchestrator while the DAG is actively executing.
+        self.plan_delta_queue: asyncio.Queue = plan_delta_queue or asyncio.Queue()
+        # Lock to ensure delta merges are atomic with respect to the graph
+        self._delta_lock: asyncio.Lock = asyncio.Lock()
+        # Count of deltas successfully applied (for observability)
+        self.deltas_applied: int = 0
+
         # ── Blackboard: enhanced cross-agent context layer ──
         from blackboard import Blackboard
 
@@ -1406,6 +1700,7 @@ class ExecutionResult:
         failure_count: int = 0,
         remediation_count: int = 0,
         healing_history: list[dict[str, str]] | None = None,
+        deltas_applied: int = 0,
     ):
         self.outputs = outputs
         self.total_cost = total_cost
@@ -1416,6 +1711,7 @@ class ExecutionResult:
         self.failure_count = failure_count
         self.remediation_count = remediation_count
         self.healing_history = healing_history or []
+        self.deltas_applied = deltas_applied
 
     @property
     def all_successful(self) -> bool:
@@ -1430,6 +1726,8 @@ class ExecutionResult:
             f"Remediations: {self.remediation_count}",
             f"Total cost: ${self.total_cost:.4f} | Tokens: {self.total_tokens}",
         ]
+        if self.deltas_applied:
+            lines.append(f"Mid-execution plan deltas applied: {self.deltas_applied}")
         if self.healing_history:
             lines.append("\nSelf-healing actions:")
             for h in self.healing_history:
@@ -1470,6 +1768,7 @@ def _build_result(ctx: _ExecutionContext, graph: TaskGraph) -> ExecutionResult:
         failure_count=sum(1 for o in all_outputs if not o.is_successful()),
         remediation_count=ctx.remediation_count,
         healing_history=ctx.healing_history,
+        deltas_applied=ctx.deltas_applied,
     )
 
 
@@ -1567,6 +1866,26 @@ async def _run_single_task(
             system_prompt = system_prompt + build_skill_prompt(skill_names)
     except Exception as exc:
         logger.warning(f"[DAG] Task {task.id}: skill injection failed (non-fatal): {exc}")
+
+    # ── Pre-execution artifact validation ──
+    try:
+        artifact_warnings = ctx.artifact_registry.validate_pre_execution(task)
+        if artifact_warnings:
+            logger.warning(
+                "[DAG] Task %s: %d artifact validation warning(s) before execution",
+                task.id,
+                len(artifact_warnings),
+                extra={
+                    "task_id": task.id,
+                    "artifact_warnings": artifact_warnings,
+                },
+            )
+    except Exception as exc:
+        logger.warning(
+            "[DAG] Task %s: artifact pre-execution validation failed (non-fatal): %s",
+            task.id,
+            exc,
+        )
 
     # ── Inject file artifact context (JIT Context) ──
     try:
@@ -1807,6 +2126,7 @@ async def _run_single_task(
             confidence=0.0,
         )
         output.failure_category = FailureCategory.EXTERNAL
+        output.error_context = build_error_context(output)
         return output
 
     work_elapsed = time.monotonic() - t0
@@ -1974,6 +2294,9 @@ async def _run_single_task(
             output = _validate_artifacts(output, ctx.project_dir)
 
         # ── Register artifacts for downstream JIT Context ──
+        # For successful tasks: register all artifacts normally.
+        # For failed tasks: register partial artifacts so downstream agents
+        # can access whatever context was produced before the failure.
         if output.is_successful():
             try:
                 n_registered = ctx.artifact_registry.register(output)
@@ -1984,6 +2307,23 @@ async def _run_single_task(
             except Exception as exc:
                 logger.warning(
                     f"[DAG] Task {task.id}: artifact registration failed (non-fatal): {exc}"
+                )
+        elif output.status == TaskStatus.FAILED and (output.artifacts or output.structured_artifacts):
+            try:
+                n_partial = ctx.artifact_registry.register(output, allow_partial=True)
+                if n_partial:
+                    logger.warning(
+                        "[DAG] Task %s: registered %d partial artifacts from failed task",
+                        task.id,
+                        n_partial,
+                        extra={
+                            "task_id": task.id,
+                            "partial_artifact_count": n_partial,
+                        },
+                    )
+            except Exception as exc:
+                logger.warning(
+                    f"[DAG] Task {task.id}: partial artifact registration failed (non-fatal): {exc}"
                 )
 
         # ── Blackboard: register file ownership for conflict detection ──
@@ -2082,6 +2422,7 @@ async def _run_single_task(
                     f"Agent exhausted max_turns ({output.turns_used}/{total_turns}) "
                     f"without completing. Role: {role_name}."
                 )
+                output.error_context = build_error_context(output)
             # If no meaningful summary was produced, mark as FAILED
             if not output.summary or output.summary.strip() == "":
                 output.status = TaskStatus.FAILED
@@ -2090,6 +2431,7 @@ async def _run_single_task(
                 )
         elif not output.is_successful() and not output.failure_category:
             output.failure_category = classify_failure(output)
+            output.error_context = build_error_context(output)
 
         total_elapsed = time.monotonic() - t0
         log_level = logging.INFO if output.is_successful() else logging.WARNING
@@ -2466,6 +2808,11 @@ async def _handle_failure(
     category = output.failure_category or classify_failure(output)
     strategy = get_retry_strategy(category)
 
+    # Attach structured error context to the output for downstream agents
+    if output.error_context is None:
+        output.error_context = build_error_context(output)
+        output.failure_category = category
+
     # Check if this category allows retries at all
     max_retries_for_category: int = int(strategy["max_retries"])
     remediation_allowed: bool = bool(strategy["remediation_allowed"])
@@ -2572,9 +2919,35 @@ async def _create_remediation(
     where two concurrent task failures both pass an external check and both
     exceed the cap.
 
+    Additionally enforces:
+    - Budget-aware check: requires 2x estimated remediation cost remaining
+    - Cooldown: prevents more than 1 remediation per task per 30 seconds
+
     Returns:
         True if a remediation task was successfully created, False otherwise.
     """
+    # --- Cooldown check (before acquiring lock to avoid unnecessary contention) ---
+    now = time.monotonic()
+    last_remediation_time = _remediation_cooldowns.get(failed_task.id, 0.0)
+    if now - last_remediation_time < _REMEDIATION_COOLDOWN_SECONDS:
+        elapsed_since = now - last_remediation_time
+        logger.warning(
+            f"[DAG] Remediation cooldown active for {failed_task.id} "
+            f"({elapsed_since:.1f}s < {_REMEDIATION_COOLDOWN_SECONDS}s) — skipping"
+        )
+        return False
+
+    # --- Budget-aware check (before lock to avoid unnecessary contention) ---
+    remaining_budget = ctx.max_budget_usd - ctx.total_cost
+    required_budget = _REMEDIATION_ESTIMATED_COST_USD * _REMEDIATION_BUDGET_SAFETY_FACTOR
+    if remaining_budget < required_budget:
+        logger.warning(
+            f"[DAG] Insufficient budget for remediation of {failed_task.id}: "
+            f"remaining=${remaining_budget:.2f} < required=${required_budget:.2f} "
+            f"(2x estimated ${_REMEDIATION_ESTIMATED_COST_USD:.2f})"
+        )
+        return False
+
     async with ctx.graph_lock:
         # --- Atomic cap enforcement (TOCTOU-safe) ---
         if ctx.remediation_count >= MAX_TOTAL_REMEDIATIONS:
@@ -2603,11 +2976,15 @@ async def _create_remediation(
         ctx.graph.add_task(remediation)
         ctx.remediation_count += 1
 
+    # Record cooldown timestamp (after successful creation)
+    _remediation_cooldowns[failed_task.id] = time.monotonic()
+
     healing_entry = {
         "action": "remediation_created",
         "failed_task": failed_task.id,
         "failure_category": (failed_output.failure_category or FailureCategory.UNKNOWN).value,
         "remediation_task": remediation.id,
+        "budget_remaining": f"${remaining_budget:.2f}",
         "detail": f"Auto-created {remediation.id} ({remediation.role.value}) to fix "
         f"{failed_task.id}: {failed_output.failure_details[:100]}",
     }

@@ -537,7 +537,21 @@ GRACEFUL_STOP_TIMEOUT: float = 10.0  # Max wait for manager.stop() on shutdown
 POLL_RETRY_DELAY: float = 2.0  # Delay between poll retries in isolated queries
 GIT_DIFF_TIMEOUT: float = 10.0  # Timeout for git diff subprocess
 EVENT_QUEUE_TIMEOUT: float = 5.0  # Timeout for event queue get() operations
+EVENTBUS_MAX_BACKLOG_SIZE: int = _get("EVENTBUS_MAX_BACKLOG_SIZE", "10000", int)  # Max write queue
+EVENTBUS_FLUSH_TIMEOUT: float = _get("EVENTBUS_FLUSH_TIMEOUT", "30.0", float)  # Flush deadline (s)
 PYTEST_TIMEOUT: int = 30  # Timeout flag for pytest runs
+
+# ── Observability ──────────────────────────────────────────────────
+# Structured logging format: "text" for human-readable, "json" for ELK/Datadog
+LOG_FORMAT: str = _get("LOG_FORMAT", "text", str).strip().lower()
+LOG_LEVEL: str = _get("LOG_LEVEL", "INFO", str).strip().upper()
+
+# Fallback event file rotation settings
+FALLBACK_MAX_FILES: int = _get("FALLBACK_MAX_FILES", "10", int)
+FALLBACK_MAX_AGE_HOURS: int = _get("FALLBACK_MAX_AGE_HOURS", "72", int)
+
+# Correlation ID header name for distributed tracing
+CORRELATION_ID_HEADER: str = _get("CORRELATION_ID_HEADER", "X-Correlation-ID", str)
 
 # ── Agent timeout helper ─────────────────────────────────────────────
 
