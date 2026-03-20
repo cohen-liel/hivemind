@@ -390,6 +390,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
             const dx = line.to.x - line.from.x;
             const dy = line.to.y - line.from.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 0.01) return null; // guard against division by zero
             const ux = dx / dist;
             const uy = dy / dist;
             // Shorten line to not overlap with node circles

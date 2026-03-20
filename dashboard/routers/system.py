@@ -270,7 +270,6 @@ async def persist_settings(request: Request):
     NUMERIC_BOUNDS = {
         "max_budget_usd": (0.1, 500.0),
         "max_turns_per_cycle": (1, 500),
-        "max_task_budget_usd": (0.1, 100.0),
     }
     for key, (lo, hi) in NUMERIC_BOUNDS.items():
         if key in data and isinstance(data[key], int | float):

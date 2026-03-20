@@ -28,6 +28,43 @@ async def verify_access_code(request: Request):
     _device_auth = _get_device_auth()
 
     body = await request.json()
+
+    # --- Legacy API key authentication ---
+    # The frontend 'API Key' login mode sends {api_key: "..."}.
+    # Verify it against DASHBOARD_API_KEY and issue a device token.
+    incoming_api_key = body.get("api_key", "").strip()
+    if incoming_api_key:
+        import hmac as _hmac
+
+        _raw_api_key = os.getenv("DASHBOARD_API_KEY", "")
+        if not _raw_api_key:
+            return _problem(400, "API key authentication is not configured. Set DASHBOARD_API_KEY.")
+        if not _hmac.compare_digest(incoming_api_key, _raw_api_key):
+            return _problem(401, "Invalid API key")
+
+        # API key is valid — use the access code flow internally to issue
+        # a proper device token registered in the DB.
+        ip = request.client.host if request.client else "unknown"
+        ua = request.headers.get("user-agent", "")
+        current_code = _device_auth.get_current_code()
+        device_token = _device_auth.verify_access_code(current_code, ip, ua)
+        if device_token is None:
+            return _problem(500, "Failed to issue device token")
+
+        response = JSONResponse(
+            {"ok": True, "message": "Authenticated via API key", "device_token": device_token}
+        )
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=device_token,
+            max_age=365 * 24 * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+        )
+        return response
+
+    # --- Device auth: access code + optional password ---
     code = body.get("code", "").strip()
     if not code:
         return _problem(400, "Access code is required")
