@@ -51,6 +51,19 @@ async def readiness():
     return {"status": "ok"}
 
 
+@router.get("/api/health/db")
+async def db_health_check():
+    """Database-specific health check — pool status, WAL info, connection metrics.
+
+    Lightweight endpoint suitable for monitoring dashboards and alerting.
+    """
+    from src.db.database import get_db_health
+
+    health = await get_db_health()
+    status_code = 200 if health.get("status") == "ok" else 503
+    return JSONResponse(health, status_code=status_code)
+
+
 @router.get("/api/health")
 async def health_check():
     """Enhanced health check — DB, CLI binary, disk space, active sessions, uptime, and memory."""
@@ -290,6 +303,66 @@ async def persist_settings(request: Request):
     existing.update(data)
     overrides_path.write_text(json_mod.dumps(existing, indent=2))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Watchdog test health endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/health/tests")
+async def test_health():
+    """Return latest test run results and scheduler status."""
+    from src.api.health import TestHealthResponse
+    from src.watchdog.test_runner import watchdog_runner
+
+    runner = watchdog_runner
+    last = runner.last_run
+    overall = "unknown"
+    if last is not None:
+        overall = "healthy" if last.status == "passed" else "failing"
+
+    resp = TestHealthResponse(
+        status=overall,
+        last_run=last,
+        recent_runs=runner.recent_runs,
+        scheduler_active=runner.scheduler_active,
+        scheduler_interval_seconds=runner.interval,
+        is_running=runner.is_running,
+    )
+    return resp.model_dump()
+
+
+@router.post("/api/health/tests/run", status_code=202)
+async def trigger_test_run():
+    """Trigger an async test run. Returns immediately with a run_id."""
+    import asyncio as _asyncio
+
+    from src.api.health import TestRunTriggerResponse
+    from src.watchdog.test_runner import watchdog_runner
+
+    if watchdog_runner.is_running:
+        return JSONResponse(
+            {"error": "A test run is already in progress"},
+            status_code=409,
+        )
+
+    import uuid as _uuid
+
+    run_id = _uuid.uuid4().hex[:12]
+
+    async def _run() -> None:
+        try:
+            await watchdog_runner.run_all(trigger="manual")
+        except Exception as exc:
+            logger.error("On-demand test run failed: %s", exc, exc_info=True)
+
+    _asyncio.create_task(_run())
+
+    return JSONResponse(
+        TestRunTriggerResponse(run_id=run_id, message="Test run started").model_dump(),
+        status_code=202,
+    )
 
 
 @router.get("/api/browse-dirs")

@@ -5,6 +5,9 @@ This module provides:
 - ``get_session_factory()``– returns an ``AsyncSessionmaker`` bound to the engine.
 - ``get_db()``             – async context manager / FastAPI dependency for DB sessions.
 - ``init_db()``            – creates all tables (dev/testing only; prod uses Alembic).
+- ``start_wal_checkpoint_task()`` – periodic SQLite WAL checkpointing (background).
+- ``stop_wal_checkpoint_task()``  – cancel the WAL checkpoint background task.
+- ``get_db_health()``      – connection pool status and database metrics.
 
 DATABASE_URL resolution order:
   1. ``DATABASE_URL`` env var — if set, used verbatim (with driver auto-upgrade).
@@ -22,8 +25,12 @@ Both SQLite and PostgreSQL are fully supported:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text
@@ -48,6 +55,17 @@ _log = logging.getLogger(__name__)
 # Cached singletons — created once per process.
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+# WAL checkpoint background task handle.
+_wal_checkpoint_task: asyncio.Task | None = None
+
+# WAL checkpoint configuration (overridable via env vars).
+WAL_CHECKPOINT_INTERVAL_SECONDS: int = int(
+    os.environ.get("HIVEMIND_WAL_CHECKPOINT_INTERVAL", "300")
+)
+WAL_CHECKPOINT_THRESHOLD_PAGES: int = int(
+    os.environ.get("HIVEMIND_WAL_CHECKPOINT_THRESHOLD", "1000")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +326,220 @@ async def close_engine() -> None:
     block) to ensure clean connection release.
     """
     global _engine, _session_factory
+    await stop_wal_checkpoint_task()
     if _engine is not None:
         await _engine.dispose()
         _engine = None
         _session_factory = None
+
+
+# ---------------------------------------------------------------------------
+# SQLite WAL checkpoint management
+# ---------------------------------------------------------------------------
+
+
+async def _wal_checkpoint_once(engine: AsyncEngine) -> dict:
+    """Run a PRAGMA wal_checkpoint(PASSIVE) and return the result.
+
+    PASSIVE mode checkpoints as many WAL frames as possible without blocking
+    concurrent readers/writers — safe for production use.
+
+    Returns a dict with checkpoint results or error info.
+    """
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
+            row = result.fetchone()
+            if row:
+                return {
+                    "busy": row[0],
+                    "wal_pages_total": row[1],
+                    "wal_pages_checkpointed": row[2],
+                }
+            return {"status": "ok", "detail": "no rows returned"}
+    except Exception as exc:
+        _log.warning("WAL checkpoint failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
+
+
+async def _wal_checkpoint_loop(engine: AsyncEngine) -> None:
+    """Background loop that periodically checkpoints the SQLite WAL.
+
+    Only checkpoints if WAL page count exceeds the configured threshold,
+    avoiding unnecessary I/O on idle databases.
+    """
+    _log.info(
+        "WAL checkpoint task started (interval=%ds, threshold=%d pages)",
+        WAL_CHECKPOINT_INTERVAL_SECONDS,
+        WAL_CHECKPOINT_THRESHOLD_PAGES,
+    )
+    while True:
+        try:
+            await asyncio.sleep(WAL_CHECKPOINT_INTERVAL_SECONDS)
+            # Check WAL size before checkpointing.
+            async with engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
+                row = result.fetchone()
+                if row and row[1] >= WAL_CHECKPOINT_THRESHOLD_PAGES:
+                    _log.info(
+                        "WAL checkpoint: %d pages (threshold %d), checkpointed %d",
+                        row[1],
+                        WAL_CHECKPOINT_THRESHOLD_PAGES,
+                        row[2],
+                    )
+                elif row:
+                    _log.debug(
+                        "WAL checkpoint skipped: %d pages below threshold %d",
+                        row[1],
+                        WAL_CHECKPOINT_THRESHOLD_PAGES,
+                    )
+        except asyncio.CancelledError:
+            _log.info("WAL checkpoint task cancelled")
+            break
+        except Exception as exc:
+            _log.warning("WAL checkpoint loop error: %s", exc)
+            # Continue running — transient errors should not kill the task.
+
+
+async def start_wal_checkpoint_task() -> None:
+    """Start the periodic WAL checkpoint background task for SQLite engines.
+
+    No-op if the engine is not SQLite or if the task is already running.
+    Should be called after ``init_db()`` during application startup.
+    """
+    global _wal_checkpoint_task
+    if _wal_checkpoint_task is not None:
+        return
+
+    engine = _engine
+    if engine is None:
+        return
+
+    if not _is_sqlite(str(engine.url)) or ":memory:" in str(engine.url):
+        return
+
+    _wal_checkpoint_task = asyncio.create_task(
+        _wal_checkpoint_loop(engine), name="wal-checkpoint"
+    )
+
+
+async def stop_wal_checkpoint_task() -> None:
+    """Cancel the WAL checkpoint background task if running."""
+    global _wal_checkpoint_task
+    if _wal_checkpoint_task is not None:
+        _wal_checkpoint_task.cancel()
+        try:
+            await _wal_checkpoint_task
+        except asyncio.CancelledError:
+            pass
+        _wal_checkpoint_task = None
+
+
+# ---------------------------------------------------------------------------
+# Database health metrics
+# ---------------------------------------------------------------------------
+
+
+def _get_sqlite_db_path(engine: AsyncEngine) -> Path | None:
+    """Extract the filesystem path from a SQLite engine URL."""
+    url_str = str(engine.url)
+    # URL formats: sqlite+aiosqlite:///path or sqlite+aiosqlite:////abs/path
+    if ":memory:" in url_str:
+        return None
+    # Strip scheme — everything after ":///"
+    parts = url_str.split(":///", 1)
+    if len(parts) == 2 and parts[1]:
+        return Path(parts[1])
+    return None
+
+
+async def get_db_health() -> dict:
+    """Return database health metrics for the active engine.
+
+    Returns:
+        dict with keys:
+        - backend: "sqlite" | "postgresql" | "unknown"
+        - status: "ok" | "error"
+        - pool: connection pool status (PostgreSQL only)
+        - wal: WAL checkpoint info (SQLite only)
+        - db_file_size_mb: database file size in MB (SQLite only)
+        - latency_ms: time to execute a simple query
+    """
+    engine = _engine
+    if engine is None:
+        return {"backend": "unknown", "status": "error", "detail": "no engine"}
+
+    url_str = str(engine.url)
+    is_sq = _is_sqlite(url_str)
+    backend = "sqlite" if is_sq else "postgresql"
+
+    result: dict = {"backend": backend, "status": "ok"}
+
+    # Measure query latency with a lightweight probe.
+    t0 = time.monotonic()
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        result["latency_ms"] = round((time.monotonic() - t0) * 1000, 2)
+    except Exception as exc:
+        result["status"] = "error"
+        result["latency_ms"] = round((time.monotonic() - t0) * 1000, 2)
+        result["detail"] = str(exc)
+        return result
+
+    if is_sq:
+        # SQLite-specific metrics.
+        db_path = _get_sqlite_db_path(engine)
+        if db_path and db_path.exists():
+            result["db_file_size_mb"] = round(db_path.stat().st_size / (1024 * 1024), 2)
+            # Check for WAL file size too.
+            wal_path = db_path.with_suffix(db_path.suffix + "-wal")
+            if wal_path.exists():
+                result["wal_file_size_mb"] = round(
+                    wal_path.stat().st_size / (1024 * 1024), 2
+                )
+
+        # WAL page count via a passive checkpoint probe (read-only, no blocking).
+        try:
+            async with engine.connect() as conn:
+                wal_result = await conn.execute(text("PRAGMA wal_checkpoint(PASSIVE)"))
+                row = wal_result.fetchone()
+                if row:
+                    result["wal"] = {
+                        "busy": row[0],
+                        "pages_total": row[1],
+                        "pages_checkpointed": row[2],
+                    }
+        except Exception as exc:
+            result["wal"] = {"status": "error", "detail": str(exc)}
+
+        result["checkpoint_task_running"] = _wal_checkpoint_task is not None and not _wal_checkpoint_task.done()
+        result["checkpoint_interval_seconds"] = WAL_CHECKPOINT_INTERVAL_SECONDS
+        result["checkpoint_threshold_pages"] = WAL_CHECKPOINT_THRESHOLD_PAGES
+
+    else:
+        # PostgreSQL pool metrics.
+        pool = engine.pool
+        result["pool"] = {
+            "size": pool.size(),
+            "checked_in": pool.checkedin(),
+            "checked_out": pool.checkedout(),
+            "overflow": pool.overflow(),
+            "pool_pre_ping": True,
+        }
+        # Active query count via pg_stat_activity (lightweight).
+        try:
+            async with engine.connect() as conn:
+                row = (
+                    await conn.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE state = 'active' AND pid != pg_backend_pid()"
+                        )
+                    )
+                ).scalar()
+                result["active_queries"] = row or 0
+        except Exception as exc:
+            result["active_queries_error"] = str(exc)
+
+    return result
