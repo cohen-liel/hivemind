@@ -1886,13 +1886,6 @@ class ClaudeSDKManager:
                 backoff = 2
                 logger.warning(f"Unexpected category {category.value}, retrying in {backoff}s")
 
-            # For timeouts, modify the prompt to encourage efficiency
-            if "timeout" in response.error_message.lower() and not is_retry:
-                current_prompt = (
-                    "[SYSTEM: Previous attempt timed out. Please complete the task efficiently. "
-                    "Focus on the most important parts first.]\n\n" + prompt
-                )
-
             await asyncio.sleep(backoff)
 
         # All retries exhausted

@@ -465,7 +465,28 @@ async def run():
         logger.info("Graceful shutdown: stopping heartbeats...")
         await event_bus.stop_all_heartbeats()
 
-        # 3. Stop running orchestrators gracefully
+        # 3. Save orchestrator states BEFORE stopping them
+        #    (stop() sets is_running=False, so we must save while still True)
+        logger.info("Graceful shutdown: saving orchestrator states...")
+        for user_id, project_id, manager in await state.get_all_managers_safe():
+            if manager.is_running and state.session_mgr:
+                try:
+                    await state.session_mgr.save_orchestrator_state(
+                        project_id=project_id,
+                        user_id=user_id,
+                        status="interrupted",
+                        current_loop=getattr(manager, "_current_loop", 0),
+                        turn_count=manager.turn_count,
+                        total_cost_usd=manager.total_cost_usd,
+                        shared_context=getattr(manager, "shared_context", []),
+                        agent_states=getattr(manager, "agent_states", {}),
+                        last_user_message=getattr(manager, "_last_user_message", ""),
+                    )
+                    logger.info(f"  Saved state for {project_id}")
+                except Exception as e:
+                    logger.error(f"  Failed to save state for {project_id}: {e}", exc_info=True)
+
+        # 4. Stop running orchestrators gracefully (AFTER state is saved)
         logger.info("Graceful shutdown: stopping active orchestrators...")
         for _user_id, project_id, manager in await state.get_all_managers_safe():
             if manager.is_running:
@@ -478,27 +499,6 @@ async def run():
                     logger.error(
                         f"  Error stopping orchestrator for {project_id}: {e}", exc_info=True
                     )
-
-        # 4. Save orchestrator states BEFORE stopping EventBus
-        #    (save_orchestrator_state writes to DB, not EventBus)
-        logger.info("Graceful shutdown: saving orchestrator states...")
-        for user_id, project_id, manager in await state.get_all_managers_safe():
-            if manager.is_running and state.session_mgr:
-                try:
-                    await state.session_mgr.save_orchestrator_state(
-                        project_id=project_id,
-                        user_id=user_id,
-                        status="running",
-                        current_loop=getattr(manager, "_current_loop", 0),
-                        turn_count=manager.turn_count,
-                        total_cost_usd=manager.total_cost_usd,
-                        shared_context=getattr(manager, "shared_context", []),
-                        agent_states=getattr(manager, "agent_states", {}),
-                        last_user_message=getattr(manager, "_last_user_message", ""),
-                    )
-                    logger.info(f"  Saved state for {project_id}")
-                except Exception as e:
-                    logger.error(f"  Failed to save state for {project_id}: {e}", exc_info=True)
 
         # 5. Stop EventBus writer AFTER state is saved
         #    (flushes any pending activity events to DB)

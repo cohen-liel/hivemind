@@ -1533,6 +1533,11 @@ class OrchestratorManager:
             # Reset budget warning flag for new DAG session
             self._budget_warning_sent = False
 
+            # Reset session state (mirrors legacy path resets)
+            self.shared_context = []
+            self._completed_rounds = []
+            self._agents_used = set()
+
             # ── Step 0: Load project context ──
             self.agent_states["orchestrator"] = {
                 "state": "working",
