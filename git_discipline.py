@@ -23,6 +23,14 @@ _SENSITIVE_PATTERNS: tuple[str, ...] = (
     ".env",
     ".env.*",
     "*.pem",
+    # Python compiled files — never belong in any project repo
+    "*.pyc",
+    "*.pyo",
+    "*.pyd",
+    "*$py.class",
+    "__pycache__",
+    "__pycache__/*",
+    "__pycache__/**",
     "*.key",
     "*.p12",
     "*.pfx",
@@ -69,11 +77,13 @@ def _is_sensitive(filepath: str) -> bool:
     from fnmatch import fnmatch
 
     name = Path(filepath).name
-    # Block anything inside .hivemind/, plans/, or tasks/ directories entirely
+    # Block anything inside .hivemind/, plans/, tasks/, or __pycache__/ directories entirely
     normalized = filepath.replace("\\", "/")
     if normalized.startswith(".hivemind/") or normalized == ".hivemind":
         return True
     if normalized.startswith("plans/") or normalized.startswith("tasks/"):
+        return True
+    if "__pycache__" in normalized:
         return True
     # Match against both the full relative path and just the filename
     return any(fnmatch(filepath, pat) or fnmatch(name, pat) for pat in _SENSITIVE_PATTERNS)

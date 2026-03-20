@@ -3,6 +3,8 @@
  *
  * Fires every 45s per agent with real tool info from agent_states.
  * Includes stale warnings after 90s of no updates.
+ * Phase-aware: suppresses stale warnings during recognized orchestrator
+ * startup phases (context loading, architect review, PM planning).
  *
  * M-22 fix: hook owns its own 5-second interval so ProjectView's
  * per-second `now` state is NOT a dependency here. This breaks the
@@ -14,6 +16,54 @@ import type { Dispatch } from 'react';
 import type { AgentState } from '../types';
 import type { ProjectAction } from '../reducers/projectReducer';
 import { nextId } from '../utils/activityHelpers';
+
+/**
+ * Keywords that identify orchestrator startup phases where long silences
+ * are expected (architect review, PM planning, context loading).
+ * Matches against orchestrator.task or orchestrator.current_tool.
+ */
+const STARTUP_PHASE_KEYWORDS: readonly string[] = [
+  'loading project context',
+  'reading memory',
+  'loading context',
+  'architect',
+  'reviewing codebase',
+  'analysing architecture',
+  'pm creating',
+  'planning',
+  'creating task graph',
+  'pm agent',
+  'critic',
+  'reviewing plan',
+  'plan check',
+  'evaluating',
+  'preparing workspace',
+  'loading lessons',
+  'cross-project',
+  'file tree',
+  'manifest',
+];
+
+/**
+ * Returns true if the orchestrator is in a recognized startup phase
+ * where long silences are expected and stall warnings should be suppressed.
+ */
+export function isOrchestratorInStartupPhase(
+  agentStates: Record<string, AgentState>,
+): boolean {
+  const orch = agentStates['orchestrator'];
+  if (!orch || orch.state !== 'working') return false;
+
+  const taskText = (orch.task || orch.current_tool || '').toLowerCase();
+  if (!taskText) return false;
+
+  return STARTUP_PHASE_KEYWORDS.some(kw => taskText.includes(kw));
+}
+
+/** Stale threshold during startup phases (5 min) */
+const STARTUP_STALE_THRESHOLD_MS = 300_000;
+/** Normal stale threshold (90s) */
+const NORMAL_STALE_THRESHOLD_MS = 90_000;
 
 export function useSmartHeartbeat(
   agentStates: Record<string, AgentState>,
@@ -34,6 +84,8 @@ export function useSmartHeartbeat(
       const now = Date.now();
       const currentAgentStates = agentStatesRef.current;
       const currentDispatch = dispatchRef.current;
+
+      const inStartupPhase = isOrchestratorInStartupPhase(currentAgentStates);
 
       const workingAgents = Object.entries(currentAgentStates).filter(
         ([, a]) => a.state === 'working',
@@ -62,12 +114,23 @@ export function useSmartHeartbeat(
             ''
           ).slice(0, 100);
           const lastUpdateAt = agentState.last_update_at;
+
+          // Use a much higher threshold during startup phases to avoid
+          // false "stale" warnings while orchestrator loads context / plans.
+          const staleThreshold = inStartupPhase
+            ? STARTUP_STALE_THRESHOLD_MS
+            : NORMAL_STALE_THRESHOLD_MS;
+
           const isStale = lastUpdateAt
-            ? now - lastUpdateAt > 90_000
-            : runningMs > 90_000;
+            ? now - lastUpdateAt > staleThreshold
+            : runningMs > staleThreshold;
 
           let heartbeatMessage: string;
-          if (isStale && !currentAction) {
+          if (inStartupPhase && agentName === 'orchestrator') {
+            // During startup: show phase-appropriate status, never stale warnings
+            const phaseLabel = agentState.task || agentState.current_tool || 'initializing';
+            heartbeatMessage = `🔄 ${agentName}: ${phaseLabel.slice(0, 80)} (${timeStr})`;
+          } else if (isStale && !currentAction) {
             heartbeatMessage = `⏳ ${agentName}: thinking... (${timeStr})`;
           } else if (isStale) {
             heartbeatMessage = `⏳ ${agentName}: ${currentAction} (${timeStr})`;

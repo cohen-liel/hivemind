@@ -540,6 +540,17 @@ async def build_review_prompt(
 # ── Auto-evaluation ───────────────────────────────────────────────────
 
 
+_DEVELOPER_ROLES: frozenset[str] = frozenset(
+    {
+        "developer",
+        "frontend_developer",
+        "backend_developer",
+        "database_expert",
+        "devops",
+    }
+)
+
+
 async def auto_evaluate(
     mgr, sub_results: dict[str, list[SDKResponse]], round_num: int
 ) -> dict | None:
@@ -548,7 +559,11 @@ async def auto_evaluate(
     Detects if code was changed, runs tests/build if available,
     and optionally auto-retries the developer if tests fail.
     """
-    if "developer" not in sub_results:
+    # Find which developer role was active this round (if any)
+    active_dev_role = next(
+        (role for role in sub_results if role in _DEVELOPER_ROLES), None
+    )
+    if active_dev_role is None:
         return None
 
     file_changes = await detect_file_changes(mgr)
@@ -597,15 +612,15 @@ async def auto_evaluate(
     try:
         from orch_context import accumulate_context
 
-        fix_response = await mgr._query_agent("developer", fix_prompt)
-        await accumulate_context(mgr, "developer", "Auto-fix: resolve test failures", fix_response)
+        fix_response = await mgr._query_agent(active_dev_role, fix_prompt)
+        await accumulate_context(mgr, active_dev_role, "Auto-fix: resolve test failures", fix_response)
 
         retest = await run_project_tests(mgr)
         retest_passed = retest["passed"] if retest else False
         retest_summary = retest["output"][:500] if retest else "(retest failed)"
 
         updated = dict(sub_results)
-        updated.setdefault("developer", []).append(fix_response)
+        updated.setdefault(active_dev_role, []).append(fix_response)
 
         return {
             "summary": (
@@ -661,6 +676,14 @@ async def run_project_tests(mgr) -> dict | None:
                 test_commands.append(["npm", "test", "--", "--watchAll=false"])
         except Exception as _exc:
             logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
+
+        # TypeScript type-check — catches semantic bugs that compile but break at runtime
+        tsconfig = project / "tsconfig.json"
+        frontend_tsconfig = project / "frontend" / "tsconfig.json"
+        if frontend_tsconfig.exists():
+            test_commands.insert(0, ["npx", "tsc", "--noEmit", "--project", "frontend/tsconfig.json", "--pretty", "false"])
+        elif tsconfig.exists():
+            test_commands.insert(0, ["npx", "tsc", "--noEmit", "--pretty", "false"])
 
     if not test_commands:
         logger.debug(
