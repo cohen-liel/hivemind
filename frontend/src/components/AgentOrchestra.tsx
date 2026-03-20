@@ -85,10 +85,10 @@ export const LiveStatusStrip = React.memo(function LiveStatusStrip({
   now,
   lastTicker,
 }: LiveStatusStripProps): React.ReactElement | null {
-  const workingAgents = subAgentStates.filter(a => a.state === 'working');
+  const workingAgents = subAgentStates.filter(a => a.state === 'working' || a.state === 'waiting');
   const doneAgents = subAgentStates.filter(a => a.state === 'done');
   const errorAgents = subAgentStates.filter(a => a.state === 'error');
-  const orchestratorWorking = orchestratorState?.state === 'working' ? orchestratorState : null;
+  const orchestratorWorking = (orchestratorState?.state === 'working' || orchestratorState?.state === 'waiting') ? orchestratorState : null;
   const hasStatus = workingAgents.length > 0 || doneAgents.length > 0 || errorAgents.length > 0 || orchestratorWorking;
 
   if (!hasStatus) return null;
@@ -281,7 +281,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
     const posMap = new Map(nodePositions.map(n => [n.name, n]));
 
     for (const agent of subAgents) {
-      if (agent.delegated_from && (agent.state === 'working' || agent.state === 'done')) {
+      if (agent.delegated_from && (agent.state === 'working' || agent.state === 'waiting' || agent.state === 'done')) {
         const fromPos = posMap.get(agent.delegated_from);
         const toPos = posMap.get(agent.name);
         if (fromPos && toPos) {
@@ -296,7 +296,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
 
     // Also connect done→working pairs by sequence (adjacency in the list)
     const doneNames = new Set(subAgents.filter(a => a.state === 'done').map(a => a.name));
-    const workingNames = subAgents.filter(a => a.state === 'working');
+    const workingNames = subAgents.filter(a => a.state === 'working' || a.state === 'waiting');
     for (const working of workingNames) {
       if (working.delegated_from) continue; // already handled
       // Connect from nearest done agent
@@ -319,7 +319,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
   const MAX_CENTER_CHARS = 32;
 
   const rawStatusText = useMemo((): string => {
-    const working = subAgents.filter(a => a.state === 'working');
+    const working = subAgents.filter(a => a.state === 'working' || a.state === 'waiting');
     const done = subAgents.filter(a => a.state === 'done');
     if (working.length > 0) {
       const primary = working[0];
@@ -496,7 +496,7 @@ const AgentOrchestraViz = React.memo(function AgentOrchestraViz({
           const agent = subAgents.find(a => a.name === node.name);
           if (!agent) return null;
           const accent = getAgentAccent(agent.name);
-          const isActive = agent.state === 'working';
+          const isActive = agent.state === 'working' || agent.state === 'waiting';
           const isDone = agent.state === 'done';
           const isError = agent.state === 'error';
           const isSelected = selectedAgent === agent.name;
@@ -647,7 +647,7 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
   onSelectAgent,
   agentMetrics,
 }: HivemindTabContentProps): React.ReactElement {
-  const workingAgents = agentStateList.filter(a => a.state === 'working' && a.name !== 'orchestrator');
+  const workingAgents = agentStateList.filter(a => (a.state === 'working' || a.state === 'waiting') && a.name !== 'orchestrator');
   const doneAgents = agentStateList.filter(a => a.state === 'done' && a.name !== 'orchestrator');
   const errorAgents = agentStateList.filter(a => a.state === 'error' && a.name !== 'orchestrator');
   const isRunning = projectStatus === 'running';

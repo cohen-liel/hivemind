@@ -3301,7 +3301,7 @@ class OrchestratorManager:
                 # Mark orchestrator as "waiting" while sub-agents work
                 agent_names = list({d.agent for d in delegations})
                 self.agent_states["orchestrator"] = {
-                    "state": "idle",
+                    "state": "waiting",
                     "task": f"waiting for {', '.join(agent_names)}",
                 }
                 await self._emit_event(

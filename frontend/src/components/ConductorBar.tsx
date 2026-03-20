@@ -18,7 +18,7 @@ export default function ConductorBar({
   projectId, projectName, status, connected, orchestrator, progress, agentSummary, lastTicker,
 }: Props) {
   const navigate = useNavigate();
-  const isActive = orchestrator?.state === 'working';
+  const isActive = orchestrator?.state === 'working' || orchestrator?.state === 'waiting';
   const isOrchestratorDone = orchestrator?.state === 'done';
 
   const turnsUsed = progress?.turn ?? 0;
@@ -28,7 +28,9 @@ export default function ConductorBar({
   const counts = { working: 0, done: 0, error: 0, idle: 0 };
   if (agentSummary) {
     for (const a of agentSummary) {
-      if (a.state in counts) counts[a.state as keyof typeof counts]++;
+      // Treat 'waiting' as 'working' for display purposes
+      const displayState = a.state === 'waiting' ? 'working' : a.state;
+      if (displayState in counts) counts[displayState as keyof typeof counts]++;
     }
   }
   const hasAgents = agentSummary && agentSummary.length > 0;

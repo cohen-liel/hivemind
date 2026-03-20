@@ -73,7 +73,7 @@ async def _silence_watchdog_loop(mgr: OrchestratorManager) -> None:
 
             now = time.time()
             for agent_name, state in list(mgr.agent_states.items()):
-                if state.get("state") != "working":
+                if state.get("state") not in ("working", "waiting"):
                     mgr._silence_alerted.discard(agent_name)
                     continue
 
@@ -104,7 +104,7 @@ async def _silence_watchdog_loop(mgr: OrchestratorManager) -> None:
             _working_agents = [
                 (name, st)
                 for name, st in list(mgr.agent_states.items())
-                if st.get("state") == "working"
+                if st.get("state") in ("working", "waiting")
             ]
             if _working_agents and mgr.is_running:
                 _all_critical = all(

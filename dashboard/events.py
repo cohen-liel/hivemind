@@ -485,7 +485,7 @@ class EventBus:
                         if not isinstance(agent_info, dict):
                             continue
                         agent_state = agent_info.get("state", "idle")
-                        if agent_state == "working":
+                        if agent_state in ("working", "waiting"):
                             has_working_agent = True
 
                         # Compute elapsed seconds from duration or started_at
@@ -499,7 +499,7 @@ class EventBus:
                         last_activity_ts = agent_info.get(
                             "last_stream_at",
                             agent_info.get(
-                                "last_activity_ts", now if agent_state == "working" else 0
+                                "last_activity_ts", now if agent_state in ("working", "waiting") else 0
                             ),
                         )
 

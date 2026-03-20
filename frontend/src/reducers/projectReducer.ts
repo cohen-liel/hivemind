@@ -714,12 +714,12 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           })
         : state.activities;
 
-      // Reset working agents to idle, preserve done/error
+      // Reset working/waiting agents to idle, preserve done/error
       const resetAgentStates: Record<string, AgentStateType> = {};
       for (const [k, v] of Object.entries(state.agentStates)) {
         resetAgentStates[k] = {
           ...v,
-          state: v.state === 'working' ? 'idle' : v.state,
+          state: (v.state === 'working' || v.state === 'waiting') ? 'idle' : v.state,
           current_tool: undefined,
         };
       }
@@ -763,12 +763,12 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           lastSequenceId: trackSequence(state, event),
         };
       } else if (event.status === 'idle') {
-        // Task ended — reset stale working states, preserve done/error
+        // Task ended — reset stale working/waiting states, preserve done/error
         const resetAgentStates: Record<string, AgentStateType> = {};
         for (const [k, v] of Object.entries(state.agentStates)) {
           resetAgentStates[k] = {
             ...v,
-            state: v.state === 'working' ? 'idle' : v.state,
+            state: (v.state === 'working' || v.state === 'waiting') ? 'idle' : v.state,
             current_tool: undefined,
           };
         }

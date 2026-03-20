@@ -200,7 +200,7 @@ export interface ActivityEntry {
 
 export interface AgentState {
   name: string;
-  state: 'idle' | 'working' | 'done' | 'error';
+  state: 'idle' | 'working' | 'waiting' | 'done' | 'error';
   task?: string;
   current_tool?: string;
   cost: number;
