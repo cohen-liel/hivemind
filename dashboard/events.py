@@ -499,7 +499,8 @@ class EventBus:
                         last_activity_ts = agent_info.get(
                             "last_stream_at",
                             agent_info.get(
-                                "last_activity_ts", now if agent_state in ("working", "waiting") else 0
+                                "last_activity_ts",
+                                now if agent_state in ("working", "waiting") else 0,
                             ),
                         )
 

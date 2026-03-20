@@ -1527,7 +1527,11 @@ class OrchestratorManager:
                 else:
                     self._effective_budget = MAX_BUDGET_USD
             except Exception as _budget_err:
-                logger.debug("[%s] non-fatal: could not fetch project budget: %s", self.project_id, _budget_err)
+                logger.debug(
+                    "[%s] non-fatal: could not fetch project budget: %s",
+                    self.project_id,
+                    _budget_err,
+                )
                 self._effective_budget = MAX_BUDGET_USD
 
             # Reset budget warning flag for new DAG session

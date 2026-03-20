@@ -155,7 +155,9 @@ async def get_project(project_id: str):
                     tasks = graph_data.get("tasks", []) or []
                     total = len(tasks)
                     if total > 0:
-                        completed = sum(1 for s in statuses.values() if s in ("completed", "skipped"))
+                        completed = sum(
+                            1 for s in statuses.values() if s in ("completed", "skipped")
+                        )
                         failed = sum(1 for s in statuses.values() if s == "failed")
                         running = sum(1 for s in statuses.values() if s == "working")
                         dag_progress = {
@@ -611,7 +613,8 @@ async def create_project(req: CreateProjectRequest):
     if not git_dir.exists():
         try:
             proc = await asyncio.create_subprocess_exec(
-                "git", "init",
+                "git",
+                "init",
                 cwd=project_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -631,7 +634,11 @@ async def create_project(req: CreateProjectRequest):
                 await asyncio.wait_for(p.communicate(), timeout=3.0)
             # Create an initial empty commit so HEAD exists for diff operations
             p = await asyncio.create_subprocess_exec(
-                "git", "commit", "--allow-empty", "-m", "Initial commit",
+                "git",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial commit",
                 cwd=project_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
