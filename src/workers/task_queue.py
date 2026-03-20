@@ -464,6 +464,10 @@ class TaskQueueRegistry:
     def __init__(self) -> None:
         self._queues: dict[str, ProjectTaskQueue] = {}
         self._lock = asyncio.Lock()
+        # Mid-execution DAG delta queues — maps project_id → asyncio.Queue
+        # for injecting plan deltas into a running DAG executor.
+        self._active_dag_delta_queues: dict[str, asyncio.Queue] = {}
+        self._dag_lock = asyncio.Lock()
 
     @classmethod
     def get_registry(cls) -> TaskQueueRegistry:
@@ -509,4 +513,66 @@ class TaskQueueRegistry:
             await queue.stop()
         async with self._lock:
             self._queues.clear()
+        async with self._dag_lock:
+            self._active_dag_delta_queues.clear()
         logger.info("TaskQueueRegistry: all queues stopped")
+
+    # ------------------------------------------------------------------
+    # Mid-execution DAG delta queue management
+    # ------------------------------------------------------------------
+
+    async def register_active_dag(
+        self,
+        project_id: str,
+        delta_queue: asyncio.Queue,
+    ) -> None:
+        """Register a running DAG's delta queue for mid-execution ingestion.
+
+        Called by the orchestrator/task_worker when a DAG execution starts.
+        While registered, new messages for this project can be routed
+        through incremental planning and injected via the delta_queue
+        instead of waiting for the current DAG to finish.
+
+        Args:
+            project_id: Project with an active DAG execution.
+            delta_queue: asyncio.Queue that the DAG executor drains
+                         between rounds for plan deltas.
+        """
+        async with self._dag_lock:
+            self._active_dag_delta_queues[project_id] = delta_queue
+        logger.info(
+            "TaskQueueRegistry: registered active DAG delta queue for project=%s",
+            project_id,
+        )
+
+    async def unregister_active_dag(self, project_id: str) -> None:
+        """Unregister a project's DAG delta queue (DAG execution finished).
+
+        Args:
+            project_id: Project whose DAG execution has completed.
+        """
+        async with self._dag_lock:
+            removed = self._active_dag_delta_queues.pop(project_id, None)
+        if removed:
+            logger.info(
+                "TaskQueueRegistry: unregistered active DAG delta queue for project=%s",
+                project_id,
+            )
+
+    async def has_active_dag(self, project_id: str) -> bool:
+        """Check if a project has an active DAG with a registered delta queue."""
+        async with self._dag_lock:
+            return project_id in self._active_dag_delta_queues
+
+    async def get_active_dag_delta_queue(
+        self,
+        project_id: str,
+    ) -> asyncio.Queue | None:
+        """Return the delta queue for a project's active DAG, or None.
+
+        The caller can push ``{add_tasks: [...], skip_task_ids: [...]}``
+        dicts into this queue; the DAG executor will drain and merge them
+        between execution rounds.
+        """
+        async with self._dag_lock:
+            return self._active_dag_delta_queues.get(project_id)

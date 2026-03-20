@@ -30,6 +30,7 @@
 .planview-step--done      { opacity: 0.6; }
 .planview-step--error     { opacity: 1; }
 .planview-step--cancelled { opacity: 0.45; }
+.planview-step--skipped   { opacity: 0.5; }
 
 /* ── Status icon container — fixed size ── */
 
@@ -178,4 +179,531 @@
   background: rgba(245, 71, 91, 0.08);
   border: 1px solid rgba(245, 71, 91, 0.12);
   color: var(--accent-red);
+}
+
+/* ── Round divider ── */
+
+.planview-round-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 8px 0;
+  padding-left: 40px; /* align past the timeline icon slot */
+}
+
+.planview-round-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+  opacity: 0.5;
+}
+
+.planview-round-divider-label {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+
+/* ── Plan editing: editable card hover ── */
+
+.planview-card--editable {
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.planview-card--editable:hover {
+  background: rgba(99, 140, 255, 0.04);
+  border-color: rgba(99, 140, 255, 0.12);
+}
+
+/* ── Step action buttons (edit/delete) — hidden by default, shown on hover ── */
+
+.planview-step-actions {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.planview-step:hover .planview-step-actions {
+  opacity: 1;
+}
+
+/* Always show on touch devices (no hover) */
+@media (hover: none) {
+  .planview-step-actions {
+    opacity: 1;
+  }
+}
+
+/* ── Icon buttons (edit, delete, close) ── */
+
+.planview-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-dim);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.planview-icon-btn:hover {
+  background: rgba(99, 140, 255, 0.1);
+  border-color: rgba(99, 140, 255, 0.3);
+}
+
+.planview-icon-btn:hover svg {
+  stroke: var(--accent-blue);
+}
+
+.planview-icon-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.planview-icon-btn--danger:hover {
+  background: rgba(245, 71, 91, 0.1);
+  border-color: rgba(245, 71, 91, 0.3);
+}
+
+.planview-icon-btn--danger:hover svg {
+  stroke: var(--accent-red);
+}
+
+/* ── Action buttons (save, cancel, delete confirm) ── */
+
+.planview-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.planview-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.planview-action-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.planview-action-btn--save {
+  background: rgba(99, 140, 255, 0.15);
+  color: var(--accent-blue);
+  border-color: rgba(99, 140, 255, 0.3);
+}
+
+.planview-action-btn--save:hover:not(:disabled) {
+  background: rgba(99, 140, 255, 0.25);
+}
+
+.planview-action-btn--cancel {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border-color: var(--border-dim);
+}
+
+.planview-action-btn--cancel:hover:not(:disabled) {
+  background: rgba(160, 160, 160, 0.1);
+}
+
+.planview-action-btn--delete {
+  background: rgba(245, 71, 91, 0.12);
+  color: var(--accent-red);
+  border-color: rgba(245, 71, 91, 0.25);
+}
+
+.planview-action-btn--delete:hover:not(:disabled) {
+  background: rgba(245, 71, 91, 0.2);
+}
+
+/* ── Edit textarea ── */
+
+.planview-edit-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+}
+
+.planview-edit-textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
+}
+
+.planview-edit-textarea:disabled {
+  opacity: 0.6;
+}
+
+.planview-edit-textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* ── Form labels and inputs ── */
+
+.planview-form-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.planview-form-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  transition: border-color 0.15s ease;
+}
+
+.planview-form-input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(99, 140, 255, 0.15);
+}
+
+.planview-form-input:disabled {
+  opacity: 0.6;
+}
+
+/* ── Dependency chips ── */
+
+.planview-dep-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-dim);
+  color: var(--text-muted);
+}
+
+.planview-dep-chip:hover:not(:disabled) {
+  border-color: rgba(99, 140, 255, 0.3);
+  color: var(--accent-blue);
+}
+
+.planview-dep-chip--selected {
+  background: rgba(99, 140, 255, 0.12);
+  border-color: rgba(99, 140, 255, 0.4);
+  color: var(--accent-blue);
+}
+
+.planview-dep-chip:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.planview-dep-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Add Task button ── */
+
+.planview-add-task-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border-subtle);
+  color: var(--text-muted);
+  width: 100%;
+  justify-content: center;
+}
+
+.planview-add-task-btn:hover {
+  background: rgba(99, 140, 255, 0.06);
+  border-color: rgba(99, 140, 255, 0.3);
+  color: var(--accent-blue);
+  border-style: solid;
+}
+
+.planview-add-task-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+/* ── Artifact flow badges ── */
+
+.planview-artifact-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--artifact-color, var(--text-muted));
+  background: color-mix(in srgb, var(--artifact-color, var(--text-muted)) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--artifact-color, var(--text-muted)) 20%, transparent);
+  transition: all 0.2s ease;
+}
+
+.planview-artifact-badge:hover {
+  background: color-mix(in srgb, var(--artifact-color, var(--text-muted)) 15%, transparent);
+}
+
+/* ── Upstream context toggle/list ── */
+
+.planview-upstream-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  transition: all 0.15s ease;
+}
+
+.planview-upstream-toggle:hover {
+  background: rgba(99, 140, 255, 0.06);
+  border-color: var(--border-dim);
+}
+
+.planview-upstream-toggle:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.planview-upstream-list {
+  margin-top: 4px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  animation: fadeSlideIn 0.15s ease-out;
+}
+
+.planview-upstream-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* ── ETA badge ── */
+
+.planview-eta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.15);
+}
+
+/* ── Remediation badge ── */
+
+.planview-remediation-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--accent-amber);
+  background: rgba(245, 166, 35, 0.08);
+  border: 1px solid rgba(245, 166, 35, 0.15);
+  animation: fadeSlideIn 0.2s ease-out;
+}
+
+.planview-remediation-badge--healed {
+  color: var(--accent-green);
+  background: rgba(61, 214, 140, 0.08);
+  border-color: rgba(61, 214, 140, 0.15);
+}
+
+/* ── Healing banner ── */
+
+.planview-healing-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  background: rgba(245, 166, 35, 0.04);
+  border: 1px solid rgba(245, 166, 35, 0.12);
+  animation: fadeSlideIn 0.3s ease-out;
+}
+
+/* ── Loading skeleton ── */
+
+.planview-loading-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 280px;
+  padding: 16px;
+}
+
+.planview-skeleton-bar {
+  height: 10px;
+  border-radius: 5px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 25%,
+    var(--border-dim) 50%,
+    var(--bg-elevated) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.planview-skeleton-bar--lg { width: 90%; }
+.planview-skeleton-bar--md { width: 70%; }
+.planview-skeleton-bar--sm { width: 45%; }
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Responsive: tighter spacing on mobile ── */
+
+@media (max-width: 480px) {
+  .planview-upstream-list {
+    margin-left: 4px;
+    padding-left: 4px;
+  }
+
+  .planview-healing-banner {
+    padding: 4px 8px;
+    font-size: 9px;
+  }
+
+  .planview-artifact-badge {
+    font-size: 8px;
+    padding: 1px 4px;
+  }
+}
+
+/* ── Extra-narrow: 360px and below ── */
+
+@media (max-width: 380px) {
+  .planview-step {
+    gap: 8px;
+    padding: 8px 0;
+    min-height: 44px;
+  }
+
+  .planview-icon-slot {
+    width: 24px;
+    height: 24px;
+  }
+
+  .planview-card {
+    padding: 8px 10px;
+    border-radius: 10px;
+  }
+
+  .planview-timeline-line {
+    left: 11px;
+  }
+
+  .planview-round-divider {
+    padding-left: 32px;
+  }
+
+  .planview-ticker {
+    font-size: 11px;
+    padding: 3px 10px;
+  }
+
+  .planview-failure {
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+
+  .planview-celebration {
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+
+  .planview-collapse-btn {
+    padding: 5px 10px;
+    font-size: 10px;
+  }
+
+  .planview-eta-badge,
+  .planview-remediation-badge {
+    font-size: 8px;
+    padding: 1px 4px;
+  }
+
+  .planview-add-task-btn {
+    padding: 5px 10px;
+    font-size: 10px;
+  }
+
+  .planview-edit-textarea {
+    font-size: 12px;
+    padding: 6px 8px;
+  }
 }

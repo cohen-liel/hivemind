@@ -34,6 +34,7 @@ from contracts import (
     ArtifactType,
     TaskGraph,
     TaskInput,
+    TaskStatus,
     task_graph_schema,
 )
 from isolated_query import isolated_query  # ← FIX: run PM in isolated event loop
@@ -333,6 +334,328 @@ async def create_task_graph(
         f"PM Agent failed to produce a valid TaskGraph after {max_retries + 1} attempts. "
         f"Last error: {last_error}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Incremental Planning Mode
+# ---------------------------------------------------------------------------
+
+INCREMENTAL_PM_SYSTEM_PROMPT = (
+    "<role>\n"
+    "You are the Project Manager (PM) of a world-class software engineering team.\n"
+    "A plan ALREADY EXISTS for this project. Your job is to produce an INCREMENTAL DELTA\n"
+    "— new tasks to add and existing task IDs to skip — NOT a full replacement plan.\n"
+    "You do NOT read code, do NOT write code, do NOT commit. You ONLY plan.\n"
+    "</role>\n\n" + _build_team_section() + "\n" + build_org_prompt_section() + "\n\n"
+    "<incremental_mode>\n"
+    "You are in INCREMENTAL PLANNING mode. The user has sent a follow-up message\n"
+    "for a project that already has a task graph. You must:\n\n"
+    "1. Review the EXISTING PLAN STATE provided below (all tasks with their statuses)\n"
+    "2. Understand the NEW user message\n"
+    "3. Decide which existing PENDING tasks should be SKIPPED (no longer relevant)\n"
+    "4. Create NEW tasks to add to the plan (to fulfill the new request)\n\n"
+    "RULES:\n"
+    "- Do NOT recreate tasks that already exist — only add NEW ones\n"
+    "- New task IDs MUST NOT collide with existing task IDs\n"
+    "- New tasks MAY depend on existing tasks (completed or pending) via depends_on\n"
+    "- New tasks MAY reference existing tasks via context_from\n"
+    "- Only SKIP tasks that are still PENDING — you cannot skip COMPLETED or RUNNING tasks\n"
+    "- If the new message is purely additive, skip_task_ids can be empty []\n"
+    "- If the new message replaces/supersedes pending work, skip those pending tasks\n"
+    "- Always include a reviewer task if adding code-writing tasks\n"
+    "</incremental_mode>\n\n"
+    "<artifact_system>\n"
+    "Each task specifies required_artifacts — structured outputs the agent MUST produce.\n"
+    "Available types: api_contract, schema, component_map, test_report, security_report,\n"
+    "review_report, architecture, research, deployment, file_manifest\n"
+    "</artifact_system>\n\n"
+    "<output_format>\n"
+    "Think step-by-step in <self_review> tags, then output ONLY a JSON object:\n"
+    "```json\n"
+    "{\n"
+    '  "add_tasks": [\n'
+    "    {\n"
+    '      "id": "task_NNN",\n'
+    '      "role": "backend_developer",\n'
+    '      "goal": "...",\n'
+    '      "constraints": ["Only modify files listed in files_scope"],\n'
+    '      "depends_on": ["task_003"],\n'
+    '      "context_from": ["task_003"],\n'
+    '      "files_scope": ["src/foo.py"],\n'
+    '      "acceptance_criteria": ["..."],\n'
+    '      "required_artifacts": ["file_manifest"]\n'
+    "    }\n"
+    "  ],\n"
+    '  "skip_task_ids": ["task_005"]\n'
+    "}\n"
+    "```\n\n"
+    "The add_tasks array uses the same task schema as a full TaskGraph.\n"
+    "Output ONLY the JSON. No markdown, no explanation. Start with { and end with }.\n"
+    "</output_format>"
+)
+
+
+async def create_incremental_plan(
+    user_message: str,
+    project_id: str,
+    existing_graph: TaskGraph,
+    completed_task_ids: set[str],
+    manifest: str = "",
+    file_tree: str = "",
+    memory_snapshot: str = "",
+    max_retries: int = 2,
+) -> dict:
+    """
+    Query the PM Agent in incremental mode and return a delta.
+
+    Args:
+        user_message: The new user request
+        project_id: Project identifier
+        existing_graph: The current TaskGraph with all tasks
+        completed_task_ids: Set of task IDs that have been completed
+        manifest: Contents of PROJECT_MANIFEST.md
+        file_tree: Current file tree listing
+        memory_snapshot: JSON string of MemorySnapshot
+
+    Returns:
+        dict with keys:
+            add_tasks: list[TaskInput] — new tasks to merge
+            skip_task_ids: list[str] — existing task IDs to mark SKIPPED
+
+    Raises ValueError if the delta cannot be parsed after max_retries.
+    """
+    sdk = state.sdk_client
+    if sdk is None:
+        raise RuntimeError("SDK client not initialized. Call state.initialize() first.")
+
+    prompt = _build_incremental_pm_prompt(
+        user_message, project_id, existing_graph, completed_task_ids,
+        manifest, file_tree, memory_snapshot,
+    )
+
+    from config import get_agent_config
+
+    _pm_cfg = get_agent_config("pm")
+
+    last_error: str = ""
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            logger.warning(f"[PM-Incremental] Retry {attempt}/{max_retries} after parse error: {last_error}")
+            prompt = _build_retry_prompt(prompt, last_error)
+
+        logger.info(
+            f"[PM-Incremental] Attempt {attempt + 1}/{max_retries + 1}: "
+            f"calling SDK via isolated_query (existing_tasks={len(existing_graph.tasks)})"
+        )
+        response = await isolated_query(
+            sdk,
+            prompt=prompt,
+            system_prompt=INCREMENTAL_PM_SYSTEM_PROMPT,
+            cwd=str(Path.cwd()),
+            max_turns=_pm_cfg.turns,
+            max_budget_usd=_pm_cfg.budget,
+            allowed_tools=[],
+            max_retries=1,
+            per_message_timeout=_pm_cfg.timeout,
+        )
+
+        if response.is_error:
+            last_error = response.error_message
+            continue
+
+        delta, error = _parse_incremental_delta(response.text, existing_graph)
+        if delta is not None:
+            add_count = len(delta["add_tasks"])
+            skip_count = len(delta["skip_task_ids"])
+            logger.info(
+                f"[PM-Incremental] ✅ Delta: +{add_count} tasks, "
+                f"~{skip_count} skipped"
+            )
+            return delta
+
+        last_error = error
+
+    raise ValueError(
+        f"PM Agent (incremental) failed to produce a valid delta after {max_retries + 1} attempts. "
+        f"Last error: {last_error}"
+    )
+
+
+def _build_incremental_pm_prompt(
+    user_message: str,
+    project_id: str,
+    existing_graph: TaskGraph,
+    completed_task_ids: set[str],
+    manifest: str,
+    file_tree: str,
+    memory_snapshot: str = "",
+) -> str:
+    """Build the prompt for incremental planning, including existing plan state."""
+    # Build existing plan state summary
+    skipped_ids = existing_graph._skipped_task_ids()
+    plan_state_lines = []
+    # Determine next task ID number for new tasks
+    max_task_num = 0
+    for task in existing_graph.tasks:
+        # Determine status
+        if task.id in completed_task_ids:
+            status = "COMPLETED"
+        elif task.id in skipped_ids:
+            status = "SKIPPED"
+        else:
+            status = "PENDING"
+        deps_str = f" depends_on={task.depends_on}" if task.depends_on else ""
+        files_str = f" files={task.files_scope}" if task.files_scope else ""
+        plan_state_lines.append(
+            f"  - {task.id} [{status}] role={task.role.value}: {task.goal[:120]}{deps_str}{files_str}"
+        )
+        # Track highest task number for suggesting next IDs
+        try:
+            num = int(task.id.replace("task_", ""))
+            max_task_num = max(max_task_num, num)
+        except (ValueError, AttributeError):
+            pass
+
+    plan_state = "\n".join(plan_state_lines)
+
+    parts = [
+        f"<project_id>{html.escape(project_id)}</project_id>",
+        f"<existing_plan>\nVision: {existing_graph.vision}\n\nTasks:\n{plan_state}\n</existing_plan>",
+        f"<next_task_id_hint>Start new task IDs from task_{max_task_num + 1:03d}</next_task_id_hint>",
+        f"<new_user_message>{html.escape(user_message)}</new_user_message>",
+    ]
+
+    if memory_snapshot:
+        parts.append(f"<project_memory>\n{memory_snapshot[:4000]}\n</project_memory>")
+    elif manifest:
+        parts.append(f"<project_manifest>\n{manifest[:3000]}\n</project_manifest>")
+    if file_tree:
+        parts.append(f"<file_tree>\n{file_tree[:3000]}\n</file_tree>")
+
+    parts.append(
+        "\nProduce the incremental delta JSON now. "
+        "Output ONLY the JSON object with add_tasks and skip_task_ids."
+    )
+    return "\n\n".join(parts)
+
+
+def _parse_incremental_delta(
+    raw_text: str,
+    existing_graph: TaskGraph,
+) -> tuple[dict | None, str]:
+    """
+    Parse the PM's incremental delta response.
+    Returns (delta_dict, "") on success or (None, error_message) on failure.
+    """
+    candidates: list[str] = []
+
+    # Try fenced JSON block first
+    for match in _JSON_FENCE_RE.finditer(raw_text):
+        candidates.append(match.group(1).strip())
+
+    # Try raw JSON
+    start = raw_text.find("{")
+    if start != -1:
+        depth = 0
+        for i in range(start, len(raw_text)):
+            if raw_text[i] == "{":
+                depth += 1
+            elif raw_text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(raw_text[start : i + 1])
+                    break
+
+    existing_ids = {t.id for t in existing_graph.tasks}
+    skipped_ids = existing_graph._skipped_task_ids()
+
+    for candidate in candidates:
+        try:
+            if len(candidate) > 500_000:
+                continue
+            data = json.loads(candidate)
+
+            # Validate structure
+            if not isinstance(data.get("add_tasks"), list):
+                # Maybe PM returned a full TaskGraph — try to detect and handle
+                if "tasks" in data and "add_tasks" not in data:
+                    continue  # Not incremental format
+                data.setdefault("add_tasks", [])
+            if not isinstance(data.get("skip_task_ids"), list):
+                data.setdefault("skip_task_ids", [])
+
+            # Parse add_tasks into TaskInput objects
+            add_tasks: list[TaskInput] = []
+            for td in data["add_tasks"]:
+                task = TaskInput(
+                    id=td["id"],
+                    role=AgentRole(td["role"]),
+                    goal=td["goal"],
+                    constraints=td.get("constraints", []),
+                    depends_on=td.get("depends_on", []),
+                    context_from=td.get("context_from", []),
+                    files_scope=td.get("files_scope", []),
+                    acceptance_criteria=td.get("acceptance_criteria", []),
+                    required_artifacts=[
+                        ArtifactType(a) for a in td.get("required_artifacts", ["file_manifest"])
+                    ],
+                )
+                # Validate goal quality
+                if len(task.goal.split()) < 8:
+                    raise ValueError(
+                        f"Task {task.id} goal too vague ({len(task.goal.split())} words): '{task.goal}'"
+                    )
+                add_tasks.append(task)
+
+            # Validate new task IDs don't collide with existing
+            new_ids = {t.id for t in add_tasks}
+            collisions = new_ids & existing_ids
+            if collisions:
+                return None, f"New task IDs collide with existing: {sorted(collisions)}"
+
+            # Validate skip_task_ids refer to existing PENDING tasks only
+            skip_ids = data["skip_task_ids"]
+            for sid in skip_ids:
+                if sid not in existing_ids:
+                    return None, f"skip_task_ids references unknown task '{sid}'"
+                if sid in skipped_ids:
+                    logger.debug(f"[PM-Incremental] Task '{sid}' already skipped, ignoring")
+
+            # Validate depends_on references are valid (existing or new tasks)
+            all_valid_ids = existing_ids | new_ids
+            for task in add_tasks:
+                for dep in task.depends_on:
+                    if dep not in all_valid_ids:
+                        return None, f"Task {task.id} depends on unknown task '{dep}'"
+                for ctx in task.context_from:
+                    if ctx not in all_valid_ids:
+                        return None, f"Task {task.id} context_from references unknown task '{ctx}'"
+
+            # Enforce artifact requirements on new tasks
+            for task in add_tasks:
+                defaults = _ROLE_DEFAULT_ARTIFACTS.get(task.role, [])
+                if not task.required_artifacts and defaults:
+                    task.required_artifacts = list(defaults)
+                if task.role in (
+                    AgentRole.BACKEND_DEVELOPER,
+                    AgentRole.FRONTEND_DEVELOPER,
+                    AgentRole.DATABASE_EXPERT,
+                    AgentRole.DEVOPS,
+                    AgentRole.DEVELOPER,
+                ):
+                    if ArtifactType.FILE_MANIFEST not in task.required_artifacts:
+                        task.required_artifacts.append(ArtifactType.FILE_MANIFEST)
+
+            return {
+                "add_tasks": add_tasks,
+                "skip_task_ids": skip_ids,
+            }, ""
+
+        except Exception as exc:
+            logger.debug(f"[PM-Incremental] Parse attempt failed: {exc}")
+            continue
+
+    return None, f"No valid incremental delta JSON found in PM response (length={len(raw_text)})"
 
 
 # ---------------------------------------------------------------------------

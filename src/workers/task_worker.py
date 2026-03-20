@@ -192,6 +192,7 @@ async def process_message_task(
     project_dir: str,
     user_id: int,
     mode: str | None = None,
+    plan_delta_queue: asyncio.Queue | None = None,
 ) -> None:
     """Process a single user message task in complete isolation.
 
@@ -218,6 +219,10 @@ async def process_message_task(
         project_dir:  Filesystem path to the project directory.
         user_id:      Owner user ID.
         mode:         Execution mode — ``"autonomous"`` or ``"interactive"``.
+        plan_delta_queue: Optional asyncio.Queue for mid-execution plan deltas.
+                      When provided, registered with TaskQueueRegistry so
+                      new messages for this project can be injected into
+                      the running DAG instead of waiting for completion.
 
     Raises:
         Re-raises any exception so the task queue can mark the record
@@ -320,6 +325,25 @@ async def process_message_task(
     # 5. Run agent — start_session() launches internal asyncio tasks and
     #    returns quickly; we wait for on_final via the completion_future.
     # ------------------------------------------------------------------
+    # Register the delta queue so new messages can be injected mid-execution
+    _delta_queue_registered = False
+    if plan_delta_queue is not None:
+        try:
+            from src.workers.task_queue import TaskQueueRegistry
+            _registry = TaskQueueRegistry.get_registry()
+            await _registry.register_active_dag(project_id, plan_delta_queue)
+            _delta_queue_registered = True
+            logger.debug(
+                "task_worker[%s]: registered plan_delta_queue for mid-execution ingestion",
+                task_id,
+            )
+        except Exception as reg_err:
+            logger.warning(
+                "task_worker[%s]: failed to register delta queue (non-fatal): %s",
+                task_id,
+                reg_err,
+            )
+
     final_text: str = ""
     try:
         await manager.start_session(message)
@@ -340,9 +364,6 @@ async def process_message_task(
     except TimeoutError:
         err = f"Agent timed out after {_AGENT_TIMEOUT_SECONDS:.0f}s"
         logger.error("task_worker[%s]: %s", task_id, err)
-        # Stop the orchestrator — asyncio.shield prevents wait_for from
-        # cancelling the future, so we must explicitly stop the manager
-        # to clean up running SDK sessions and the DAG executor.
         try:
             await manager.stop()
         except Exception as stop_err:
@@ -374,6 +395,23 @@ async def process_message_task(
             }
         )
         raise
+    finally:
+        # Unregister the delta queue when DAG execution finishes
+        if _delta_queue_registered:
+            try:
+                from src.workers.task_queue import TaskQueueRegistry
+                _registry = TaskQueueRegistry.get_registry()
+                await _registry.unregister_active_dag(project_id)
+                logger.debug(
+                    "task_worker[%s]: unregistered plan_delta_queue",
+                    task_id,
+                )
+            except Exception as unreg_err:
+                logger.warning(
+                    "task_worker[%s]: failed to unregister delta queue (non-fatal): %s",
+                    task_id,
+                    unreg_err,
+                )
 
     # ------------------------------------------------------------------
     # 6. Persist assistant response (under conversation lock)

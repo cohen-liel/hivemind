@@ -186,6 +186,45 @@ class WebSocketEventType:
               "running_graphs": 1,
               "max_concurrent_graphs": 3
             }
+
+    Incremental plan update events (task_004):
+
+    ``PLAN_DELTA``  ← NEW
+        Incremental plan update carrying only added/skipped tasks.
+        Emitted when the PM agent merges new tasks into a running DAG
+        or marks tasks as skipped. Clients apply the delta to their
+        local plan state.
+
+        Payload schema::
+
+            {
+              "type":           "plan_delta",
+              "timestamp":      <float: Unix epoch seconds>,
+              "project_id":     <str: project UUID>,
+              "add_tasks":      <list[dict]: TaskInput dicts to append>,
+              "skip_task_ids":  <list[str]: task IDs to mark SKIPPED>,
+              "reason":         <str: human-readable reason for changes>
+            }
+
+    ``DAG_TASK_UPDATE``  (enhanced)
+        Now supports ``skipped`` as a valid status value alongside
+        ``working``, ``completed``, ``failed``, and ``cancelled``.
+        When status is ``skipped``, an optional ``reason`` field
+        explains why the task was skipped.
+
+        Payload schema::
+
+            {
+              "type":            "dag_task_update",
+              "timestamp":       <float: Unix epoch seconds>,
+              "project_id":      <str: project UUID>,
+              "task_id":         <str: task ID>,
+              "status":          <str: "working"|"completed"|"failed"|"cancelled"|"skipped">,
+              "task_name":       <str: human-readable goal>,
+              "agent":           <str: agent role (optional)>,
+              "failure_reason":  <str: failure details (optional)>,
+              "reason":          <str: skip reason (optional, only for skipped)>
+            }
     """
 
     # ── Standard lifecycle ─────────────────────────────────────────────
@@ -208,6 +247,15 @@ class WebSocketEventType:
     # ── Granular DAG progress (task_005) ──────────────────────────────
     TASK_PROGRESS: str = "task_progress"
     DAG_PROGRESS: str = "dag_progress"
+
+    # ── Incremental plan updates (task_004) ────────────────────────────
+    PLAN_DELTA: str = "plan_delta"
+    DAG_TASK_UPDATE: str = "dag_task_update"
+
+    # ── Real-time chat (task_004 — circles/chat) ─────────────────────
+    CHAT_MESSAGE: str = "chat_message"
+    CHAT_TYPING: str = "chat_typing"
+    CHAT_READ_RECEIPT: str = "chat_read_receipt"
 
 
 def build_task_queued_event(

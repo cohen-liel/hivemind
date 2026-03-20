@@ -110,7 +110,9 @@ function dashboardReducer(state: DashboardState, action: DashboardAction): Dashb
       return {
         ...state,
         projects: state.projects.map(p =>
-          p.project_id === action.projectId ? { ...p, status: action.status } : p,
+          p.project_id === action.projectId
+            ? { ...p, status: action.status, is_running: action.status === 'running', is_paused: action.status === 'paused' }
+            : p,
         ),
       };
     case 'SET_LIVE_STATE': {
@@ -285,7 +287,12 @@ export default function Dashboard(): React.ReactElement {
         dispatch({ type: 'REMOVE_PROJECT', projectId: pid });
         dispatch({ type: 'CLEAR_LIVE_STATE', projectId: pid });
       } else {
-        dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: event.status as Project['status'] });
+        // Use enriched metadata: if backend says is_running, force 'running'
+        // regardless of the status string (avoids idle flicker during task gaps)
+        const wsAny = event as Record<string, unknown>;
+        const isRunning = wsAny.is_running === true;
+        const effectiveStatus = isRunning ? 'running' : event.status;
+        dispatch({ type: 'SET_PROJECT_STATUS', projectId: pid, status: effectiveStatus as Project['status'] });
         loadData();
       }
     } else if (event.type === 'agent_final') {
@@ -306,6 +313,15 @@ export default function Dashboard(): React.ReactElement {
     }
     return true;
   }), [projects, statusFilter, searchQuery]);
+
+  /** Resolve display status using both the status string and enriched metadata.
+   *  The backend sends is_running + active_task_count on project_status events;
+   *  if is_running is true we always show Running regardless of the status string. */
+  const getEffectiveStatus = useCallback((project: Project): string => {
+    if (project.is_running) return 'running';
+    if (project.is_paused) return 'paused';
+    return project.status;
+  }, []);
 
   const statusConfig = useMemo(() => (status: string): {
     color: string;
@@ -343,7 +359,25 @@ export default function Dashboard(): React.ReactElement {
           label: 'Stopped',
           cardClass: '',
         };
-      default:
+      case 'completed':
+        return {
+          color: 'var(--accent-green)',
+          bg: 'rgba(61,214,140,0.08)',
+          glow: 'var(--glow-green)',
+          pulse: false,
+          label: 'Completed',
+          cardClass: '',
+        };
+      case 'error':
+        return {
+          color: 'var(--accent-red)',
+          bg: 'rgba(245,71,91,0.08)',
+          glow: 'var(--glow-red)',
+          pulse: false,
+          label: 'Error',
+          cardClass: '',
+        };
+      case 'idle':
         return {
           color: 'var(--status-idle-text)',
           bg: 'var(--status-idle-bg)',
@@ -352,10 +386,20 @@ export default function Dashboard(): React.ReactElement {
           label: 'Idle',
           cardClass: '',
         };
+      default:
+        // Unknown statuses default to idle styling but preserve the label
+        return {
+          color: 'var(--status-idle-text)',
+          bg: 'var(--status-idle-bg)',
+          glow: 'transparent',
+          pulse: false,
+          label: status.charAt(0).toUpperCase() + status.slice(1),
+          cardClass: '',
+        };
     }
   }, []);  // statusConfig has no external deps — stable reference
 
-  const runningCount = useMemo(() => projects.filter(p => p.status === 'running').length, [projects]);
+  const runningCount = useMemo(() => projects.filter(p => p.is_running || p.status === 'running').length, [projects]);
 
   // Loading state
   if (loading && projects.length === 0) {
@@ -534,7 +578,7 @@ export default function Dashboard(): React.ReactElement {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {filteredProjects.map((project, i) => {
-              const cfg = statusConfig(project.status);
+              const cfg = statusConfig(getEffectiveStatus(project));
               const live = liveStates[project.project_id];
               const subAgents = (project.agents || []).filter(a => a !== 'orchestrator');
               const lastActivity = formatRelativeTime(
@@ -776,26 +820,69 @@ export default function Dashboard(): React.ReactElement {
                       </p>
                     )}
 
-                    {/* Health Warnings */}
-                    {project.diagnostics && project.diagnostics.health_score && project.diagnostics.health_score !== 'healthy' ? (
-                      <div className="flex items-center gap-1.5 mb-3 px-2 py-1.5 rounded-lg text-[10px]"
-                        style={{ 
-                          background: project.diagnostics.health_score === 'critical' ? 'rgba(255,107,107,0.08)' : 'rgba(245,166,35,0.08)', 
-                          border: `1px solid ${project.diagnostics.health_score === 'critical' ? 'rgba(255,107,107,0.15)' : 'rgba(245,166,35,0.15)'}`, 
-                          color: project.diagnostics.health_score === 'critical' ? 'var(--accent-red, #ff6b6b)' : 'var(--accent-amber)' 
-                        }}>
-                        {project.diagnostics.health_score === 'critical' ? '🔴' : '⚠️'}
-                        <span>
-                          {project.diagnostics.health_score === 'critical' ? 'Agent stalled' : 'Degraded'}
-                          {project.diagnostics.seconds_since_progress != null && project.diagnostics.seconds_since_progress > 30 
-                            ? ` — no progress for ${Math.round(project.diagnostics.seconds_since_progress)}s` 
-                            : ''}
-                        </span>
-                        {project.diagnostics.warnings_count ? (
-                          <span>({project.diagnostics.warnings_count} warning{project.diagnostics.warnings_count > 1 ? 's' : ''})</span>
-                        ) : null}
-                      </div>
-                    ) : null}
+                    {/* Health Warnings — only show staleness as red/critical when genuinely stale,
+                         not during normal inter-task gaps while the system is actively running.
+                         Phase-aware: suppresses warnings during orchestrator startup phases
+                         (context loading, architect review, PM planning) where long silences are expected. */}
+                    {project.diagnostics && project.diagnostics.health_score && project.diagnostics.health_score !== 'healthy' ? (() => {
+                      const diag = project.diagnostics!;
+                      const secSince = diag.seconds_since_progress ?? 0;
+                      const projectIsRunning = project.is_running || project.status === 'running';
+
+                      // Detect if orchestrator is in a recognized startup phase
+                      const orchState = project.agent_states?.['orchestrator'];
+                      const orchTask = (orchState?.task || orchState?.current_tool || '').toLowerCase();
+                      const startupKeywords = [
+                        'loading project context', 'reading memory', 'loading context',
+                        'architect', 'reviewing codebase', 'analysing architecture',
+                        'pm creating', 'planning', 'creating task graph', 'pm agent',
+                        'critic', 'reviewing plan', 'plan check', 'evaluating',
+                        'preparing workspace', 'loading lessons', 'cross-project',
+                        'file tree', 'manifest',
+                      ];
+                      const inStartupPhase = projectIsRunning
+                        && orchState?.state === 'working'
+                        && orchTask.length > 0
+                        && startupKeywords.some(kw => orchTask.includes(kw));
+
+                      // During startup phases, suppress stall warnings entirely or
+                      // use a much higher threshold (300s) — long silences are expected.
+                      if (inStartupPhase) {
+                        // Only show a warning if truly stuck for 5+ minutes during startup
+                        if (secSince <= 300) return null;
+                      }
+
+                      // During active execution, use a higher threshold (120s) before calling it stale.
+                      // When idle/stopped, any health warning is genuine.
+                      const genuinelyStale = inStartupPhase
+                        ? secSince > 300
+                        : projectIsRunning
+                          ? secSince > 120
+                          : secSince > 30;
+                      // If the project is running and seconds_since_progress is below the stale
+                      // threshold, this is just a normal inter-task gap — don't show a warning.
+                      if (projectIsRunning && !genuinelyStale && diag.health_score === 'degraded') return null;
+                      const isCritical = diag.health_score === 'critical' || (genuinelyStale && secSince > 180);
+                      return (
+                        <div className="flex items-center gap-1.5 mb-3 px-2 py-1.5 rounded-lg text-[10px]"
+                          style={{
+                            background: isCritical ? 'rgba(255,107,107,0.08)' : 'rgba(245,166,35,0.08)',
+                            border: `1px solid ${isCritical ? 'rgba(255,107,107,0.15)' : 'rgba(245,166,35,0.15)'}`,
+                            color: isCritical ? 'var(--accent-red, #ff6b6b)' : 'var(--accent-amber)'
+                          }}>
+                          {isCritical ? '🔴' : '⚠️'}
+                          <span>
+                            {isCritical ? 'Agent stalled' : 'Degraded'}
+                            {genuinelyStale
+                              ? ` — no progress for ${Math.round(secSince)}s`
+                              : ''}
+                          </span>
+                          {diag.warnings_count ? (
+                            <span>({diag.warnings_count} warning{diag.warnings_count > 1 ? 's' : ''})</span>
+                          ) : null}
+                        </div>
+                      );
+                    })() : null}
 
                     {/* Stats row */}
                     <div className="flex items-center gap-2 sm:gap-3 flex-wrap pt-2" style={{ borderTop: '1px solid var(--border-dim)' }}>

@@ -55,6 +55,28 @@ _DELEGATE_RE = re.compile(
     re.DOTALL,
 )
 
+# Regex to match markdown code fences (``` ... ``` or ~~~ ... ~~~)
+_CODE_FENCE_RE = re.compile(
+    r"(?:^|\n)\s*(`{3,}|~{3,})[^\n]*\n.*?\n\s*\1\s*(?:\n|$)",
+    re.DOTALL,
+)
+
+# Regex to match HTML/XML comments (<!-- ... -->)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def strip_code_fences_and_comments(text: str) -> str:
+    """Remove markdown code fences and HTML comments from text.
+
+    This prevents delegate blocks inside code examples or comments
+    from being parsed as real delegations.
+    """
+    # Strip HTML comments first
+    text = _HTML_COMMENT_RE.sub("", text)
+    # Strip code fences
+    text = _CODE_FENCE_RE.sub("", text)
+    return text
+
 
 # ---------------------------------------------------------------------------
 # Project Execution Queue — sequential per project, parallel across projects
@@ -338,6 +360,9 @@ class OrchestratorManager:
         # DAG execution state — exposed via /live for cross-tab/refresh recovery
         self._dag_task_statuses: dict[str, str] = {}  # task_id → "working"/"completed"/"failed"
         self._current_dag_graph: dict | None = None  # serialized TaskGraph for the active session
+
+        # Mid-execution plan modification queue — drained between DAG rounds
+        self._plan_delta_queue: asyncio.Queue = asyncio.Queue()
 
         # Agent silence watchdog — detects agents that stop producing output
         self._watchdog_task: asyncio.Task | None = None
@@ -721,21 +746,58 @@ class OrchestratorManager:
         )
         total_tasks = 0
         completed_tasks = 0
+        pending_tasks = 0
+        failed_tasks = 0
+        running_tasks = 0
         if self._current_dag_graph:
             total_tasks = len(self._current_dag_graph.get("tasks", []))
         if self._dag_task_statuses:
             completed_tasks = sum(
                 1 for s in self._dag_task_statuses.values() if s == "completed"
             )
+            failed_tasks = sum(
+                1 for s in self._dag_task_statuses.values() if s == "failed"
+            )
+            running_tasks = sum(
+                1 for s in self._dag_task_statuses.values() if s == "working"
+            )
+        if total_tasks > 0:
+            pending_tasks = total_tasks - completed_tasks - failed_tasks - running_tasks
         progress_pct = round(completed_tasks / total_tasks * 100, 1) if total_tasks > 0 else 0.0
         return {
             "is_running": self.is_running,
             "is_paused": self.is_paused,
             "agent_count": active,
+            "active_task_count": running_tasks,
             "completed_tasks": completed_tasks,
+            "pending_tasks": pending_tasks,
+            "failed_tasks": failed_tasks,
             "total_tasks": total_tasks,
             "progress_percent": progress_pct,
         }
+
+    def _is_dag_truly_idle(self) -> bool:
+        """Check if the DAG has no pending or in-progress tasks remaining.
+
+        Used to guard idle emissions — only emit idle when the DAG is truly done.
+        """
+        if not self._current_dag_graph:
+            return True
+        tasks = self._current_dag_graph.get("tasks", [])
+        if not tasks:
+            return True
+        for t in tasks:
+            tid = t.get("id")
+            if not tid:
+                continue
+            status = self._dag_task_statuses.get(tid)
+            if status in (None, "working", "pending"):
+                return False
+        # Also check if any agents are still actively working
+        for s in self.agent_states.values():
+            if isinstance(s, dict) and s.get("state") == "working":
+                return False
+        return True
 
     async def _emit_event(self, event_type: str, **data):
         """Emit a structured event for the dashboard."""
@@ -745,6 +807,13 @@ class OrchestratorManager:
                 # Auto-enrich project_status events with structured metadata
                 if event_type == "project_status":
                     event["metadata"] = self._get_project_status_metadata()
+                    logger.info(
+                        f"[{self.project_id}] STATUS TRANSITION → {data.get('status', '?')} "
+                        f"(is_running={self.is_running}, is_paused={self.is_paused}, "
+                        f"active_agents={event['metadata']['agent_count']}, "
+                        f"active_tasks={event['metadata']['active_task_count']}, "
+                        f"progress={event['metadata']['progress_percent']}%)"
+                    )
                 await self.on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}", exc_info=True)
@@ -1451,22 +1520,67 @@ class OrchestratorManager:
 
     # --- DAG-based session (new Typed Contract system) ---
 
+    async def _emit_startup_progress(self, step: str, description: str) -> None:
+        """Emit a task_progress event during orchestrator startup to reset stall timers.
+
+        These lightweight events ensure the EventBus diagnostics timer resets at each
+        startup milestone, preventing false 'critical' or 'degraded' health scores
+        during legitimately long startup phases (context loading, architect review,
+        PM planning).
+        """
+        await self._emit_event(
+            "task_progress",
+            agent="orchestrator",
+            step=step,
+            step_description=description,
+            task_name="Orchestrator startup",
+        )
+
+    def _start_startup_keepalive(self, description: str) -> asyncio.Task:
+        """Start a background task that emits periodic progress events every 25s.
+
+        Used to wrap long-running startup operations (PM planning, architect review)
+        so the EventBus diagnostics timer never exceeds 45s without a reset.
+        Returns the task so the caller can cancel it when the operation completes.
+        """
+
+        async def _keepalive_loop() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(25)
+                    await self._emit_startup_progress(
+                        "startup_keepalive", description
+                    )
+            except asyncio.CancelledError:
+                pass
+
+        return asyncio.create_task(_keepalive_loop(), name="startup-keepalive")
+
     async def _load_project_context(self) -> tuple[str, str, str]:
         """Load manifest, memory snapshot, and file tree. Each is individually guarded."""
         manifest = ""
         try:
+            await self._emit_startup_progress(
+                "load_manifest", "Loading project manifest..."
+            )
             manifest = await self._load_manifest()
         except Exception as e:
             logger.warning(f"[{self.project_id}] _load_manifest failed (non-fatal): {e}")
 
         memory_snapshot = ""
         try:
+            await self._emit_startup_progress(
+                "load_memory", "Loading project memory snapshot..."
+            )
             memory_snapshot = await self._load_memory_snapshot()
         except Exception as e:
             logger.warning(f"[{self.project_id}] _load_memory_snapshot failed (non-fatal): {e}")
 
         file_tree = ""
         try:
+            await self._emit_startup_progress(
+                "load_file_tree", "Scanning workspace file tree..."
+            )
             file_tree = await asyncio.to_thread(self._list_workspace_files)
         except Exception as e:
             logger.warning(f"[{self.project_id}] _list_workspace_files failed (non-fatal): {e}")
@@ -1493,7 +1607,7 @@ class OrchestratorManager:
         # Lazy imports to avoid circular dependency
         from dag_executor import ExecutionResult, build_execution_summary, execute_graph
         from memory_agent import update_project_memory
-        from pm_agent import create_task_graph, fallback_single_task_graph
+        from pm_agent import create_task_graph, create_incremental_plan, fallback_single_task_graph
 
         _anyio_retries = _retry_count
         _last_graph = _cached_graph  # Preserve graph across retries
@@ -1530,6 +1644,10 @@ class OrchestratorManager:
             )
             await self._send_result("🧠 **Orchestrator** loading project context...")
             manifest, memory_snapshot, file_tree = await self._load_project_context()
+            await self._emit_startup_progress(
+                "context_loaded",
+                f"Project context loaded (manifest={bool(manifest)}, memory={bool(memory_snapshot)}, files={bool(file_tree)})",
+            )
             logger.info(
                 f"[{self.project_id}] Context loaded: "
                 f"manifest={'yes' if manifest else 'no'} ({len(manifest)} chars), "
@@ -1542,6 +1660,9 @@ class OrchestratorManager:
             try:
                 from memory_agent import get_lessons_learned
 
+                await self._emit_startup_progress(
+                    "load_lessons", "Loading lessons from past executions..."
+                )
                 lessons_learned = await asyncio.to_thread(
                     get_lessons_learned, self.project_dir, user_message
                 )
@@ -1589,12 +1710,16 @@ class OrchestratorManager:
                     "🏗️ **Architect Agent** is reviewing the codebase architecture before planning..."
                 )
                 try:
+                    _arch_keepalive = self._start_startup_keepalive(
+                        "Architect Agent reviewing codebase architecture..."
+                    )
                     architect_brief = await run_architect_review(
                         project_dir=self.project_dir,
                         project_id=self.project_id,
                         user_task=user_message,
                         memory_snapshot={"memory": memory_snapshot} if memory_snapshot else None,
                     )
+                    _arch_keepalive.cancel()
                     if architect_brief and architect_brief.codebase_summary:
                         # Inject architect brief into memory_snapshot for PM
                         _key_files_str = (
@@ -1637,6 +1762,7 @@ class OrchestratorManager:
                             f"[{self.project_id}] Architect returned empty brief — skipping"
                         )
                 except Exception as arch_err:
+                    _arch_keepalive.cancel()
                     logger.warning(
                         f"[{self.project_id}] Architect Agent failed (non-fatal): {arch_err}"
                     )
@@ -1647,6 +1773,9 @@ class OrchestratorManager:
             # ── Step 0.6: Cross-Project Memory injection ──
             cross_memory_context = ""
             try:
+                await self._emit_startup_progress(
+                    "cross_project_memory", "Loading cross-project memory..."
+                )
                 _xmem_dir = Path.home() / ".hivemind" / "global"
                 _xmem = CrossProjectMemory(_xmem_dir)
                 # Extract tech stack hints from architect brief or file tree
@@ -1675,6 +1804,8 @@ class OrchestratorManager:
             # ── Step 1: PM creates the plan (skip on retry — reuse cached graph) ──
             import time as _pm_time
 
+            _has_existing_plan = False  # Track if we used incremental mode (to preserve task statuses)
+
             if _cached_graph is not None:
                 graph = _cached_graph
                 logger.info(
@@ -1694,50 +1825,190 @@ class OrchestratorManager:
                 # Re-emit the graph so frontend shows it on retry
                 await self._emit_event("task_graph", graph=graph.model_dump())
             else:
-                self.agent_states["orchestrator"] = {
-                    "state": "working",
-                    "task": "PM creating execution plan...",
-                    "current_tool": "PM Agent analyzing request",
-                }
-                await self._emit_event(
-                    "agent_update",
-                    agent="orchestrator",
-                    summary="PM Agent is creating the execution plan...",
-                    text="PM creating execution plan...",
-                )
-                await self._send_result(
-                    f"🗺️ **PM Agent** is analyzing your request and creating an execution plan...\n"
-                    f"_Request: {user_message[:150]}{'...' if len(user_message) > 150 else ''}_"
+                # ── Detect existing plan for incremental mode ──
+                _has_existing_plan = (
+                    self._current_dag_graph is not None
+                    and len(self._current_dag_graph.get("tasks", [])) > 0
                 )
 
-                # Step 1: PM Agent → TaskGraph (now with memory context)
-                _pm_start = _pm_time.time()
-                logger.info(f"[{self.project_id}] PM Agent starting task graph creation...")
-                try:
-                    graph = await create_task_graph(
-                        user_message=user_message,
-                        project_id=self.project_id,
-                        manifest=manifest,
-                        file_tree=file_tree,
-                        memory_snapshot=memory_snapshot,
+                if _has_existing_plan:
+                    # Incremental mode: project already has a plan, produce delta
+                    self.agent_states["orchestrator"] = {
+                        "state": "working",
+                        "task": "PM updating execution plan (incremental)...",
+                        "current_tool": "PM Agent analyzing follow-up request",
+                    }
+                    await self._emit_event(
+                        "agent_update",
+                        agent="orchestrator",
+                        summary="PM Agent is updating the existing plan with new tasks...",
+                        text="PM updating plan (incremental)...",
                     )
-                    _pm_elapsed = _pm_time.time() - _pm_start
+                    await self._send_result(
+                        f"🗺️ **PM Agent** is updating the existing plan (incremental mode)...\n"
+                        f"_New request: {user_message[:150]}{'...' if len(user_message) > 150 else ''}_"
+                    )
+
+                    _pm_start = _pm_time.time()
                     logger.info(
-                        f"[{self.project_id}] PM Agent completed in {_pm_elapsed:.1f}s: "
-                        f"{len(graph.tasks)} tasks, {len(graph.epic_breakdown)} epics, "
-                        f"vision='{graph.vision[:80]}'"
+                        f"[{self.project_id}] PM Agent starting incremental plan update "
+                        f"(existing_tasks={len(self._current_dag_graph.get('tasks', []))})"
                     )
-                    for t in graph.tasks:
-                        deps = (
-                            f" (deps: {', '.join(t.depends_on)})" if t.depends_on else " (no deps)"
+
+                    try:
+                        # Reconstruct existing TaskGraph from cached dict
+                        from contracts import TaskGraph as _TG
+                        _existing_graph = _TG(**self._current_dag_graph)
+
+                        # Build set of completed task IDs from tracked statuses
+                        _completed_ids = {
+                            tid for tid, tstat in self._dag_task_statuses.items()
+                            if tstat in ("completed", "failed")
+                        }
+
+                        await self._emit_startup_progress(
+                            "pm_incremental_start",
+                            "PM Agent updating execution plan (incremental)...",
                         )
-                        logger.info(f"  Task {t.id}: {t.role.value} — {t.goal[:80]}{deps}")
-                except Exception as pm_err:
-                    _pm_elapsed = _pm_time.time() - _pm_start
-                    logger.warning(
-                        f"[{self.project_id}] PM Agent failed after {_pm_elapsed:.1f}s: {pm_err}. Using fallback."
+                        _pm_keepalive = self._start_startup_keepalive(
+                            "PM Agent updating execution plan..."
+                        )
+                        try:
+                            delta = await create_incremental_plan(
+                                user_message=user_message,
+                                project_id=self.project_id,
+                                existing_graph=_existing_graph,
+                                completed_task_ids=_completed_ids,
+                                manifest=manifest,
+                                file_tree=file_tree,
+                                memory_snapshot=memory_snapshot,
+                            )
+                        finally:
+                            _pm_keepalive.cancel()
+
+                        _pm_elapsed = _pm_time.time() - _pm_start
+                        await self._emit_startup_progress(
+                            "pm_incremental_complete",
+                            f"PM Agent completed incremental plan in {_pm_elapsed:.1f}s",
+                        )
+
+                        # Merge delta into existing graph
+                        add_tasks = delta["add_tasks"]
+                        skip_task_ids = delta["skip_task_ids"]
+
+                        # Skip tasks first (before appending, so new tasks can depend on existing non-skipped ones)
+                        if skip_task_ids:
+                            actually_skipped = _existing_graph.skip_tasks(
+                                skip_task_ids,
+                                reason=f"Skipped by incremental plan for: {user_message[:100]}",
+                            )
+                            logger.info(
+                                f"[{self.project_id}] Incremental plan: skipped {len(actually_skipped)} tasks: "
+                                f"{actually_skipped}"
+                            )
+
+                        # Append new tasks
+                        if add_tasks:
+                            merge_errors = _existing_graph.append_tasks(add_tasks)
+                            if merge_errors:
+                                logger.error(
+                                    f"[{self.project_id}] Incremental merge errors: {merge_errors}. "
+                                    f"Falling back to fresh plan."
+                                )
+                                raise ValueError(f"Incremental merge failed: {'; '.join(merge_errors)}")
+                            # Enforce artifact requirements on new tasks
+                            from pm_agent import _enforce_artifact_requirements
+                            _enforce_artifact_requirements(_existing_graph)
+
+                        graph = _existing_graph
+                        # Update user_message on the graph to reflect the new request
+                        graph.user_message = user_message
+
+                        logger.info(
+                            f"[{self.project_id}] PM Agent (incremental) completed in {_pm_elapsed:.1f}s: "
+                            f"+{len(add_tasks)} new tasks, ~{len(skip_task_ids)} skipped, "
+                            f"total={len(graph.tasks)} tasks"
+                        )
+                        for t in add_tasks:
+                            deps = (
+                                f" (deps: {', '.join(t.depends_on)})" if t.depends_on else " (no deps)"
+                            )
+                            logger.info(f"  New task {t.id}: {t.role.value} — {t.goal[:80]}{deps}")
+
+                        await self._send_result(
+                            f"📋 **Plan updated (incremental):** +{len(add_tasks)} new tasks, "
+                            f"~{len(skip_task_ids)} skipped\n"
+                            f"_Total: {len(graph.tasks)} tasks_"
+                        )
+
+                    except Exception as incr_err:
+                        _pm_elapsed = _pm_time.time() - _pm_start
+                        logger.warning(
+                            f"[{self.project_id}] Incremental plan failed after {_pm_elapsed:.1f}s: "
+                            f"{incr_err}. Falling back to fresh plan."
+                        )
+                        # Fall through to fresh plan creation
+                        _has_existing_plan = False
+
+                if not _has_existing_plan:
+                    # Fresh plan mode: new project or incremental fallback
+                    self.agent_states["orchestrator"] = {
+                        "state": "working",
+                        "task": "PM creating execution plan...",
+                        "current_tool": "PM Agent analyzing request",
+                    }
+                    await self._emit_event(
+                        "agent_update",
+                        agent="orchestrator",
+                        summary="PM Agent is creating the execution plan...",
+                        text="PM creating execution plan...",
                     )
-                    graph = fallback_single_task_graph(user_message, self.project_id)
+                    await self._send_result(
+                        f"🗺️ **PM Agent** is analyzing your request and creating an execution plan...\n"
+                        f"_Request: {user_message[:150]}{'...' if len(user_message) > 150 else ''}_"
+                    )
+
+                    # Step 1: PM Agent → TaskGraph (now with memory context)
+                    _pm_start = _pm_time.time()
+                    logger.info(f"[{self.project_id}] PM Agent starting task graph creation...")
+                    await self._emit_startup_progress(
+                        "pm_plan_start",
+                        "PM Agent creating execution plan...",
+                    )
+                    _pm_keepalive = self._start_startup_keepalive(
+                        "PM Agent creating execution plan..."
+                    )
+                    try:
+                        graph = await create_task_graph(
+                            user_message=user_message,
+                            project_id=self.project_id,
+                            manifest=manifest,
+                            file_tree=file_tree,
+                            memory_snapshot=memory_snapshot,
+                        )
+                        _pm_keepalive.cancel()
+                        _pm_elapsed = _pm_time.time() - _pm_start
+                        await self._emit_startup_progress(
+                            "pm_plan_complete",
+                            f"PM Agent completed plan in {_pm_elapsed:.1f}s",
+                        )
+                        logger.info(
+                            f"[{self.project_id}] PM Agent completed in {_pm_elapsed:.1f}s: "
+                            f"{len(graph.tasks)} tasks, {len(graph.epic_breakdown)} epics, "
+                            f"vision='{graph.vision[:80]}'"
+                        )
+                        for t in graph.tasks:
+                            deps = (
+                                f" (deps: {', '.join(t.depends_on)})" if t.depends_on else " (no deps)"
+                            )
+                            logger.info(f"  Task {t.id}: {t.role.value} — {t.goal[:80]}{deps}")
+                    except Exception as pm_err:
+                        _pm_keepalive.cancel()
+                        _pm_elapsed = _pm_time.time() - _pm_start
+                        logger.warning(
+                            f"[{self.project_id}] PM Agent failed after {_pm_elapsed:.1f}s: {pm_err}. Using fallback."
+                        )
+                        graph = fallback_single_task_graph(user_message, self.project_id)
 
                 # --- Critic: validate graph quality before execution ---
                 # This is the Evaluator half of the Evaluator-Optimizer pattern.
@@ -1801,7 +2072,7 @@ class OrchestratorManager:
                     f"_Total: {len(graph.tasks)} tasks, {len(graph.epic_breakdown)} epics_"
                 )
 
-                # Emit the full graph to the frontend for visualization
+                # Emit the full cumulative graph to the frontend for visualization
                 await self._emit_event("task_graph", graph=graph.model_dump())
 
             # Cache the graph for potential retry (before execute_graph which may fail)
@@ -1899,7 +2170,9 @@ class OrchestratorManager:
 
             # Cache serialized graph for /live recovery endpoint (cross-tab/refresh)
             self._current_dag_graph = graph.model_dump()
-            self._dag_task_statuses = {}
+            # Only reset task statuses for fresh plans; incremental merges preserve existing statuses
+            if not _has_existing_plan or _cached_graph is not None:
+                self._dag_task_statuses = {}
 
             # Session IDs shared across tasks (agent resume)
             session_id_store: dict[str, str] = {}
@@ -1960,6 +2233,7 @@ class OrchestratorManager:
                 max_budget_usd=self._effective_budget,
                 session_id_store=session_id_store,
                 commit_approval_callback=_commit_cb,
+                plan_delta_queue=self._plan_delta_queue,
             )
 
             _dag_elapsed = _pm_time.time() - _dag_start
@@ -2184,7 +2458,9 @@ class OrchestratorManager:
                         _cached_graph=_last_graph,
                     )
 
-            self.is_running = False
+            # Keep is_running=True during cleanup so intermediate events
+            # (agent_finished, dag_task_update) carry correct metadata.
+            # is_running will be set to False right before the final idle emission.
             self.turn_count += 1
 
             # Determine if agents that are still 'working' actually completed
@@ -2335,6 +2611,10 @@ class OrchestratorManager:
             # Only clear dag_task_statuses working states — keep completed/failed.
             # The graph itself stays until the next session starts.
             # self._current_dag_graph = None  # REMOVED: keep for /live recovery
+
+            # NOW set is_running=False — after all cleanup events have been emitted
+            # so their metadata correctly showed is_running=True during teardown.
+            self.is_running = False
             await self._emit_event("project_status", status="idle")
 
     async def _on_dag_task_start(self, task: TaskInput):
@@ -3098,7 +3378,9 @@ class OrchestratorManager:
                             "⚠️ *orchestrator* tried to finish early — pushing to continue..."
                         )
                         # Still run any delegate blocks that accompanied the TASK_COMPLETE
-                        early_delegations = orch_review.parse_delegations(response.text)
+                        early_delegations = orch_review.parse_delegations(
+                            strip_code_fences_and_comments(response.text)
+                        )
                         if early_delegations:
                             sub_results = await self._run_sub_agents(early_delegations)
                             review = await orch_review.build_review_prompt(
@@ -3202,7 +3484,9 @@ class OrchestratorManager:
                     continue
 
                 # Parse delegations
-                delegations = orch_review.parse_delegations(response.text)
+                delegations = orch_review.parse_delegations(
+                    strip_code_fences_and_comments(response.text)
+                )
                 logger.info(
                     f"[{self.project_id}] Parsed {len(delegations)} delegations: {[f'{d.agent}:{d.task[:40]}' for d in delegations]}"
                 )
@@ -3649,8 +3933,8 @@ class OrchestratorManager:
                     await self._checkpoint_state(status=_ckpt_status)
             except Exception as _exc:
                 logger.debug("[Orchestrator] non-fatal exception suppressed: %s", _exc)
-            if not self.is_paused:
-                self.is_running = False
+            # Keep is_running=True during cleanup so intermediate agent_finished
+            # events carry correct metadata. Set False right before final idle.
 
             # Emit agent_finished for ALL agents still in 'working' state
             # so the frontend never shows stale ACTIVE cards after task ends.
@@ -3702,6 +3986,11 @@ class OrchestratorManager:
                         task_status=final_task_status,
                         failure_reason=_orch_exit_reason if _abnormal_exit else "",
                     )
+
+            # NOW set is_running=False — after all cleanup agent_finished events
+            # so their metadata correctly showed is_running=True during teardown.
+            if not self.is_paused:
+                self.is_running = False
 
             # Always emit project_status so frontend knows the state changed
             await self._emit_event("project_status", status="paused" if self.is_paused else "idle")
