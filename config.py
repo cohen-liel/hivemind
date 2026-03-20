@@ -33,7 +33,9 @@ _OVERRIDES: dict[str, Any] = {}
 _overrides_path: Path = _PROJECT_ROOT / "data" / "settings_overrides.json"
 if _overrides_path.exists():
     try:
-        _OVERRIDES = json.loads(_overrides_path.read_text())
+        _raw_overrides = json.loads(_overrides_path.read_text())
+        # Normalize keys to lowercase for case-insensitive lookup
+        _OVERRIDES = {k.lower(): v for k, v in _raw_overrides.items()}
         logger.info("Loaded settings overrides: %s", list(_OVERRIDES.keys()))
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to load settings overrides: %s", e)
