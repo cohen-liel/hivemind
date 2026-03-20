@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { execSync, spawn } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import inquirer from 'inquirer';
 import ora from 'ora';
@@ -9,6 +9,7 @@ import figlet from 'figlet';
 
 const REPO_URL = 'https://github.com/cohen-liel/hivemind.git';
 const DEFAULT_DIR = 'hivemind';
+const VERSION = '1.0.0';
 
 const hivemindGradient = gradient(['#6366f1', '#8b5cf6', '#a855f7']);
 
@@ -29,6 +30,22 @@ function printBanner() {
   console.log(
     chalk.dim('  ─────────────────────────────────────────────────────────────')
   );
+  console.log('');
+}
+
+function printHelp() {
+  printBanner();
+  console.log(chalk.bold('  Usage:\n'));
+  console.log('    npx create-hivemind@latest [directory] [options]\n');
+  console.log(chalk.bold('  Options:\n'));
+  console.log('    -y, --yes       Accept all defaults (non-interactive)');
+  console.log('    -h, --help      Show this help message');
+  console.log('    -v, --version   Show version number');
+  console.log('');
+  console.log(chalk.bold('  Examples:\n'));
+  console.log(chalk.dim('    npx create-hivemind@latest'));
+  console.log(chalk.dim('    npx create-hivemind@latest my-project'));
+  console.log(chalk.dim('    npx create-hivemind@latest my-project --yes'));
   console.log('');
 }
 
@@ -59,7 +76,7 @@ function checkPrerequisites() {
     }).trim();
     checks.push({ name: 'Python', status: 'ok', detail: pyVersion });
   } catch {
-    checks.push({ name: 'Python', status: 'fail', detail: 'not found' });
+    checks.push({ name: 'Python', status: 'fail', detail: 'not found — install Python 3.11+' });
   }
 
   // Check Git
@@ -72,7 +89,7 @@ function checkPrerequisites() {
     checks.push({ name: 'Git', status: 'fail', detail: 'not found' });
   }
 
-  // Check Claude Code CLI
+  // Check Claude Code CLI (required for agents to work)
   try {
     const claudeVersion = execSync('claude --version 2>&1', {
       encoding: 'utf-8',
@@ -86,7 +103,7 @@ function checkPrerequisites() {
     checks.push({
       name: 'Claude Code CLI',
       status: 'warn',
-      detail: 'not found — install with: npm i -g @anthropic-ai/claude-code',
+      detail: 'not found — REQUIRED for agents. Install: npm i -g @anthropic-ai/claude-code',
     });
   }
 
@@ -137,6 +154,19 @@ function printChecks(checks) {
     );
     return false;
   }
+
+  // Warn about Claude Code CLI more prominently
+  const claudeCheck = checks.find((c) => c.name === 'Claude Code CLI');
+  if (claudeCheck && claudeCheck.status === 'warn') {
+    console.log(
+      chalk.yellow(
+        '  ⚠  Claude Code CLI is required for AI agents to work.\n' +
+        '     Install it now with: npm i -g @anthropic-ai/claude-code\n' +
+        '     You can continue installation, but agents won\'t run without it.\n'
+      )
+    );
+  }
+
   return true;
 }
 
@@ -174,6 +204,18 @@ function runCommand(command, cwd, stdio = 'pipe') {
 
 export async function main() {
   const args = process.argv.slice(2);
+
+  // Handle --help and --version before anything else
+  if (args.includes('--help') || args.includes('-h')) {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log(`create-hivemind v${VERSION}`);
+    process.exit(0);
+  }
+
   const isYes = args.includes('--yes') || args.includes('-y');
   const targetArg = args.find((a) => !a.startsWith('-'));
 
@@ -343,7 +385,8 @@ export async function main() {
       chalk.bold('  🚀 Starting Hivemind...\n')
     );
 
-    const child = spawn('sh', ['-c', './restart.sh'], {
+    // Use --no-clear to preserve any existing project data
+    const child = spawn('sh', ['-c', './restart.sh --no-clear'], {
       cwd: fullPath,
       stdio: 'inherit',
       detached: false,
