@@ -36,7 +36,7 @@ export function useSmartHeartbeat(
       const currentDispatch = dispatchRef.current;
 
       const workingAgents = Object.entries(currentAgentStates).filter(
-        ([, a]) => a.state === 'working',
+        ([, a]) => a.state === 'working' || a.state === 'waiting',
       );
 
       for (const [agentName, agentState] of workingAgents) {
@@ -92,7 +92,7 @@ export function useSmartHeartbeat(
 
       // Remove stopped agents from heartbeat tracking
       for (const agentName of Object.keys(lastHeartbeatRef.current)) {
-        if (currentAgentStates[agentName]?.state !== 'working') {
+        if (currentAgentStates[agentName]?.state !== 'working' && currentAgentStates[agentName]?.state !== 'waiting') {
           delete lastHeartbeatRef.current[agentName];
         }
       }

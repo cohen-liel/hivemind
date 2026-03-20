@@ -928,7 +928,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         const restored: Record<string, AgentStateType> = {};
         const liveEntries: Record<string, LiveAgentEntry> = {};
         for (const [name, s] of Object.entries(event.agent_states)) {
-          const isWorking = (s.state ?? 'idle') === 'working';
+          const isWorking = (s.state ?? 'idle') === 'working' || (s.state ?? 'idle') === 'waiting';
           restored[name] = {
             name,
             state: (s.state as AgentStateType['state']) ?? 'idle',

@@ -53,7 +53,7 @@ export const LiveAgentStream = React.memo(function LiveAgentStream({
 }: LiveAgentStreamProps): React.ReactElement | null {
   // Use agentStates as source of truth: ALL working agents, with liveAgentStream data overlaid
   const activeAgents = Object.entries(agentStates)
-    .filter(([, a]) => a.state === 'working')
+    .filter(([, a]) => a.state === 'working' || a.state === 'waiting')
     .map(([name, agentState]) => ({
       name,
       entry: liveAgentStream[name] ?? {
@@ -165,7 +165,7 @@ const ActivityPanel = React.memo(function ActivityPanel({
   onStop,
   onSend,
 }: ActivityPanelProps): React.ReactElement {
-  const workingCount = Object.values(agentStates).filter(a => a.state === 'working').length;
+  const workingCount = Object.values(agentStates).filter(a => a.state === 'working' || a.state === 'waiting').length;
   const { pendingQuestion, onClearQuestion } = useProjectContext();
 
   return (

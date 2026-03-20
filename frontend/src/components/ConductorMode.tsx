@@ -55,7 +55,7 @@ export default function ConductorMode({ agents, progress, activities, status, me
   const artifacts = useMemo(() => extractArtifacts(activities), [activities]);
   const forecast = useMemo(() => estimateForecast(messageDraft, agents.length), [messageDraft, agents.length]);
   const orchestrator = agents.find(a => a.name === 'orchestrator');
-  const workingAgents = agents.filter(a => a.state === 'working');
+  const workingAgents = agents.filter(a => a.state === 'working' || a.state === 'waiting');
   const isActive = status === 'running' && workingAgents.length > 0;
   const orchPhase = orchestrator?.task || orchestrator?.current_tool;
 
@@ -150,7 +150,7 @@ export default function ConductorMode({ agents, progress, activities, status, me
           const cx = 80 + Math.cos(rad) * orbitR; // 80 = center of 160px container
           const cy = 80 + Math.sin(rad) * orbitR;
           const a = accent(agent.name);
-          const isWorking = agent.state === 'working';
+          const isWorking = agent.state === 'working' || agent.state === 'waiting';
           const isDone = agent.state === 'done';
           const isHealing = healingAgents.has(agent.name);
 
