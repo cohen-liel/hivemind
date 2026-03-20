@@ -307,8 +307,9 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
           continue; // Skip — WS already told us this agent finished
         }
 
+        const isActive = serverState === 'working' || serverState === 'waiting';
         const shouldSync =
-          serverState === 'working'
+          isActive
           || (serverState !== 'idle' && ourState !== serverState)
           || (serverState === ourState && s.current_tool && s.current_tool !== updated[name]?.current_tool);
         if (shouldSync) {
@@ -321,8 +322,8 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
             cost: s.cost ?? updated[name]?.cost ?? 0,
             turns: s.turns ?? updated[name]?.turns ?? 0,
             duration: updated[name]?.duration ?? 0,
-            started_at: updated[name]?.started_at ?? (serverState === 'working' ? Date.now() : undefined),
-            last_update_at: serverState === 'working' ? Date.now() : updated[name]?.last_update_at,
+            started_at: updated[name]?.started_at ?? (isActive ? Date.now() : undefined),
+            last_update_at: isActive ? Date.now() : updated[name]?.last_update_at,
           };
           changed = true;
         }

@@ -1519,6 +1519,20 @@ class OrchestratorManager:
             forge_dir = Path(self.project_dir) / ".hivemind"
             forge_dir.mkdir(parents=True, exist_ok=True)
 
+            # ── Fetch per-project budget (mirrors legacy path logic) ──
+            try:
+                project_budget = await self.session_mgr.get_project_budget(self.project_id)
+                if project_budget > 0:
+                    self._effective_budget = min(MAX_BUDGET_USD, project_budget)
+                else:
+                    self._effective_budget = MAX_BUDGET_USD
+            except Exception as _budget_err:
+                logger.debug("[%s] non-fatal: could not fetch project budget: %s", self.project_id, _budget_err)
+                self._effective_budget = MAX_BUDGET_USD
+
+            # Reset budget warning flag for new DAG session
+            self._budget_warning_sent = False
+
             # ── Step 0: Load project context ──
             self.agent_states["orchestrator"] = {
                 "state": "working",
