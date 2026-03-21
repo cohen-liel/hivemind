@@ -65,11 +65,7 @@ if [ -f .env ]; then
     ok ".env already exists"
 else
     cp .env.example .env
-    ok ".env created"
-    echo ""
-    echo -e "    ${YELLOW}Important:${NC} Edit .env and set CLAUDE_PROJECTS_DIR"
-    echo "    to the folder where your projects live."
-    echo ""
+    ok ".env created (edit .env to customize settings)"
 fi
 
 # ── 5. Python virtual environment ────────────────────────────
@@ -104,7 +100,7 @@ cd ..
 ok "Frontend built"
 
 # ── 7. Create projects directory ─────────────────────────────
-PROJECTS_DIR=$(grep -oP 'CLAUDE_PROJECTS_DIR=\K.*' .env 2>/dev/null || echo "~/claude-projects")
+PROJECTS_DIR=$(grep -oP 'CLAUDE_PROJECTS_DIR=\K.*' .env 2>/dev/null || echo "~/hivemind-projects")
 PROJECTS_DIR="${PROJECTS_DIR/#\~/$HOME}"
 if [ ! -d "$PROJECTS_DIR" ]; then
     mkdir -p "$PROJECTS_DIR"

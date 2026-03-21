@@ -78,7 +78,7 @@ CORS_ORIGINS: list[str] = [
 CLAUDE_CLI_PATH: str = os.getenv("CLAUDE_CLI_PATH", "claude")
 
 # Projects
-PROJECTS_BASE_DIR = Path(os.getenv("CLAUDE_PROJECTS_DIR", "~/Downloads")).expanduser()
+PROJECTS_BASE_DIR = Path(os.getenv("CLAUDE_PROJECTS_DIR", "~/hivemind-projects")).expanduser()
 try:
     PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
 except OSError as e:
