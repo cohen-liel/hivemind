@@ -1,14 +1,14 @@
 import chalk from 'chalk';
 import { execSync, spawn } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
-import inquirer from 'inquirer';
 import ora from 'ora';
 import gradient from 'gradient-string';
 import figlet from 'figlet';
 
 const REPO_URL = 'https://github.com/cohen-liel/hivemind.git';
 const DEFAULT_DIR = 'hivemind';
+const VERSION = '1.1.0';
 
 const hivemindGradient = gradient(['#6366f1', '#8b5cf6', '#a855f7']);
 
@@ -29,6 +29,36 @@ function printBanner() {
   console.log(
     chalk.dim('  ─────────────────────────────────────────────────────────────')
   );
+  console.log('');
+}
+
+function printHelp() {
+  printBanner();
+  console.log(chalk.bold('  Usage:\n'));
+  console.log('    npx create-hivemind@latest [directory]\n');
+  console.log(chalk.bold('  Options:\n'));
+  console.log('    -h, --help      Show this help message');
+  console.log('    -v, --version   Show version number');
+  console.log('');
+  console.log(chalk.bold('  Examples:\n'));
+  console.log(chalk.dim('    npx create-hivemind@latest'));
+  console.log(chalk.dim('    npx create-hivemind@latest ~/my-hivemind'));
+  console.log('');
+  console.log(chalk.bold('  What happens:\n'));
+  console.log(chalk.dim('    1. Clones the Hivemind repo'));
+  console.log(chalk.dim('    2. Installs Python & Node dependencies'));
+  console.log(chalk.dim('    3. Builds the frontend dashboard'));
+  console.log(chalk.dim('    4. Installs Cloudflare Tunnel for remote access'));
+  console.log(chalk.dim('    5. Starts the server and prints your access URL'));
+  console.log('');
+  console.log(chalk.bold('  Prerequisites:\n'));
+  console.log(chalk.dim('    - Node.js 18+'));
+  console.log(chalk.dim('    - Python 3.11+'));
+  console.log(chalk.dim('    - Git'));
+  console.log(chalk.dim('    - Claude Code CLI (npm i -g @anthropic-ai/claude-code)'));
+  console.log('');
+  console.log(chalk.bold('  After installation:\n'));
+  console.log(chalk.dim('    cd hivemind && ./restart.sh    # restart the server'));
   console.log('');
 }
 
@@ -59,7 +89,7 @@ function checkPrerequisites() {
     }).trim();
     checks.push({ name: 'Python', status: 'ok', detail: pyVersion });
   } catch {
-    checks.push({ name: 'Python', status: 'fail', detail: 'not found' });
+    checks.push({ name: 'Python', status: 'fail', detail: 'not found — install Python 3.11+' });
   }
 
   // Check Git
@@ -72,7 +102,7 @@ function checkPrerequisites() {
     checks.push({ name: 'Git', status: 'fail', detail: 'not found' });
   }
 
-  // Check Claude Code CLI
+  // Check Claude Code CLI (required for agents to work)
   try {
     const claudeVersion = execSync('claude --version 2>&1', {
       encoding: 'utf-8',
@@ -86,25 +116,7 @@ function checkPrerequisites() {
     checks.push({
       name: 'Claude Code CLI',
       status: 'warn',
-      detail: 'not found — install with: npm i -g @anthropic-ai/claude-code',
-    });
-  }
-
-  // Check Docker (optional)
-  try {
-    const dockerVersion = execSync('docker --version 2>&1', {
-      encoding: 'utf-8',
-    }).trim();
-    checks.push({
-      name: 'Docker',
-      status: 'ok',
-      detail: `${dockerVersion} (optional)`,
-    });
-  } catch {
-    checks.push({
-      name: 'Docker',
-      status: 'info',
-      detail: 'not found (optional)',
+      detail: 'not found — install after setup: npm i -g @anthropic-ai/claude-code',
     });
   }
 
@@ -137,6 +149,19 @@ function printChecks(checks) {
     );
     return false;
   }
+
+  // Warn about Claude Code CLI more prominently
+  const claudeCheck = checks.find((c) => c.name === 'Claude Code CLI');
+  if (claudeCheck && claudeCheck.status === 'warn') {
+    console.log(
+      chalk.yellow(
+        '  ⚠  Claude Code CLI is required for AI agents to work.\n' +
+        '     Install it after setup: npm i -g @anthropic-ai/claude-code\n' +
+        '     Then run: claude login\n'
+      )
+    );
+  }
+
   return true;
 }
 
@@ -174,8 +199,23 @@ function runCommand(command, cwd, stdio = 'pipe') {
 
 export async function main() {
   const args = process.argv.slice(2);
-  const isYes = args.includes('--yes') || args.includes('-y');
+
+  // Handle --help and --version before anything else
+  if (args.includes('--help') || args.includes('-h')) {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log(`create-hivemind v${VERSION}`);
+    process.exit(0);
+  }
+
+  // The only optional argument is the install directory
   const targetArg = args.find((a) => !a.startsWith('-'));
+  const projectDir = targetArg || DEFAULT_DIR;
+  const fullPath = resolve(process.cwd(), projectDir);
+  const homeDir = process.env.HOME || '~';
 
   printBanner();
 
@@ -186,62 +226,7 @@ export async function main() {
     process.exit(1);
   }
 
-  let projectDir;
-  let projectsDir;
-  let installMethod;
-  let startServer;
-
-  if (isYes) {
-    // Non-interactive mode
-    projectDir = targetArg || DEFAULT_DIR;
-    projectsDir = resolve(process.env.HOME || '~', 'projects');
-    installMethod = 'auto';
-    startServer = true;
-  } else {
-    // Interactive wizard
-    console.log(chalk.bold('  Setup Wizard\n'));
-
-    const answers = await inquirer.prompt([
-      {
-        type: 'input',
-        name: 'projectDir',
-        message: 'Where should we install Hivemind?',
-        default: targetArg || DEFAULT_DIR,
-      },
-      {
-        type: 'input',
-        name: 'projectsDir',
-        message: 'Where are your code projects? (CLAUDE_PROJECTS_DIR)',
-        default: resolve(process.env.HOME || '~', 'projects'),
-      },
-      {
-        type: 'list',
-        name: 'installMethod',
-        message: 'Installation method:',
-        choices: [
-          { name: '🚀 Auto (recommended) — clone, install, build, configure', value: 'auto' },
-          { name: '🐳 Docker — docker-compose up', value: 'docker' },
-          { name: '📋 Manual — just clone, I\'ll handle the rest', value: 'manual' },
-        ],
-        default: 'auto',
-      },
-      {
-        type: 'confirm',
-        name: 'startServer',
-        message: 'Start Hivemind after installation?',
-        default: true,
-        when: (a) => a.installMethod !== 'manual',
-      },
-    ]);
-
-    projectDir = answers.projectDir;
-    projectsDir = answers.projectsDir;
-    installMethod = answers.installMethod;
-    startServer = answers.startServer ?? false;
-  }
-
-  const fullPath = resolve(process.cwd(), projectDir);
-
+  console.log(chalk.bold('  Installing to: ') + chalk.cyan(fullPath));
   console.log('');
 
   // Step 1: Clone
@@ -264,41 +249,7 @@ export async function main() {
     process.exit(1);
   }
 
-  if (installMethod === 'manual') {
-    console.log('');
-    console.log(chalk.bold('  Next steps:\n'));
-    console.log(chalk.dim(`  cd ${projectDir}`));
-    console.log(chalk.dim('  chmod +x setup.sh restart.sh'));
-    console.log(chalk.dim('  ./setup.sh'));
-    console.log(chalk.dim('  cp .env.example .env'));
-    console.log(chalk.dim('  # Edit .env — set CLAUDE_PROJECTS_DIR'));
-    console.log(chalk.dim('  ./restart.sh'));
-    console.log('');
-    printSuccess(fullPath);
-    return;
-  }
-
-  if (installMethod === 'docker') {
-    const spinnerDocker = ora({
-      text: chalk.dim('Starting with Docker Compose...'),
-      color: 'magenta',
-    }).start();
-
-    try {
-      await runCommand('docker-compose up -d --build', fullPath);
-      spinnerDocker.succeed(chalk.green('Docker containers started'));
-    } catch (err) {
-      spinnerDocker.fail(chalk.red('Docker failed'));
-      console.error(chalk.dim(err.message));
-      process.exit(1);
-    }
-
-    printSuccess(fullPath);
-    return;
-  }
-
-  // Auto install
-  // Step 2: Configure .env
+  // Step 2: Configure .env with sensible defaults (no questions asked)
   const spinnerEnv = ora({
     text: chalk.dim('Configuring environment...'),
     color: 'magenta',
@@ -309,17 +260,24 @@ export async function main() {
     const envExamplePath = join(fullPath, '.env.example');
 
     if (existsSync(envExamplePath) && !existsSync(envPath)) {
-      const envContent = `CLAUDE_PROJECTS_DIR=${projectsDir}\nDASHBOARD_HOST=127.0.0.1\nDASHBOARD_PORT=8080\nDEVICE_AUTH_ENABLED=true\n`;
+      // Sensible defaults — user can edit .env later if needed
+      const envContent = [
+        `CLAUDE_PROJECTS_DIR=${homeDir}/hivemind-projects`,
+        'DASHBOARD_HOST=0.0.0.0',
+        'DASHBOARD_PORT=8080',
+        'DEVICE_AUTH_ENABLED=true',
+        '',
+      ].join('\n');
       writeFileSync(envPath, envContent);
     }
     spinnerEnv.succeed(chalk.green('Environment configured'));
   } catch (err) {
-    spinnerEnv.warn(chalk.yellow('Could not configure .env — you can do it manually'));
+    spinnerEnv.warn(chalk.yellow('Could not create .env — using defaults'));
   }
 
   // Step 3: Run setup.sh
   const spinnerSetup = ora({
-    text: chalk.dim('Installing dependencies and building frontend (this may take a minute)...'),
+    text: chalk.dim('Installing dependencies and building frontend (this may take a few minutes)...'),
     color: 'magenta',
   }).start();
 
@@ -331,85 +289,88 @@ export async function main() {
   } catch (err) {
     spinnerSetup.fail(chalk.red('Setup failed'));
     console.error(chalk.dim(err.message));
-    console.log(chalk.dim('\n  Try running manually:'));
-    console.log(chalk.dim(`  cd ${projectDir} && ./setup.sh\n`));
+    console.log('');
+    console.log(chalk.dim('  Try running manually:'));
+    console.log(chalk.dim(`  cd ${projectDir} && ./setup.sh`));
+    console.log('');
     process.exit(1);
   }
 
-  // Step 4: Start server
-  if (startServer) {
-    console.log('');
-    console.log(
-      chalk.bold('  🚀 Starting Hivemind...\n')
-    );
+  // Step 4: Start server automatically
+  console.log('');
+  console.log(chalk.bold('  Starting Hivemind...\n'));
 
-    const child = spawn('sh', ['-c', './restart.sh'], {
-      cwd: fullPath,
-      stdio: 'inherit',
-      detached: false,
-    });
+  const child = spawn('sh', ['-c', './restart.sh --no-clear'], {
+    cwd: fullPath,
+    stdio: 'inherit',
+    detached: false,
+  });
 
-    child.on('error', (err) => {
-      console.error(chalk.red(`\n  Failed to start: ${err.message}`));
-    });
-  } else {
+  child.on('error', (err) => {
+    console.error(chalk.red(`\n  Failed to start: ${err.message}`));
     printSuccess(fullPath);
-  }
+  });
 }
 
 function printSuccess(fullPath) {
+  const dirName = fullPath.split('/').pop();
   console.log('');
   console.log(
     hivemindGradient(
-      '  ╔══════════════════════════════════════════════════════╗'
+      '  ╔══════════════════════════════════════════════════════════╗'
     )
   );
   console.log(
     hivemindGradient(
-      '  ║           🧠 Hivemind is ready!                     ║'
+      '  ║              Hivemind is installed!                      ║'
     )
   );
   console.log(
     hivemindGradient(
-      '  ╠══════════════════════════════════════════════════════╣'
+      '  ╠══════════════════════════════════════════════════════════╣'
     )
   );
   console.log(
     hivemindGradient(
-      `  ║  📂 Installed at: ${fullPath.padEnd(34)}║`
+      '  ║                                                          ║'
     )
   );
   console.log(
     hivemindGradient(
-      '  ║  🌐 Dashboard:    http://localhost:8080              ║'
+      '  ║  To start the server:                                    ║'
     )
   );
   console.log(
     hivemindGradient(
-      '  ╠══════════════════════════════════════════════════════╣'
+      `  ║    cd ${dirName} && ./restart.sh`.padEnd(60) + '║'
     )
   );
   console.log(
     hivemindGradient(
-      '  ║  To start:                                          ║'
+      '  ║                                                          ║'
     )
   );
   console.log(
     hivemindGradient(
-      `  ║  $ cd ${fullPath.split('/').pop().padEnd(46)}║`
+      '  ║  To customize settings:                                  ║'
     )
   );
   console.log(
     hivemindGradient(
-      '  ║  $ ./restart.sh                                     ║'
+      `  ║    nano ${dirName}/.env`.padEnd(60) + '║'
     )
   );
   console.log(
     hivemindGradient(
-      '  ╚══════════════════════════════════════════════════════╝'
+      '  ║                                                          ║'
+    )
+  );
+  console.log(
+    hivemindGradient(
+      '  ╚══════════════════════════════════════════════════════════╝'
     )
   );
   console.log('');
-  console.log(chalk.dim('  Now go lie on the couch. Your team has got this. 🛋️'));
+  console.log(chalk.dim('  Now go lie on the couch. Your team has got this.'));
   console.log('');
 }

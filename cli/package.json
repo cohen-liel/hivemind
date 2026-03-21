@@ -1,7 +1,8 @@
 {
   "name": "create-hivemind",
-  "version": "1.0.0",
-  "description": "One prompt. A full AI engineering team. Go lie on the couch. 🧠",
+  "version": "1.1.0",
+  "description": "One prompt. A full AI engineering team. Go lie on the couch.",
+  "type": "module",
   "author": "Liel Cohen",
   "license": "Apache-2.0",
   "repository": {
@@ -15,7 +16,6 @@
     "ai",
     "agents",
     "claude-code",
-    "openclaw",
     "multi-agent",
     "orchestration",
     "engineering-team",
@@ -27,16 +27,13 @@
   },
   "files": [
     "bin/",
-    "src/",
-    "templates/"
+    "src/"
   ],
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
     "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "inquirer": "^9.3.0",
     "ora": "^8.0.1",
     "gradient-string": "^2.0.2",
     "figlet": "^1.7.0"
