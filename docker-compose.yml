@@ -16,6 +16,16 @@ services:
       - CLAUDE_PROJECTS_DIR=/projects
       - CONVERSATION_STORE_DIR=/app/data
       - LOG_FORMAT=${LOG_FORMAT:-json}
+      # ── OSS Outsourcing configuration ──
+      - LLMLINGUA_ENABLED=${LLMLINGUA_ENABLED:-true}
+      - LLMLINGUA_RATE=${LLMLINGUA_RATE:-0.5}
+      - MEMORY_BACKEND=${MEMORY_BACKEND:-chroma}
+      - CHROMA_PERSIST_DIR=/app/data/chroma_db
+      - SMART_ROUTER_ENABLED=${SMART_ROUTER_ENABLED:-true}
+      - STRONG_MODEL=${STRONG_MODEL:-claude-sonnet-4-20250514}
+      - WEAK_MODEL=${WEAK_MODEL:-claude-haiku-3-5-20241022}
+      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-true}
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 30s

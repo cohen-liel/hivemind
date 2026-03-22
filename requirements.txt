@@ -28,3 +28,20 @@ watchfiles==1.1.1
 sse-starlette==3.3.2
 # QR code in terminal for mobile access (optional — startup works without it)
 qrcode>=7.0
+
+# ── OSS Outsourcing (optional — all have transparent fallbacks) ──────
+# Context compression: Microsoft LLMLingua-2
+# Achieves 2x-5x token compression with minimal semantic loss
+# Fallback: built-in heuristic compression if not installed
+llmlingua>=0.2.0; python_version>='3.9'
+# Semantic memory: ChromaDB vector database
+# Enables semantic search across cross-project knowledge
+# Fallback: JSON-based keyword matching if not installed
+chromadb>=0.5.0
+# Smart model routing: RouteLLM (LMSYS)
+# Dynamically routes between Sonnet/Haiku based on task complexity
+# Fallback: built-in pattern-based classifier if not installed
+routellm>=0.1.0
+# Note: Firejail is a system package, not a pip dependency
+# Install with: sudo apt-get install firejail
+# Fallback: runs without sandboxing if not installed
