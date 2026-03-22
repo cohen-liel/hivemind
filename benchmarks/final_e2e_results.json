@@ -1,0 +1,68 @@
+[
+  {
+    "pipeline": "BASELINE",
+    "task": "todo_api",
+    "tests_passed": 0,
+    "tests_failed": 9,
+    "syntax_errors": 0,
+    "tokens_approx": 1589,
+    "time_sec": 29.4,
+    "fix_attempts": 0,
+    "pytest_output": "============================= test session starts ==============================\nplatform linux -- Python 3.11.0rc1, pytest-9.0.2, pluggy-1.6.0\nrootdir: /home/ubuntu/hivemind\nconfigfile: pyproject.toml\nplugins: anyio-4.11.0\ncollected 9 items\n\ntest_app.py FFFFFFFFF                                                    [100%]\n\n=================================== FAILURES ===================================\n_______________________________ test_create_todo _______________________________\nasync def func"
+  },
+  {
+    "pipeline": "IMPROVED",
+    "task": "todo_api",
+    "tests_passed": 0,
+    "tests_failed": 8,
+    "syntax_errors": 0,
+    "tokens_approx": 4598,
+    "time_sec": 78.5,
+    "fix_attempts": 2,
+    "pytest_output": "============================= test session starts ==============================\nplatform linux -- Python 3.11.0rc1, pytest-9.0.2, pluggy-1.6.0\nrootdir: /home/ubuntu/hivemind\nconfigfile: pyproject.toml\nplugins: anyio-4.11.0\ncollected 8 items\n\ntest_app.py FFFFFFFF                                                     [100%]\n\n=================================== FAILURES ===================================\n________________________ test_crud_operations[asyncio] _________________________\ntest_app.py:16"
+  },
+  {
+    "pipeline": "BASELINE",
+    "task": "user_auth",
+    "tests_passed": 0,
+    "tests_failed": 8,
+    "syntax_errors": 0,
+    "tokens_approx": 1202,
+    "time_sec": 21.2,
+    "fix_attempts": 0,
+    "pytest_output": "============================= test session starts ==============================\nplatform linux -- Python 3.11.0rc1, pytest-9.0.2, pluggy-1.6.0\nrootdir: /home/ubuntu/hivemind\nconfigfile: pyproject.toml\nplugins: anyio-4.11.0\ncollected 8 items\n\ntest_app.py FFFFFFFF                                                     [100%]\n\n=================================== FAILURES ===================================\n____________________________ test_register_success _____________________________\nasync def func"
+  },
+  {
+    "pipeline": "IMPROVED",
+    "task": "user_auth",
+    "tests_passed": 2,
+    "tests_failed": 4,
+    "syntax_errors": 0,
+    "tokens_approx": 3786,
+    "time_sec": 53.0,
+    "fix_attempts": 2,
+    "pytest_output": "============================= test session starts ==============================\nplatform linux -- Python 3.11.0rc1, pytest-9.0.2, pluggy-1.6.0\nrootdir: /home/ubuntu/hivemind\nconfigfile: pyproject.toml\nplugins: anyio-4.11.0\ncollected 6 items\n\ntest_app.py F..FFF                                                       [100%]\n\n=================================== FAILURES ===================================\n__________________ test_register_login_and_protected[asyncio] __________________\ntest_app.py:39"
+  },
+  {
+    "pipeline": "BASELINE",
+    "task": "bookmark_manager",
+    "tests_passed": 0,
+    "tests_failed": 10,
+    "syntax_errors": 0,
+    "tokens_approx": 1895,
+    "time_sec": 37.3,
+    "fix_attempts": 0,
+    "pytest_output": "============================= test session starts ==============================\nplatform linux -- Python 3.11.0rc1, pytest-9.0.2, pluggy-1.6.0\nrootdir: /home/ubuntu/hivemind\nconfigfile: pyproject.toml\nplugins: anyio-4.11.0\ncollected 10 items\n\ntest_app.py FFFFFFFFFF                                                   [100%]\n\n=================================== FAILURES ===================================\n_____________________________ test_create_bookmark _____________________________\nasync def fun"
+  },
+  {
+    "pipeline": "IMPROVED",
+    "task": "bookmark_manager",
+    "tests_passed": 0,
+    "tests_failed": 8,
+    "syntax_errors": 0,
+    "tokens_approx": 5319,
+    "time_sec": 66.3,
+    "fix_attempts": 2,
+    "pytest_output": "============================= test session starts ==============================\nplatform linux -- Python 3.11.0rc1, pytest-9.0.2, pluggy-1.6.0\nrootdir: /home/ubuntu/hivemind\nconfigfile: pyproject.toml\nplugins: anyio-4.11.0\ncollected 8 items\n\ntest_app.py FFFFFFFF                                                     [100%]\n\n=================================== FAILURES ===================================\n________________________ test_create_bookmark[asyncio] _________________________\ntest_app.py:21"
+  }
+]
