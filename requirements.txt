@@ -28,3 +28,9 @@ watchfiles==1.1.1
 sse-starlette==3.3.2
 # QR code in terminal for mobile access (optional — startup works without it)
 qrcode>=7.0
+
+# LangGraph — state-graph orchestrator for DAG executor (dag_executor_langgraph.py)
+langgraph>=0.2.0
+
+# ruff — fast Python linter/formatter (auto-lint for agents)
+ruff>=0.4.0

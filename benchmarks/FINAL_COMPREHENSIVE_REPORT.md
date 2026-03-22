@@ -143,7 +143,7 @@ Code quality score dropped slightly because the LLM quality scorer penalizes "si
 | File | Description |
 |------|-------------|
 | `dag_executor_langgraph.py` | Full LangGraph DAG executor (900 lines, all features) |
-| `isolated_query_openai.py` | gpt-4.1-mini agent with tools (Read, Write, Edit, Bash, Lint) |
+| `benchmarks/isolated_query_openai.py` | Benchmark-only test harness (gpt-4.1-mini). Not for production — production uses Claude Code via `isolated_query.py` |
 | `benchmarks/run_langgraph_refactor.py` | Benchmark runner |
 | `benchmarks/code_quality_scorer.py` | Automated code quality scorer |
 | `benchmarks/results/` | All benchmark results and logs |

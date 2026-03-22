@@ -284,7 +284,7 @@ async def execute_batch(state: DAGState) -> dict:
 
     Each task:
     1. Builds the prompt from task spec + upstream context
-    2. Calls isolated_query (the OpenAI agent loop)
+    2. Calls isolated_query (the Claude Code agent loop)
     3. Extracts structured output from the response
     4. Runs reflexion if applicable
     5. Records notes on the blackboard
@@ -781,7 +781,8 @@ Focus on:
 
 CRITICAL RULES:
 - DO NOT change the logic or behavior of the code. Only improve quality.
-- You can ONLY use Edit, Read, Bash, Glob, Grep, and Lint tools. The Write tool is NOT available.
+- You can ONLY use Edit, Read, Bash, Glob, and Grep tools. The Write tool is NOT available.
+- To lint files, use Bash: `ruff check --fix <file_path>`
 - Use the Edit tool to make targeted find-and-replace improvements.
 - After editing, run `ruff check --fix` on each file via Bash.
 - Finally, run `python -m pytest` to make sure nothing is broken.
@@ -820,7 +821,7 @@ Project files:
                 cwd=project_dir,
                 max_turns=15,
                 max_budget_usd=1.0,
-                allowed_tools=["Read", "Edit", "Bash", "Glob", "Grep", "Lint"],
+                allowed_tools=["Read", "Edit", "Bash", "Glob", "Grep"],
             ),
             timeout=180,
         )
