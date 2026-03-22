@@ -160,8 +160,8 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     ),
     # ── Layer 2: Execution (write code) ──────────────────────────
     "frontend_developer": AgentConfig(
-        timeout=1800,
-        turns=200,
+        timeout=1200,
+        turns=75,
         budget=50.0,
         layer="execution",
         emoji="\U0001f3a8",
@@ -170,8 +170,8 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#ec4899",
     ),
     "backend_developer": AgentConfig(
-        timeout=1800,
-        turns=200,
+        timeout=1200,
+        turns=75,
         budget=50.0,
         layer="execution",
         emoji="\u26a1",
@@ -212,7 +212,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     ),
     "test_engineer": AgentConfig(
         timeout=900,
-        turns=100,
+        turns=40,
         budget=50.0,
         layer="quality",
         emoji="\U0001f9ea",
@@ -252,8 +252,8 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     ),
     # ── Legacy aliases (backward compat) ─────────────────────────
     "developer": AgentConfig(
-        timeout=1800,
-        turns=200,
+        timeout=1200,
+        turns=75,
         budget=50.0,
         layer="execution",
         emoji="\U0001f4bb",

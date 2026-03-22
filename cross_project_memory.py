@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ class CrossProjectMemory:
         self.store_dir = Path(store_dir)
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self._file = self.store_dir / _MEMORY_FILE
+        self._lock = threading.Lock()
         self._data: dict[str, Any] = self._load()
 
     def _load(self) -> dict[str, Any]:
@@ -58,12 +60,15 @@ class CrossProjectMemory:
         }
 
     def _save(self) -> None:
-        """Persist memory to disk."""
+        """Persist memory to disk (thread-safe via atomic write)."""
         try:
-            self._file.write_text(
-                json.dumps(self._data, indent=2, default=str),
-                encoding="utf-8",
-            )
+            with self._lock:
+                tmp = self._file.with_suffix(".tmp")
+                tmp.write_text(
+                    json.dumps(self._data, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                tmp.replace(self._file)
         except OSError as e:
             logger.warning(f"[CrossMemory] Failed to save: {e}")
 

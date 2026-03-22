@@ -507,8 +507,8 @@ def _get_task_timeout(role: str, task: TaskInput | None = None) -> int:
     base = get_agent_timeout(role)
     if task is not None:
         complexity = compute_task_complexity(task)
-        # Linear interpolation: complexity 1→1.0×, 5→2.0×
-        scale_factor = 1.0 + (complexity - 1.0) * 0.25
+        # Linear interpolation: complexity 1→1.0×, 5→1.5× (capped at 1.5×)
+        scale_factor = 1.0 + min((complexity - 1.0) * 0.125, 0.5)
         scaled = int(base * scale_factor)
         if scaled != base:
             logger.debug(
@@ -667,7 +667,8 @@ async def _watchdog_loop(ctx: _ExecutionContext, interval: float = 30.0) -> None
         _snapshot_claude_pids,
     )
 
-    IDLE_THRESHOLD = 120  # seconds without a tool call
+    IDLE_THRESHOLD = 120  # seconds without a tool call before warning
+    IDLE_KILL_THRESHOLD = 300  # seconds without a tool call before force-kill
     # Also detect agents that never started working (0 turns after 60s)
     STARTUP_IDLE_THRESHOLD = 60  # seconds with 0 turns
 
@@ -731,6 +732,32 @@ async def _watchdog_loop(ctx: _ExecutionContext, interval: float = 30.0) -> None
                         f"elapsed={elapsed:.0f}s > timeout={timeout}s, turns={turns}. "
                         f"Waiting for asyncio.wait_for to cancel it."
                     )
+                elif idle > IDLE_KILL_THRESHOLD and turns > 0:
+                    # Agent has been completely idle for 5+ minutes — force kill
+                    # it instead of waiting for the full timeout. This prevents
+                    # wasting 20+ minutes on stuck agents (observed in benchmarks).
+                    logger.warning(
+                        f"[WATCHDOG] Task {task_id} ({role}) FORCE KILLING: "
+                        f"idle for {idle:.0f}s (kill threshold={IDLE_KILL_THRESHOLD}s), "
+                        f"turns={turns}, elapsed={elapsed:.0f}s/{timeout}s. "
+                        f"Killing orphan processes to unblock downstream tasks."
+                    )
+                    task_pids_before = info.get("pids_before", None)
+                    if task_pids_before is not None:
+                        killed = await _async_kill_orphan_claude_processes(
+                            task_pids_before, 1.0,
+                        )
+                    else:
+                        current_pids = await asyncio.to_thread(_snapshot_claude_pids)
+                        killed = await _async_kill_specific_pids(
+                            current_pids, 1.0,
+                        )
+                    if killed:
+                        logger.warning(
+                            f"[WATCHDOG] Killed {killed} process(es) for idle task {task_id}"
+                        )
+                    ctx.running_tasks.pop(task_id, None)
+
                 elif idle > IDLE_THRESHOLD and turns > 0:
                     logger.warning(
                         f"[WATCHDOG] Task {task_id} ({role}) appears idle: "
