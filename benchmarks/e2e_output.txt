@@ -1,0 +1,148 @@
+======================================================================
+HiveMind E2E Project Simulation Benchmark
+======================================================================
+Project: TaskFlow (Task Management API)
+DAG: 5 layers, 7 agents
+LLM: gpt-4.1-mini (strong) / gpt-4.1-nano (weak)
+
+
+======================================================================
+RUNNING PIPELINE: OLD
+======================================================================
+
+--- Layer 1 ---
+  [pm] model=gpt-4.1-mini, context=0 tokens, memory=3 lessons... done (6.5s, 339+532 tokens)
+
+--- Layer 2 ---
+  [architect] model=gpt-4.1-mini, context=19 tokens, memory=3 lessons... done (18.0s, 209+1800 tokens)
+
+--- Layer 3 ---
+  [backend_dev] model=gpt-4.1-mini, context=26 tokens, memory=3 lessons... done (10.6s, 239+1072 tokens)
+  [frontend_dev] model=gpt-4.1-mini, context=33 tokens, memory=3 lessons... done (11.2s, 255+1053 tokens)
+
+--- Layer 4 ---
+  [tester] model=gpt-4.1-mini, context=40 tokens, memory=3 lessons... done (24.6s, 280+1917 tokens)
+  [devops] model=gpt-4.1-mini, context=47 tokens, memory=3 lessons... done (4.7s, 305+473 tokens)
+
+--- Layer 5 ---
+  [code_reviewer] model=gpt-4.1-mini, context=54 tokens, memory=3 lessons... done (14.3s, 315+1133 tokens)
+
+======================================================================
+RUNNING PIPELINE: NEW
+======================================================================
+
+--- Layer 1 ---
+  [pm] model=gpt-4.1-mini, context=0 tokens, memory=3 lessons... done (8.0s, 339+648 tokens)
+
+--- Layer 2 ---
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 4792.44it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (883 > 512). Running this sequence through the model will result in indexing errors
+  [architect] model=gpt-4.1-mini, context=290 tokens, memory=3 lessons... done (13.4s, 540+1713 tokens)
+
+--- Layer 3 ---
+  [backend_dev] model=gpt-4.1-mini, context=614 tokens, memory=3 lessons... done (6.9s, 999+1061 tokens)
+  [frontend_dev] model=gpt-4.1-nano, context=956 tokens, memory=3 lessons... done (7.8s, 1491+1654 tokens)
+
+--- Layer 4 ---
+  [tester] model=gpt-4.1-nano, context=1280 tokens, memory=3 lessons... done (8.2s, 1954+1717 tokens)
+  [devops] model=gpt-4.1-mini, context=1646 tokens, memory=3 lessons... done (8.5s, 2468+693 tokens)
+
+--- Layer 5 ---
+  [code_reviewer] model=gpt-4.1-mini, context=1910 tokens, memory=3 lessons... done (17.1s, 2866+2145 tokens)
+
+[*] Judging old pipeline output...
+
+[*] Judging new pipeline output...
+
+======================================================================
+E2E BENCHMARK RESULTS
+======================================================================
+
+Agent              Pipeline Model                Time   In Tok  Out Tok   Ctx Comp  Memory
+----------------------------------------------------------------------------------------------------
+pm                 OLD      gpt-4.1-mini         6.5s      339      532        N/A       3
+                   NEW      gpt-4.1-mini         8.0s      339      648        N/A       3
+
+architect          OLD      gpt-4.1-mini        18.0s      209     1800     19/356       3
+                   NEW      gpt-4.1-mini        13.4s      540     1713    290/388       3
+
+backend_dev        OLD      gpt-4.1-mini        10.6s      239     1072     26/770       3
+                   NEW      gpt-4.1-mini         6.9s      999     1061    614/803       3
+
+frontend_dev       OLD      gpt-4.1-mini        11.2s      255     1053    33/1051       3
+                   NEW      gpt-4.1-nano         7.8s     1491     1654   956/1081       3
+
+tester             OLD      gpt-4.1-mini        24.6s      280     1917    40/1322       3
+                   NEW      gpt-4.1-nano         8.2s     1954     1717  1280/1357       3
+
+devops             OLD      gpt-4.1-mini         4.7s      305      473    47/1657       3
+                   NEW      gpt-4.1-mini         8.5s     2468      693  1646/1639       3
+
+code_reviewer      OLD      gpt-4.1-mini        14.3s      315     1133    54/1868       3
+                   NEW      gpt-4.1-mini        17.1s     2866     2145  1910/1940       3
+
+
+======================================================================
+Metric                                    OLD Pipeline       NEW Pipeline        Delta
+----------------------------------------------------------------------
+Total Time                                       89.9s             115.3s       +25.3s
+Total Input Tokens                               1,942             10,657       +8,715
+Total Output Tokens                              7,980              9,631       +1,651
+Estimated Cost                      $           0.0135 $           0.0146 $    +0.0011
+
+Quality Dimension                            OLD Score          NEW Score        Delta
+----------------------------------------------------------------------
+completeness                                        8/10                 8/10          +0
+code_quality                                        7/10                 7/10          +0
+correctness                                         7/10                 7/10          +0
+security                                            6/10                 7/10          +1 ★
+testing                                             7/10                 7/10          +0
+documentation                                       6/10                 6/10          +0
+architecture                                        8/10                 8/10          +0
+memory_utilization                                  7/10                 8/10          +1 ★
+overall                                             7/10                 7/10          +0
+
+--- OLD Pipeline Strengths ---
+  + Well-defined task breakdown and clear role assignments by PM
+  + Good architectural design with clear folder structure and technology stack
+  + Backend implemented with FastAPI and SQLAlchemy, covering all main endpoints
+  + Use of Pydantic models for validation and error handling
+  + Dockerfile and CI pipeline well set up for build and test automation
+  + Testing includes unit and integration tests with an isolated in-memory DB
+  + Frontend CLI client to interact with the API, demonstrating usability
+
+--- OLD Pipeline Weaknesses ---
+  - Incomplete or truncated outputs in some agents (e.g., PM's devops section cut off, backend code truncated)
+  - Some missing or incomplete details in backend implementation (e.g., update_task endpoint incomplete)
+  - Security considerations like authentication are mentioned as future scope but not implemented
+  - Input validation is basic; no advanced sanitization or rate limiting shown
+  - Documentation is minimal with few comments and no README content shown
+  - Testing coverage and edge cases appear reasonable but not fully demonstrated
+  - Frontend is a CLI client only, no web UI which was optional but not addressed
+  - No mention of logging, monitoring, or error reporting mechanisms
+
+--- NEW Pipeline Strengths ---
+  + Comprehensive task breakdown covering architecture, backend, testing, and devops
+  + Well-structured project file layout with clear separation of concerns
+  + Use of modern, appropriate tech stack (FastAPI, SQLAlchemy, Pydantic, Docker, GitHub Actions)
+  + Good input validation using Pydantic and FastAPI Query/Path parameters
+  + Unit tests with in-memory SQLite and dependency overrides for isolation
+  + Dockerfile and CI pipeline included to support deployment and automation
+  + Pagination and filtering implemented with sensible defaults and validation
+  + Attention to lessons learned (e.g., check_same_thread=False, Path validation)
+
+--- NEW Pipeline Weaknesses ---
+  - Several code snippets are incomplete or truncated (backend_dev, frontend_dev, tester)
+  - Frontend is minimal and CLI-based rather than a full UI, and incomplete
+  - Some missing or incomplete error handling in backend code snippet
+  - Limited or no visible docstrings or inline comments in code samples
+  - README content not shown or minimal, limiting documentation score
+  - Testing coverage >80% claimed but actual coverage report or edge case tests not fully visible
+  - Security considerations like authentication/authorization missing
+  - No rate limiting or advanced security controls mentioned
+
+[*] Full results saved to /home/ubuntu/hivemind/benchmarks/e2e_results.json
+
+======================================================================
+E2E BENCHMARK COMPLETE
+======================================================================
