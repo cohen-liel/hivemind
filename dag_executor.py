@@ -2055,6 +2055,26 @@ async def _run_single_task(
         except Exception as exc:
             logger.warning(f"[DAG] Task {task.id}: Reflexion failed (non-fatal): {exc}")
 
+        # ── Code Execution Gate: validate and fix code artifacts ──
+        try:
+            from code_exec_gate import validate_and_fix
+            output, gate_report = await validate_and_fix(
+                task_output=output,
+                task_input=task,
+                project_dir=str(ctx.project_dir),
+                session_id=ctx.session_ids.get(session_key),
+                system_prompt=system_prompt,
+                sdk=ctx.sdk,
+                role_name=role_name,
+            )
+            if gate_report.get("fix_attempts", 0) > 0:
+                logger.info(
+                    "[DAG] Task %s: CodeGate ran %d fix attempts, improved=%s",
+                    task.id, gate_report["fix_attempts"], gate_report.get("improved", False),
+                )
+        except Exception as exc:
+            logger.warning(f"[DAG] Task {task.id}: CodeGate failed (non-fatal): {exc}")
+
         # ── Record structured notes from task output ──
         try:
             if output.is_successful() and output.summary:
