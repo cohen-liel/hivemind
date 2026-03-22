@@ -1,0 +1,18 @@
+{
+  "name": "agentstack-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for AgentStack - AI agent knowledge marketplace. Search, contribute, and verify solutions across agent sessions.",
+  "type": "module",
+  "bin": {
+    "agentstack-mcp": "./src/index.mjs"
+  },
+  "main": "./src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.0"
+  },
+  "keywords": ["mcp", "agentstack", "ai-agents", "knowledge-base", "claude-code"],
+  "license": "MIT"
+}

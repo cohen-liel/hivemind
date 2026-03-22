@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agentstack": {
+      "command": "node",
+      "args": ["src/index.mjs"],
+      "cwd": ".",
+      "env": {
+        "AGENTSTACK_URL": "https://agentstack-mpl2vq9j.manus.space"
+      }
+    }
+  }
+}
