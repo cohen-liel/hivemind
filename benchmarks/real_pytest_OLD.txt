@@ -1,0 +1,27 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.0rc1, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/ubuntu/hivemind
+configfile: pyproject.toml
+plugins: anyio-4.11.0
+collecting ... collected 12 items
+
+test_app.py::test_agent_creation_success PASSED                          [  8%]
+test_app.py::test_agent_creation_duplicate_name PASSED                   [ 16%]
+test_app.py::test_list_agents_empty_and_nonempty PASSED                  [ 25%]
+test_app.py::test_get_single_agent_found_and_not_found PASSED            [ 33%]
+test_app.py::test_send_message_success PASSED                            [ 41%]
+test_app.py::test_send_message_to_nonexistent_agent PASSED               [ 50%]
+test_app.py::test_get_conversation_between_agents FAILED                 [ 58%]
+
+=================================== FAILURES ===================================
+_____________________ test_get_conversation_between_agents _____________________
+test_app.py:128: in test_get_conversation_between_agents
+    assert len(msgs) == 2
+E   AssertionError: assert 3 == 2
+E    +  where 3 = len([{'id': 1, 'sender_id': 1, 'receiver_id': 2, 'content': 'Msg 1 from A to B', 'timestamp': '2026-03-22T03:47:47'}, {'id': 2, 'sender_id': 2, 'receiver_id': 1, 'content': 'Reply from B to A', 'timestamp': '2026-03-22T03:47:47'}, {'id': 3, 'sender_id': 1, 'receiver_id': 2, 'content': 'Msg 2 from A to B', 'timestamp': '2026-03-22T03:47:47'}])
+=========================== short test summary info ============================
+FAILED test_app.py::test_get_conversation_between_agents - AssertionError: assert 3 == 2
+ +  where 3 = len([{'id': 1, 'sender_id': 1, 'receiver_id': 2, 'content': 'Msg 1 from A to B', 'timestamp': '2026-03-22T03:47:47'}, {'id': 2, 'sender_id': 2, 'receiver_id': 1, 'content': 'Reply from B to A', 'timestamp': '2026-03-22T03:47:47'}, {'id': 3, 'sender_id': 1, 'receiver_id': 2, 'content': 'Msg 2 from A to B', 'timestamp': '2026-03-22T03:47:47'}])
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+========================= 1 failed, 6 passed in 1.26s ==========================
