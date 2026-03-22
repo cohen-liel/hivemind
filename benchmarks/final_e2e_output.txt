@@ -1,0 +1,68 @@
+Loading weights:   0%|          | 0/391 [00:00<?, ?it/s]Loading weights:  14%|█▎        | 53/391 [00:00<00:00, 521.06it/s]Loading weights:  35%|███▌      | 137/391 [00:00<00:00, 682.29it/s]Loading weights:  52%|█████▏    | 205/391 [00:00<00:00, 581.82it/s]Loading weights:  68%|██████▊   | 265/391 [00:00<00:00, 572.03it/s]Loading weights:  91%|█████████ | 354/391 [00:00<00:00, 668.91it/s]Loading weights: 100%|██████████| 391/391 [00:00<00:00, 621.35it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (849 > 512). Running this sequence through the model will result in indexing errors
+[OK] LLMLingua loaded
+[OK] ChromaDB loaded
+======================================================================
+FINAL E2E BENCHMARK — BASELINE vs IMPROVED (3 real projects)
+======================================================================
+
+============================================================
+PROJECT: todo_api — Build a TODO list REST API with FastAPI and SQLite
+============================================================
+
+[BASELINE] Running todo_api...
+  Tests: 0 passed, 9 failed, 0 syntax errors
+
+[IMPROVED] Running todo_api...
+  Tests: 0 passed, 8 failed, 0 syntax errors
+  Fix attempts: 2
+
+============================================================
+PROJECT: user_auth — Build a user authentication system with registration and login
+============================================================
+
+[BASELINE] Running user_auth...
+  Tests: 0 passed, 8 failed, 0 syntax errors
+
+[IMPROVED] Running user_auth...
+  Tests: 2 passed, 4 failed, 0 syntax errors
+  Fix attempts: 2
+
+============================================================
+PROJECT: bookmark_manager — Build a bookmark manager API with tags and search
+============================================================
+
+[BASELINE] Running bookmark_manager...
+  Tests: 0 passed, 10 failed, 0 syntax errors
+
+[IMPROVED] Running bookmark_manager...
+  Tests: 0 passed, 8 failed, 0 syntax errors
+  Fix attempts: 2
+
+======================================================================
+FINAL SUMMARY
+======================================================================
+
+Metric                        BASELINE     IMPROVED       Winner
+-----------------------------------------------------------------
+Tests Passed                         0            2     IMPROVED
+Tests Failed                        27           20     IMPROVED
+Syntax Errors                        0            0          TIE
+Tokens (approx)                   4686        13703     BASELINE
+Time (sec)                        87.9        197.8     BASELINE
+
+Per-project breakdown:
+
+  todo_api:
+    BASELINE: 0 passed, 9 failed (29.4s)
+    IMPROVED: 0 passed, 8 failed (78.5s, 2 fixes)
+
+  user_auth:
+    BASELINE: 0 passed, 8 failed (21.2s)
+    IMPROVED: 2 passed, 4 failed (53.0s, 2 fixes)
+
+  bookmark_manager:
+    BASELINE: 0 passed, 10 failed (37.3s)
+    IMPROVED: 0 passed, 8 failed (66.3s, 2 fixes)
+
+Results saved to /home/ubuntu/hivemind/benchmarks/final_e2e_results.json

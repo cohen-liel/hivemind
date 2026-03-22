@@ -64,33 +64,17 @@ def classify_context_priority(entry: str) -> int:
 
 
 def compress_context_entry(entry: str) -> str:
-    """Compress a context entry to its essential information.
+    """Compress a context entry using LLMLingua-2.
 
-    Keeps: role/status header, status line, issues, file changes.
-    Truncates: raw output, verbose descriptions.
-    Falls back to the first 300 chars of the entry if nothing matches,
-    so we never silently return an empty string.
+    Delegates to context_compressor module which uses a trained model
+    to preserve import paths, function signatures, and API endpoints
+    that downstream agents need to write working code.
+
+    Benchmark: LLMLingua answers 54% of factual questions vs 17% for
+    the old regex approach (h2h_compression.py).
     """
-    if not entry:
-        return entry
-    lines = entry.split("\n")
-    essential = []
-    for line in lines:
-        ls = line.strip()
-        if ls.startswith(("[", "Status:", "Files changed:", "Issues:", "Commands:")):
-            essential.append(line[:200])
-        elif ls.startswith("Output:"):
-            essential.append(line[:120])
-        elif ls.startswith("Test results:"):
-            essential.append(line[:150])
-        elif ls.startswith("Diff summary:"):
-            essential.append(line[:120])
-        elif len(essential) < 4:
-            essential.append(line[:150])
-    # Fallback: if compression produced nothing, return first 300 chars
-    if not essential:
-        return entry[:300]
-    return "\n".join(essential)
+    from context_compressor import compress_context_entry as _llmlingua_compress
+    return _llmlingua_compress(entry)
 
 
 # ── Core context operations ───────────────────────────────────────────
