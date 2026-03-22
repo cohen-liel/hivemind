@@ -1,18 +1,24 @@
-"""Reflexion Engine — self-critique layer for agent outputs.
+"""Reflexion Engine — iterative self-critique layer for agent outputs.
 
-Before an agent's output is accepted, the Reflexion Engine asks a lightweight
-LLM call to critique the result against the original task requirements.  If
-the critique identifies concrete issues, the agent gets one chance to fix them
-in a "reflection turn" — reusing the same session so it has full context.
+Before an agent's output is accepted, the Reflexion Engine runs an iterative
+critique-fix loop: the agent critiques its own work, fixes issues, then
+re-critiques the fix — repeating until the output passes or the iteration
+budget is exhausted.
 
 Research basis:
     Shinn et al. (2023) "Reflexion: Language Agents with Verbal Reinforcement
     Learning" — showed that adding a self-reflection step improves HumanEval
     pass rates from 80% to 91% and ALFWorld success from 75% to 97%.
 
+    Multi-pass extension: Madaan et al. (2023) "Self-Refine: Iterative
+    Refinement with Self-Feedback" — showed that 2-3 iterations of
+    self-feedback consistently outperform single-pass reflection across
+    code generation, math reasoning, and dialogue tasks.
+
 Token cost:
-    ~1,000–2,000 tokens per reflection (critique prompt + response).
-    This is far cheaper than a full remediation cycle (~50,000+ tokens).
+    ~1,000–2,000 tokens per reflection iteration (critique prompt + response).
+    With max 3 iterations: ~3,000–6,000 tokens total.
+    Still far cheaper than a full remediation cycle (~50,000+ tokens).
 
 Integration:
     Called from ``dag_executor._run_single_task`` after Phase 2 (SUMMARY)
@@ -26,8 +32,10 @@ Architecture:
     - Uses ``isolated_query`` with tools=[] (no tool use, just reasoning)
     - Reuses the agent's existing session for full context
     - Critique is structured: returns a JSON verdict with issues list
-    - If issues found, a single "fix turn" is given to the agent
-    - The fix turn reuses the same session with tools enabled
+    - If issues found, a fix turn is given to the agent with full tools
+    - After fix, a RE-CRITIQUE validates the fix (multi-pass)
+    - Loop continues until: pass, max iterations reached, or no improvement
+    - Each iteration tracks cost and issues for full audit trail
 """
 
 from __future__ import annotations
@@ -47,6 +55,7 @@ REFLEXION_ENABLED: bool = cfg._get("REFLEXION_ENABLED", "true", str).lower() == 
 REFLEXION_CONFIDENCE_THRESHOLD: float = cfg._get("REFLEXION_CONFIDENCE_THRESHOLD", "0.95", float)
 REFLEXION_MAX_FIX_TURNS: int = cfg._get("REFLEXION_MAX_FIX_TURNS", "10", int)
 REFLEXION_CRITIQUE_BUDGET: float = cfg._get("REFLEXION_CRITIQUE_BUDGET", "2.0", float)
+REFLEXION_MAX_ITERATIONS: int = cfg._get("REFLEXION_MAX_ITERATIONS", "3", int)
 
 
 @dataclass
@@ -66,6 +75,28 @@ class ReflexionVerdict:
         return (
             f"Reflexion: found {len(self.issues)} issue(s). "
             f"Suggestions: {'; '.join(self.suggestions[:3])}"
+        )
+
+
+@dataclass
+class ReflexionTrace:
+    """Full audit trail of the multi-pass reflexion loop."""
+
+    iterations: int = 0
+    total_critique_cost: float = 0.0
+    total_fix_cost: float = 0.0
+    verdicts: list[ReflexionVerdict] = field(default_factory=list)
+    issues_found_per_iteration: list[int] = field(default_factory=list)
+    final_verdict: ReflexionVerdict | None = None
+    converged: bool = False  # True if loop ended with a "pass" verdict
+
+    def summary(self) -> str:
+        status = "converged (pass)" if self.converged else f"stopped after {self.iterations} iterations"
+        total_issues = sum(self.issues_found_per_iteration)
+        return (
+            f"Reflexion: {self.iterations} iteration(s), {status}, "
+            f"{total_issues} total issues found, "
+            f"cost=${self.total_critique_cost + self.total_fix_cost:.4f}"
         )
 
 
@@ -96,11 +127,16 @@ def should_reflect(task: TaskInput, output: TaskOutput) -> bool:
     return True
 
 
-def build_critique_prompt(task: TaskInput, output: TaskOutput) -> str:
+def build_critique_prompt(task: TaskInput, output: TaskOutput, iteration: int = 1) -> str:
     """Build the self-critique prompt for the Reflexion phase.
 
     The prompt asks the agent to evaluate its own work against the
     original acceptance criteria and identify concrete issues.
+
+    Args:
+        task: The original task input.
+        output: The agent's current output.
+        iteration: Which iteration of the critique loop (1-based).
     """
     criteria_text = "\n".join(f"  - {c}" for c in (task.acceptance_criteria or []))
     if not criteria_text:
@@ -109,11 +145,22 @@ def build_critique_prompt(task: TaskInput, output: TaskOutput) -> str:
     artifacts_text = ", ".join(output.artifacts[:10]) if output.artifacts else "(none listed)"
     issues_text = "\n".join(f"  - {i}" for i in output.issues) if output.issues else "  (none)"
 
+    iteration_context = ""
+    if iteration > 1:
+        iteration_context = (
+            f"\n**⚠️ This is iteration {iteration} of self-reflection.**\n"
+            f"You already attempted to fix issues in the previous iteration. "
+            f"Focus ONLY on issues that remain UNFIXED. If your previous fix "
+            f"resolved the issues, respond with verdict: pass.\n"
+            f"Do NOT re-report issues that have already been fixed.\n"
+        )
+
     return (
         "## SELF-REFLECTION PHASE\n\n"
         "You just completed a task. Before your work is accepted, critically "
         "evaluate what you did. Be honest — finding issues now is MUCH cheaper "
         "than a full remediation cycle later.\n\n"
+        f"{iteration_context}"
         f"**Original Goal:** {task.goal}\n\n"
         f"**Acceptance Criteria:**\n{criteria_text}\n\n"
         f"**Your Summary:** {output.summary}\n\n"
@@ -144,20 +191,29 @@ def build_critique_prompt(task: TaskInput, output: TaskOutput) -> str:
     )
 
 
-def build_fix_prompt(verdict: ReflexionVerdict) -> str:
+def build_fix_prompt(verdict: ReflexionVerdict, iteration: int = 1) -> str:
     """Build the prompt for the fix turn after a failing critique.
 
-    The agent gets one chance to address the issues found during
-    self-reflection, with full tool access.
+    Args:
+        verdict: The critique verdict with issues and suggestions.
+        iteration: Which iteration of the fix loop (1-based).
     """
     issues_text = "\n".join(f"  {i + 1}. {issue}" for i, issue in enumerate(verdict.issues))
     suggestions_text = "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(verdict.suggestions))
 
+    urgency = ""
+    if iteration > 1:
+        urgency = (
+            f"\n**⚠️ This is fix attempt #{iteration}.** Previous fixes did not fully "
+            f"resolve all issues. Focus on the REMAINING issues listed below. "
+            f"Be thorough — this may be your last chance.\n"
+        )
+
     return (
         "## REFLEXION FIX PHASE\n\n"
         "Your self-reflection found issues that need fixing. "
-        "Address them now — this is your last chance before the output "
-        "is committed.\n\n"
+        "Address them now.\n\n"
+        f"{urgency}"
         f"**Issues Found:**\n{issues_text}\n\n"
         f"**Suggested Fixes:**\n{suggestions_text}\n\n"
         "Fix these issues using the available tools. Focus on the most "
@@ -230,7 +286,10 @@ async def run_reflexion(
     project_dir: str,
     sdk: object,
 ) -> tuple[TaskOutput, ReflexionVerdict]:
-    """Execute the full Reflexion cycle: critique + optional fix.
+    """Execute the iterative multi-pass Reflexion cycle.
+
+    Runs up to REFLEXION_MAX_ITERATIONS of: critique → fix → re-critique.
+    Stops early if critique passes or fix doesn't improve output.
 
     Args:
         task: The original task input.
@@ -241,161 +300,223 @@ async def run_reflexion(
         sdk: The SDK client instance.
 
     Returns:
-        Tuple of (possibly improved output, verdict with details).
+        Tuple of (possibly improved output, final verdict with details).
     """
     from isolated_query import isolated_query
 
+    trace = ReflexionTrace()
+    current_output = output
+    current_session = session_id
+    accumulated_cost = 0.0
+    accumulated_turns = 0
+
     t0 = time.monotonic()
 
-    # ── Step 1: Self-Critique ──
-    critique_prompt = build_critique_prompt(task, output)
+    for iteration in range(1, REFLEXION_MAX_ITERATIONS + 1):
+        trace.iterations = iteration
+        iter_t0 = time.monotonic()
 
-    logger.info(
-        "[Reflexion] Task %s: starting self-critique (session=%s)",
-        task.id,
-        "resume" if session_id else "new",
-    )
+        # ── Step 1: Self-Critique ──
+        critique_prompt = build_critique_prompt(task, current_output, iteration=iteration)
 
-    try:
-        critique_response = await isolated_query(
-            sdk,
-            prompt=critique_prompt,
-            system_prompt=system_prompt,
-            cwd=project_dir,
-            session_id=session_id,
-            max_turns=3,  # Critique needs minimal turns
-            max_budget_usd=REFLEXION_CRITIQUE_BUDGET,
-            tools=[],  # No tools — pure reasoning
-            max_retries=0,
-        )
-    except Exception as exc:
-        logger.warning(
-            "[Reflexion] Task %s: critique call failed (%s), skipping reflexion",
-            task.id,
-            exc,
-        )
-        return output, ReflexionVerdict(should_fix=False, critique_text=f"Error: {exc}")
-
-    if critique_response.is_error:
-        logger.warning(
-            "[Reflexion] Task %s: critique returned error: %s",
-            task.id,
-            critique_response.error_message[:200],
-        )
-        return output, ReflexionVerdict(
-            should_fix=False,
-            critique_cost_usd=critique_response.cost_usd,
-            critique_text=f"Error: {critique_response.error_message[:200]}",
-        )
-
-    verdict = parse_critique_response(critique_response.text)
-    verdict.critique_cost_usd = critique_response.cost_usd
-
-    critique_elapsed = time.monotonic() - t0
-    logger.info(
-        "[Reflexion] Task %s: critique done in %.1fs — verdict=%s, issues=%d, cost=$%.4f",
-        task.id,
-        critique_elapsed,
-        "needs_fix" if verdict.should_fix else "pass",
-        len(verdict.issues),
-        verdict.critique_cost_usd,
-    )
-
-    # ── Step 2: If critique passed, boost confidence and return ──
-    if not verdict.should_fix:
-        # Reflexion passed — boost confidence slightly
-        output.confidence = min(output.confidence + 0.05, 1.0)
-        output.cost_usd += verdict.critique_cost_usd
-        return output, verdict
-
-    # ── Step 3: Fix Turn — agent addresses the issues ──
-    fix_prompt = build_fix_prompt(verdict)
-    fix_session = critique_response.session_id or session_id
-
-    logger.info(
-        "[Reflexion] Task %s: starting fix turn (%d issues, max_turns=%d)",
-        task.id,
-        len(verdict.issues),
-        REFLEXION_MAX_FIX_TURNS,
-    )
-
-    try:
-        fix_response = await isolated_query(
-            sdk,
-            prompt=fix_prompt,
-            system_prompt=system_prompt,
-            cwd=project_dir,
-            session_id=fix_session,
-            max_turns=REFLEXION_MAX_FIX_TURNS,
-            max_budget_usd=REFLEXION_CRITIQUE_BUDGET * 2,
-            max_retries=0,
-        )
-    except Exception as exc:
-        logger.warning(
-            "[Reflexion] Task %s: fix turn failed (%s), keeping original output",
-            task.id,
-            exc,
-        )
-        output.cost_usd += verdict.critique_cost_usd
-        output.issues.extend(verdict.issues)
-        return output, verdict
-
-    fix_elapsed = time.monotonic() - t0 - critique_elapsed
-
-    if fix_response.is_error:
-        logger.warning(
-            "[Reflexion] Task %s: fix turn returned error: %s",
-            task.id,
-            fix_response.error_message[:200],
-        )
-        output.cost_usd += verdict.critique_cost_usd + fix_response.cost_usd
-        output.issues.extend(verdict.issues)
-        return output, verdict
-
-    # ── Step 4: Extract improved output from fix response ──
-    from contracts import extract_task_output
-
-    fix_output = extract_task_output(
-        fix_response.text,
-        task.id,
-        task.role.value,
-        tool_uses=fix_response.tool_uses if fix_response else None,
-    )
-
-    total_cost = output.cost_usd + verdict.critique_cost_usd + fix_response.cost_usd
-    total_turns = output.turns_used + 3 + fix_response.num_turns  # 3 for critique
-
-    logger.info(
-        "[Reflexion] Task %s: fix turn done in %.1fs — "
-        "new_status=%s, new_confidence=%.2f, fix_cost=$%.4f",
-        task.id,
-        fix_elapsed,
-        fix_output.status.value,
-        fix_output.confidence,
-        fix_response.cost_usd,
-    )
-
-    # Use the fix output if it's better than the original
-    if fix_output.is_successful() and fix_output.confidence >= output.confidence:
-        fix_output.cost_usd = total_cost
-        fix_output.turns_used = total_turns
-        # Merge artifacts — fix may have changed additional files
-        all_artifacts = list(set((output.artifacts or []) + (fix_output.artifacts or [])))
-        fix_output.artifacts = all_artifacts
         logger.info(
-            "[Reflexion] Task %s: using improved output (confidence %.2f -> %.2f)",
+            "[Reflexion] Task %s: iteration %d/%d — starting critique (session=%s)",
             task.id,
-            output.confidence,
-            fix_output.confidence,
+            iteration,
+            REFLEXION_MAX_ITERATIONS,
+            "resume" if current_session else "new",
         )
-        return fix_output, verdict
 
-    # Fix didn't improve things — keep original but add cost and issues
-    output.cost_usd = total_cost
-    output.turns_used = total_turns
-    output.issues.extend([f"[Reflexion] {issue}" for issue in verdict.issues])
+        try:
+            critique_response = await isolated_query(
+                sdk,
+                prompt=critique_prompt,
+                system_prompt=system_prompt,
+                cwd=project_dir,
+                session_id=current_session,
+                max_turns=3,  # Critique needs minimal turns
+                max_budget_usd=REFLEXION_CRITIQUE_BUDGET,
+                tools=[],  # No tools — pure reasoning
+                max_retries=0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Reflexion] Task %s: iteration %d critique failed (%s), stopping",
+                task.id,
+                iteration,
+                exc,
+            )
+            break
+
+        if critique_response.is_error:
+            logger.warning(
+                "[Reflexion] Task %s: iteration %d critique error: %s",
+                task.id,
+                iteration,
+                critique_response.error_message[:200],
+            )
+            accumulated_cost += critique_response.cost_usd
+            break
+
+        verdict = parse_critique_response(critique_response.text)
+        verdict.critique_cost_usd = critique_response.cost_usd
+        accumulated_cost += critique_response.cost_usd
+        accumulated_turns += 3
+
+        trace.verdicts.append(verdict)
+        trace.total_critique_cost += critique_response.cost_usd
+        trace.issues_found_per_iteration.append(len(verdict.issues))
+
+        # Update session for continuity
+        if critique_response.session_id:
+            current_session = critique_response.session_id
+
+        critique_elapsed = time.monotonic() - iter_t0
+        logger.info(
+            "[Reflexion] Task %s: iteration %d critique done in %.1fs — "
+            "verdict=%s, issues=%d, cost=$%.4f",
+            task.id,
+            iteration,
+            critique_elapsed,
+            "needs_fix" if verdict.should_fix else "pass",
+            len(verdict.issues),
+            verdict.critique_cost_usd,
+        )
+
+        # ── If critique passed, we're done ──
+        if not verdict.should_fix:
+            trace.converged = True
+            trace.final_verdict = verdict
+            # Boost confidence — passed self-critique
+            confidence_boost = 0.05 * iteration  # More iterations passed = more confidence
+            current_output.confidence = min(current_output.confidence + confidence_boost, 1.0)
+            logger.info(
+                "[Reflexion] Task %s: PASSED at iteration %d (confidence boosted by +%.2f)",
+                task.id,
+                iteration,
+                confidence_boost,
+            )
+            break
+
+        # ── Step 2: Fix Turn ──
+        fix_prompt = build_fix_prompt(verdict, iteration=iteration)
+        fix_session = critique_response.session_id or current_session
+
+        logger.info(
+            "[Reflexion] Task %s: iteration %d fix turn (%d issues, max_turns=%d)",
+            task.id,
+            iteration,
+            len(verdict.issues),
+            REFLEXION_MAX_FIX_TURNS,
+        )
+
+        try:
+            fix_response = await isolated_query(
+                sdk,
+                prompt=fix_prompt,
+                system_prompt=system_prompt,
+                cwd=project_dir,
+                session_id=fix_session,
+                max_turns=REFLEXION_MAX_FIX_TURNS,
+                max_budget_usd=REFLEXION_CRITIQUE_BUDGET * 2,
+                max_retries=0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Reflexion] Task %s: iteration %d fix failed (%s), stopping",
+                task.id,
+                iteration,
+                exc,
+            )
+            current_output.issues.extend(verdict.issues)
+            trace.final_verdict = verdict
+            break
+
+        fix_elapsed = time.monotonic() - iter_t0 - critique_elapsed
+        accumulated_cost += fix_response.cost_usd
+        accumulated_turns += fix_response.num_turns
+        trace.total_fix_cost += fix_response.cost_usd
+
+        # Update session for next iteration
+        if fix_response.session_id:
+            current_session = fix_response.session_id
+
+        if fix_response.is_error:
+            logger.warning(
+                "[Reflexion] Task %s: iteration %d fix error: %s",
+                task.id,
+                iteration,
+                fix_response.error_message[:200],
+            )
+            current_output.issues.extend(verdict.issues)
+            trace.final_verdict = verdict
+            break
+
+        # ── Step 3: Extract improved output ──
+        from contracts import extract_task_output
+
+        fix_output = extract_task_output(
+            fix_response.text,
+            task.id,
+            task.role.value,
+            tool_uses=fix_response.tool_uses if fix_response else None,
+        )
+
+        logger.info(
+            "[Reflexion] Task %s: iteration %d fix done in %.1fs — "
+            "new_status=%s, new_confidence=%.2f, fix_cost=$%.4f",
+            task.id,
+            iteration,
+            fix_elapsed,
+            fix_output.status.value,
+            fix_output.confidence,
+            fix_response.cost_usd,
+        )
+
+        # Use the fix output if it's better
+        if fix_output.is_successful() and fix_output.confidence >= current_output.confidence:
+            # Merge artifacts
+            all_artifacts = list(set(
+                (current_output.artifacts or []) + (fix_output.artifacts or [])
+            ))
+            fix_output.artifacts = all_artifacts
+            current_output = fix_output
+            logger.info(
+                "[Reflexion] Task %s: iteration %d improved output (confidence %.2f -> %.2f)",
+                task.id,
+                iteration,
+                output.confidence,
+                fix_output.confidence,
+            )
+        else:
+            # Fix didn't improve — stop iterating, diminishing returns
+            logger.info(
+                "[Reflexion] Task %s: iteration %d fix did not improve, stopping loop",
+                task.id,
+                iteration,
+            )
+            current_output.issues.extend([f"[Reflexion iter {iteration}] {i}" for i in verdict.issues])
+            trace.final_verdict = verdict
+            break
+
+        trace.final_verdict = verdict
+
+    # ── Finalize: accumulate costs and turns ──
+    total_elapsed = time.monotonic() - t0
+    current_output.cost_usd = output.cost_usd + accumulated_cost
+    current_output.turns_used = output.turns_used + accumulated_turns
+
+    # If we never set a final verdict (e.g., first critique failed), create one
+    if trace.final_verdict is None:
+        trace.final_verdict = ReflexionVerdict(should_fix=False, critique_text="No critique completed")
+
     logger.info(
-        "[Reflexion] Task %s: fix did not improve output, keeping original",
+        "[Reflexion] Task %s: %s — total %.1fs, %d iterations, cost=$%.4f",
         task.id,
+        trace.summary(),
+        total_elapsed,
+        trace.iterations,
+        accumulated_cost,
     )
-    return output, verdict
+
+    return current_output, trace.final_verdict
