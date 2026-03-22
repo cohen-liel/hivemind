@@ -1237,6 +1237,29 @@ async def _execute_graph_inner(
                 if not output.is_successful():
                     await _handle_failure(task, output, ctx)
 
+                # ── Review-Fix Loop: backtrack when reviewer finds issues ──
+                try:
+                    from review_fix_loop import inject_review_fix_tasks
+
+                    if output.is_successful():
+                        injected = await inject_review_fix_tasks(
+                            reviewer_task=task,
+                            reviewer_output=output,
+                            ctx=ctx,
+                        )
+                        if injected:
+                            logger.info(
+                                "[DAG] Task %s: Review-Fix loop triggered — "
+                                "fix tasks injected into graph",
+                                task.id,
+                            )
+                except ImportError:
+                    pass  # review_fix_loop not installed
+                except Exception as exc:
+                    logger.warning(
+                        f"[DAG] Task {task.id}: Review-Fix loop failed (non-fatal): {exc}"
+                    )
+
                 # Validate required artifacts
                 if output.is_successful() and task.required_artifacts:
                     _check_required_artifact_types(task, output)
