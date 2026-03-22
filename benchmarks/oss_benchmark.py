@@ -38,11 +38,13 @@ sys.path.insert(0, str(HIVEMIND_ROOT / "benchmarks"))
 
 # Monkey-patch isolated_query
 import isolated_query_openai
+
 sys.modules["isolated_query"] = isolated_query_openai
+
+from code_quality_scorer import score_project
 
 from contracts import AgentRole, TaskGraph, TaskInput
 from prompts import PROMPT_REGISTRY
-from code_quality_scorer import score_project
 
 logging.basicConfig(
     level=logging.INFO,
@@ -250,6 +252,7 @@ PROJECTS = {
 
 # ── ChromaDB Memory Retrieval ──────────────────────────────────────────────
 
+
 def _get_chromadb_lessons(task_goal: str) -> str:
     """Use ChromaDB to retrieve relevant lessons based on semantic similarity."""
     import chromadb
@@ -264,21 +267,81 @@ def _get_chromadb_lessons(task_goal: str) -> str:
     # Seed with lessons if empty
     if collection.count() == 0:
         lessons = [
-            {"id": "1", "text": "Always use parameterized SQL queries to prevent SQL injection. Never use f-strings for SQL.", "category": "security"},
-            {"id": "2", "text": "Use logging.getLogger(__name__) instead of print() for all output. Configure logging at app startup.", "category": "logging"},
-            {"id": "3", "text": "Always define custom exception classes (e.g., ResourceNotFoundError) instead of using generic ValueError/RuntimeError.", "category": "error_handling"},
-            {"id": "4", "text": "Add type hints to ALL function signatures. This catches bugs early and improves IDE support.", "category": "type_safety"},
-            {"id": "5", "text": "Use constants for magic numbers. Define SHORT_CODE_LENGTH = 6 instead of hardcoding 6 everywhere.", "category": "constants"},
-            {"id": "6", "text": "Always validate input at API boundaries using Pydantic validators. Don't trust any external input.", "category": "validation"},
-            {"id": "7", "text": "Write docstrings for all public functions using Google-style format (Args, Returns, Raises).", "category": "documentation"},
-            {"id": "8", "text": "Use context managers (with statements) for all resource management (files, DB connections).", "category": "resource_management"},
-            {"id": "9", "text": "Separate database operations into their own functions. Don't mix SQL with business logic.", "category": "architecture"},
-            {"id": "10", "text": "In tests, always use isolated test databases (tmp_path) and clean up after each test.", "category": "testing"},
-            {"id": "11", "text": "When building REST APIs, always return consistent error response formats with error codes and messages.", "category": "api_design"},
-            {"id": "12", "text": "Use Pydantic's Field() with description and examples for API documentation.", "category": "api_design"},
-            {"id": "13", "text": "Always handle database connection errors gracefully with retry logic.", "category": "reliability"},
-            {"id": "14", "text": "Use HTTP 201 for resource creation, 204 for deletion, 404 for not found.", "category": "http_standards"},
-            {"id": "15", "text": "Write integration tests that test the full request-response cycle, not just unit tests.", "category": "testing"},
+            {
+                "id": "1",
+                "text": "Always use parameterized SQL queries to prevent SQL injection. Never use f-strings for SQL.",
+                "category": "security",
+            },
+            {
+                "id": "2",
+                "text": "Use logging.getLogger(__name__) instead of print() for all output. Configure logging at app startup.",
+                "category": "logging",
+            },
+            {
+                "id": "3",
+                "text": "Always define custom exception classes (e.g., ResourceNotFoundError) instead of using generic ValueError/RuntimeError.",
+                "category": "error_handling",
+            },
+            {
+                "id": "4",
+                "text": "Add type hints to ALL function signatures. This catches bugs early and improves IDE support.",
+                "category": "type_safety",
+            },
+            {
+                "id": "5",
+                "text": "Use constants for magic numbers. Define SHORT_CODE_LENGTH = 6 instead of hardcoding 6 everywhere.",
+                "category": "constants",
+            },
+            {
+                "id": "6",
+                "text": "Always validate input at API boundaries using Pydantic validators. Don't trust any external input.",
+                "category": "validation",
+            },
+            {
+                "id": "7",
+                "text": "Write docstrings for all public functions using Google-style format (Args, Returns, Raises).",
+                "category": "documentation",
+            },
+            {
+                "id": "8",
+                "text": "Use context managers (with statements) for all resource management (files, DB connections).",
+                "category": "resource_management",
+            },
+            {
+                "id": "9",
+                "text": "Separate database operations into their own functions. Don't mix SQL with business logic.",
+                "category": "architecture",
+            },
+            {
+                "id": "10",
+                "text": "In tests, always use isolated test databases (tmp_path) and clean up after each test.",
+                "category": "testing",
+            },
+            {
+                "id": "11",
+                "text": "When building REST APIs, always return consistent error response formats with error codes and messages.",
+                "category": "api_design",
+            },
+            {
+                "id": "12",
+                "text": "Use Pydantic's Field() with description and examples for API documentation.",
+                "category": "api_design",
+            },
+            {
+                "id": "13",
+                "text": "Always handle database connection errors gracefully with retry logic.",
+                "category": "reliability",
+            },
+            {
+                "id": "14",
+                "text": "Use HTTP 201 for resource creation, 204 for deletion, 404 for not found.",
+                "category": "http_standards",
+            },
+            {
+                "id": "15",
+                "text": "Write integration tests that test the full request-response cycle, not just unit tests.",
+                "category": "testing",
+            },
         ]
         collection.add(
             documents=[l["text"] for l in lessons],
@@ -293,15 +356,14 @@ def _get_chromadb_lessons(task_goal: str) -> str:
     )
 
     if results and results["documents"]:
-        lessons_text = "\n".join(
-            f"- {doc}" for doc in results["documents"][0]
-        )
+        lessons_text = "\n".join(f"- {doc}" for doc in results["documents"][0])
         return lessons_text
 
     return ""
 
 
 # ── LangChain Agent ────────────────────────────────────────────────────────
+
 
 async def _run_langchain_agent(
     prompt: str,
@@ -310,16 +372,18 @@ async def _run_langchain_agent(
     max_turns: int = 30,
 ) -> dict:
     """Run a LangChain ReAct agent with the same tools."""
-    from langchain_core.tools import tool
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_openai import ChatOpenAI
-
     # Import our tool executors
     from isolated_query_openai import (
-        _exec_read, _exec_write, _exec_edit,
-        _exec_bash, _exec_glob, _exec_grep,
-        _resolve_path,
+        _exec_bash,
+        _exec_edit,
+        _exec_glob,
+        _exec_grep,
+        _exec_read,
+        _exec_write,
     )
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.tools import tool
+    from langchain_openai import ChatOpenAI
 
     # Define LangChain tools wrapping our executors
     @tool
@@ -340,7 +404,9 @@ async def _run_langchain_agent(
     @tool
     def edit_file(file_path: str, old_string: str, new_string: str) -> str:
         """Edit a file by replacing an exact string match with new content."""
-        return _exec_edit(cwd, {"file_path": file_path, "old_string": old_string, "new_string": new_string})
+        return _exec_edit(
+            cwd, {"file_path": file_path, "old_string": old_string, "new_string": new_string}
+        )
 
     @tool
     def bash(command: str, timeout: int = 120) -> str:
@@ -398,6 +464,7 @@ async def _run_langchain_agent(
 
         # Execute tool calls
         from langchain_core.messages import ToolMessage
+
         for tc in response.tool_calls:
             tool_name = tc["name"]
             tool_args = tc["args"]
@@ -428,6 +495,7 @@ async def _run_langchain_agent(
 
 # ── Benchmark Runner ───────────────────────────────────────────────────────
 
+
 class DummySDK:
     pass
 
@@ -440,7 +508,7 @@ def _run_pytest(project_dir: str) -> dict:
 
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header"] + test_files,
+            [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header", *test_files],
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -454,12 +522,18 @@ def _run_pytest(project_dir: str) -> dict:
                 m_passed = re.search(r"(\d+) passed", line)
                 m_failed = re.search(r"(\d+) failed", line)
                 m_errors = re.search(r"(\d+) error", line)
-                if m_passed: passed = int(m_passed.group(1))
-                if m_failed: failed = int(m_failed.group(1))
-                if m_errors: errors = int(m_errors.group(1))
+                if m_passed:
+                    passed = int(m_passed.group(1))
+                if m_failed:
+                    failed = int(m_failed.group(1))
+                if m_errors:
+                    errors = int(m_errors.group(1))
         return {
-            "passed": passed, "failed": failed, "errors": errors,
-            "total": passed + failed + errors, "output": output[-2000:],
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "total": passed + failed + errors,
+            "output": output[-2000:],
             "returncode": result.returncode,
         }
     except subprocess.TimeoutExpired:
@@ -478,7 +552,9 @@ async def run_langgraph_benchmark(project_name: str, output_dir: str) -> dict:
 
     # Init git
     subprocess.run(["git", "init"], cwd=project_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "bench@test"], cwd=project_dir, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "bench@test"], cwd=project_dir, capture_output=True
+    )
     subprocess.run(["git", "config", "user.name", "Bench"], cwd=project_dir, capture_output=True)
     os.makedirs(os.path.join(project_dir, ".hivemind"), exist_ok=True)
 
@@ -526,7 +602,9 @@ async def run_chromadb_benchmark(project_name: str, output_dir: str) -> dict:
     os.makedirs(project_dir, exist_ok=True)
 
     subprocess.run(["git", "init"], cwd=project_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "bench@test"], cwd=project_dir, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "bench@test"], cwd=project_dir, capture_output=True
+    )
     subprocess.run(["git", "config", "user.name", "Bench"], cwd=project_dir, capture_output=True)
     os.makedirs(os.path.join(project_dir, ".hivemind"), exist_ok=True)
 
@@ -544,14 +622,16 @@ async def run_chromadb_benchmark(project_name: str, output_dir: str) -> dict:
         else:
             enhanced_goal = task.goal
 
-        enhanced_tasks.append(TaskInput(
-            id=task.id,
-            role=task.role,
-            goal=enhanced_goal,
-            depends_on=task.depends_on,
-            context_from=getattr(task, "context_from", []),
-            acceptance_criteria=task.acceptance_criteria,
-        ))
+        enhanced_tasks.append(
+            TaskInput(
+                id=task.id,
+                role=task.role,
+                goal=enhanced_goal,
+                depends_on=task.depends_on,
+                context_from=getattr(task, "context_from", []),
+                acceptance_criteria=task.acceptance_criteria,
+            )
+        )
 
     graph = TaskGraph(
         project_id=f"bench_chromadb_{project_name}",
@@ -606,7 +686,9 @@ async def run_langchain_benchmark(project_name: str, output_dir: str) -> dict:
     os.makedirs(project_dir, exist_ok=True)
 
     subprocess.run(["git", "init"], cwd=project_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "bench@test"], cwd=project_dir, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "bench@test"], cwd=project_dir, capture_output=True
+    )
     subprocess.run(["git", "config", "user.name", "Bench"], cwd=project_dir, capture_output=True)
     os.makedirs(os.path.join(project_dir, ".hivemind"), exist_ok=True)
 
@@ -621,7 +703,7 @@ async def run_langchain_benchmark(project_name: str, output_dir: str) -> dict:
 
     for task in project_def["tasks"]:
         # Wait for dependencies
-        for dep_id in (task.depends_on or []):
+        for dep_id in task.depends_on or []:
             if dep_id not in task_results_map:
                 logger.warning(f"Dependency {dep_id} not found for {task.id}")
 
@@ -704,9 +786,9 @@ async def run_all(variant: str) -> list[dict]:
     results = []
 
     for project_name in PROJECTS:
-        logger.info(f"\n{'#'*60}")
+        logger.info(f"\n{'#' * 60}")
         logger.info(f"# OSS Benchmark: {project_name} ({variant})")
-        logger.info(f"{'#'*60}\n")
+        logger.info(f"{'#' * 60}\n")
 
         metrics = await runner(project_name, output_dir)
         results.append(metrics)
@@ -717,14 +799,18 @@ async def run_all(variant: str) -> list[dict]:
             json.dump(metrics, f, indent=2, default=str)
 
         if "error" not in metrics:
-            logger.info(f"\n{'='*60}")
+            logger.info(f"\n{'=' * 60}")
             logger.info(f"RESULT: {project_name} ({variant})")
-            logger.info(f"  Tasks: {metrics.get('tasks_succeeded', 0)}/{metrics.get('tasks_total', 0)}")
-            logger.info(f"  Tests: {metrics.get('tests_passed', 0)}/{metrics.get('tests_total', 0)} passed")
+            logger.info(
+                f"  Tasks: {metrics.get('tasks_succeeded', 0)}/{metrics.get('tasks_total', 0)}"
+            )
+            logger.info(
+                f"  Tests: {metrics.get('tests_passed', 0)}/{metrics.get('tests_total', 0)} passed"
+            )
             logger.info(f"  Tokens: {metrics.get('total_tokens', 0)}")
             logger.info(f"  Time: {metrics.get('elapsed_seconds', 0)}s")
             logger.info(f"  Code Quality: {metrics.get('code_quality_score', 'N/A')}/10")
-            logger.info(f"{'='*60}\n")
+            logger.info(f"{'=' * 60}\n")
 
     # Save combined
     combined_file = os.path.join(output_dir, f"{variant}_combined_results.json")
@@ -732,10 +818,12 @@ async def run_all(variant: str) -> list[dict]:
         json.dump(results, f, indent=2, default=str)
 
     # Print summary
-    print(f"\n{'='*90}")
+    print(f"\n{'=' * 90}")
     print(f"{'OSS BENCHMARK RESULTS':^90}")
-    print(f"{'='*90}")
-    print(f"{'Project':<18} {'Variant':<18} {'Tasks':<8} {'Tests':<12} {'Tokens':<10} {'Time':<8} {'Quality':<8}")
+    print(f"{'=' * 90}")
+    print(
+        f"{'Project':<18} {'Variant':<18} {'Tasks':<8} {'Tests':<12} {'Tokens':<10} {'Time':<8} {'Quality':<8}"
+    )
     print("-" * 90)
 
     for r in results:
@@ -747,9 +835,11 @@ async def run_all(variant: str) -> list[dict]:
         tokens = str(r["total_tokens"])
         time_s = f"{r['elapsed_seconds']}s"
         quality = f"{r.get('code_quality_score', 'N/A')}/10"
-        print(f"{r['project']:<18} {r['variant']:<18} {tasks:<8} {tests:<12} {tokens:<10} {time_s:<8} {quality:<8}")
+        print(
+            f"{r['project']:<18} {r['variant']:<18} {tasks:<8} {tests:<12} {tokens:<10} {time_s:<8} {quality:<8}"
+        )
 
-    print(f"{'='*90}")
+    print(f"{'=' * 90}")
 
     return results
 

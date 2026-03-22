@@ -13,20 +13,14 @@ layer.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import re
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Annotated, TypedDict
+from typing import TypedDict
 
-from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
+from langgraph.graph import END, StateGraph
 
 # Ensure hivemind root is on path
 HIVEMIND_ROOT = Path(__file__).resolve().parent.parent
@@ -34,10 +28,10 @@ sys.path.insert(0, str(HIVEMIND_ROOT))
 sys.path.insert(0, str(HIVEMIND_ROOT / "benchmarks"))
 
 import isolated_query_openai
+
 sys.modules["isolated_query"] = isolated_query_openai
 
-from contracts import AgentRole, TaskGraph, TaskInput
-from prompts import PROMPT_REGISTRY
+from contracts import TaskGraph
 from sdk_client import SDKResponse
 
 logger = logging.getLogger(__name__)
@@ -45,8 +39,10 @@ logger = logging.getLogger(__name__)
 
 # ── LangGraph State ────────────────────────────────────────────────────────
 
+
 class DAGState(TypedDict):
     """State shared across all nodes in the LangGraph."""
+
     project_dir: str
     tasks: list[dict]  # Serialized TaskInput list
     completed_tasks: list[str]  # IDs of completed tasks
@@ -60,6 +56,7 @@ class DAGState(TypedDict):
 
 
 # ── Node Functions ─────────────────────────────────────────────────────────
+
 
 def _get_ready_tasks(state: DAGState) -> list[dict]:
     """Find tasks whose dependencies are all completed."""
@@ -193,6 +190,7 @@ def should_continue(state: DAGState) -> str:
 
 # ── Build the LangGraph ────────────────────────────────────────────────────
 
+
 def build_dag_graph() -> StateGraph:
     """Build the LangGraph state graph for DAG execution."""
     workflow = StateGraph(DAGState)
@@ -216,9 +214,11 @@ def build_dag_graph() -> StateGraph:
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class LangGraphResult:
     """Result from LangGraph DAG execution."""
+
     success_count: int = 0
     failure_count: int = 0
     total_tokens: int = 0
@@ -239,13 +239,15 @@ async def execute_graph_langgraph(
     # Serialize tasks for LangGraph state
     tasks_data = []
     for t in graph.tasks:
-        tasks_data.append({
-            "id": t.id,
-            "role": t.role.value if hasattr(t.role, "value") else str(t.role),
-            "goal": t.goal,
-            "depends_on": t.depends_on or [],
-            "context_from": getattr(t, "context_from", []) or [],
-        })
+        tasks_data.append(
+            {
+                "id": t.id,
+                "role": t.role.value if hasattr(t.role, "value") else str(t.role),
+                "goal": t.goal,
+                "depends_on": t.depends_on or [],
+                "context_from": getattr(t, "context_from", []) or [],
+            }
+        )
 
     initial_state: DAGState = {
         "project_dir": project_dir,
@@ -268,8 +270,7 @@ async def execute_graph_langgraph(
 
     # Count successes/failures
     successes = sum(
-        1 for r in final_state["task_results"].values()
-        if r.get("status") == "completed"
+        1 for r in final_state["task_results"].values() if r.get("status") == "completed"
     )
     failures = len(final_state["task_results"]) - successes
 

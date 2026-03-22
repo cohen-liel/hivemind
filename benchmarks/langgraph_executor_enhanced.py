@@ -7,18 +7,14 @@ but using LangGraph as the state machine backbone.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
 # Ensure hivemind root is on path
 HIVEMIND_ROOT = Path(__file__).resolve().parent.parent
@@ -26,21 +22,22 @@ sys.path.insert(0, str(HIVEMIND_ROOT))
 sys.path.insert(0, str(HIVEMIND_ROOT / "benchmarks"))
 
 import isolated_query_openai
+
 sys.modules["isolated_query"] = isolated_query_openai
 
-from contracts import AgentRole, TaskGraph, TaskInput, TaskOutput, extract_task_output
-from prompts import PROMPT_REGISTRY
-from sdk_client import SDKResponse
-from reflexion import run_reflexion, should_reflect
-from git_discipline import commit_single_task, executor_commit
-from file_output_manager import ArtifactRegistry
-from structured_notes import StructuredNotes, NoteCategory
 from blackboard import Blackboard
+from contracts import AgentRole, TaskGraph, TaskInput, extract_task_output
+from file_output_manager import ArtifactRegistry
+from git_discipline import commit_single_task
+from reflexion import run_reflexion, should_reflect
+from sdk_client import SDKResponse
+from structured_notes import NoteCategory, StructuredNotes
 
 logger = logging.getLogger(__name__)
 
 
 # ── LangGraph State ────────────────────────────────────────────────────────
+
 
 class EnhancedDAGState(TypedDict):
     project_dir: str
@@ -56,12 +53,13 @@ class EnhancedDAGState(TypedDict):
     max_rounds: int
     # HiveMind feature state
     artifact_registry: Any  # ArtifactRegistry instance
-    structured_notes: Any   # StructuredNotes instance
-    blackboard: Any         # Blackboard instance
+    structured_notes: Any  # StructuredNotes instance
+    blackboard: Any  # Blackboard instance
     vision: str
 
 
 # ── Helper Functions ───────────────────────────────────────────────────────
+
 
 def _get_ready_tasks(state: EnhancedDAGState) -> list[dict]:
     """Find tasks whose dependencies are all completed."""
@@ -132,7 +130,9 @@ async def _execute_task_enhanced(
         )
         if bb_ctx:
             prompt_parts.append(f"\n\n<team_notes>\n{bb_ctx}\n</team_notes>")
-            logger.info(f"[LangGraph+] Task {task_id}: injected Blackboard context ({len(bb_ctx)} chars)")
+            logger.info(
+                f"[LangGraph+] Task {task_id}: injected Blackboard context ({len(bb_ctx)} chars)"
+            )
     except Exception as e:
         logger.debug(f"[LangGraph+] Blackboard context failed (non-fatal): {e}")
 
@@ -246,6 +246,7 @@ async def _execute_task_enhanced(
 
 # ── LangGraph Nodes ────────────────────────────────────────────────────────
 
+
 def find_ready_tasks(state: EnhancedDAGState) -> EnhancedDAGState:
     """Router node: increment round counter."""
     state["current_round"] = state.get("current_round", 0) + 1
@@ -300,6 +301,7 @@ def should_continue(state: EnhancedDAGState) -> str:
 
 # ── Build the LangGraph ────────────────────────────────────────────────────
 
+
 def build_enhanced_dag_graph() -> Any:
     """Build the LangGraph state graph with full HiveMind features."""
     workflow = StateGraph(EnhancedDAGState)
@@ -323,9 +325,11 @@ def build_enhanced_dag_graph() -> Any:
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class LangGraphEnhancedResult:
     """Result from enhanced LangGraph DAG execution."""
+
     success_count: int = 0
     failure_count: int = 0
     total_tokens: int = 0
@@ -352,14 +356,16 @@ async def execute_graph_langgraph_enhanced(
     # Serialize tasks
     tasks_data = []
     for t in graph.tasks:
-        tasks_data.append({
-            "id": t.id,
-            "role": t.role.value if hasattr(t.role, "value") else str(t.role),
-            "goal": t.goal,
-            "depends_on": t.depends_on or [],
-            "context_from": getattr(t, "context_from", []) or [],
-            "acceptance_criteria": getattr(t, "acceptance_criteria", []) or [],
-        })
+        tasks_data.append(
+            {
+                "id": t.id,
+                "role": t.role.value if hasattr(t.role, "value") else str(t.role),
+                "goal": t.goal,
+                "depends_on": t.depends_on or [],
+                "context_from": getattr(t, "context_from", []) or [],
+                "acceptance_criteria": getattr(t, "acceptance_criteria", []) or [],
+            }
+        )
 
     initial_state: EnhancedDAGState = {
         "project_dir": project_dir,
@@ -393,8 +399,7 @@ async def execute_graph_langgraph_enhanced(
 
     # Count successes/failures
     successes = sum(
-        1 for r in final_state["task_results"].values()
-        if r.get("status") == "completed"
+        1 for r in final_state["task_results"].values() if r.get("status") == "completed"
     )
     failures = len(final_state["task_results"]) - successes
 

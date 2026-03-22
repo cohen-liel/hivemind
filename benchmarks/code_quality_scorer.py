@@ -17,7 +17,6 @@ Scoring dimensions:
 import json
 import os
 import sys
-from pathlib import Path
 
 from openai import OpenAI
 
@@ -28,7 +27,7 @@ def collect_project_files(project_dir: str) -> dict[str, str]:
     for f in sorted(os.listdir(project_dir)):
         if f.endswith(".py") and not f.startswith("."):
             fpath = os.path.join(project_dir, f)
-            with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
+            with open(fpath, encoding="utf-8", errors="replace") as fh:
                 files[f] = fh.read()
     return files
 
@@ -83,7 +82,10 @@ def score_project(project_dir: str) -> dict:
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
-                {"role": "system", "content": "You are a strict but fair senior code reviewer. Return only valid JSON."},
+                {
+                    "role": "system",
+                    "content": "You are a strict but fair senior code reviewer. Return only valid JSON.",
+                },
                 {"role": "user", "content": prompt},
             ],
             max_tokens=2000,
@@ -103,7 +105,11 @@ def score_project(project_dir: str) -> dict:
         return result
 
     except json.JSONDecodeError as e:
-        return {"error": f"Failed to parse review JSON: {e}", "raw_response": text, "overall_score": 0}
+        return {
+            "error": f"Failed to parse review JSON: {e}",
+            "raw_response": text,
+            "overall_score": 0,
+        }
     except Exception as e:
         return {"error": f"API error: {e}", "overall_score": 0}
 
@@ -111,15 +117,15 @@ def score_project(project_dir: str) -> dict:
 def print_quality_report(result: dict, label: str = ""):
     """Print a formatted quality report."""
     if "error" in result:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"CODE QUALITY REPORT {label}")
         print(f"Error: {result['error']}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         return
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"CODE QUALITY REPORT {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Files reviewed: {', '.join(result.get('files_reviewed', []))}")
     print(f"Total lines: {result.get('total_lines', 'N/A')}")
     print(f"\nOverall Score: {result.get('overall_score', 'N/A')}/10")
@@ -133,21 +139,21 @@ def print_quality_report(result: dict, label: str = ""):
         print(f"{name:<30} {score:<8} {explanation}")
 
     if result.get("strengths"):
-        print(f"\nStrengths:")
+        print("\nStrengths:")
         for s in result["strengths"]:
             print(f"  + {s}")
 
     if result.get("weaknesses"):
-        print(f"\nWeaknesses:")
+        print("\nWeaknesses:")
         for w in result["weaknesses"]:
             print(f"  - {w}")
 
     if result.get("critical_issues"):
-        print(f"\nCritical Issues:")
+        print("\nCritical Issues:")
         for i in result["critical_issues"]:
             print(f"  !! {i}")
 
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

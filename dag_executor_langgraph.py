@@ -23,14 +23,12 @@ import logging
 import os
 import subprocess
 import time
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 from operator import add
-from pathlib import Path
-from typing import Annotated, Any, Awaitable, Callable, Literal
+from typing import Annotated, Any, Literal
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import RetryPolicy
 
 from contracts import (
     AgentRole,
@@ -52,16 +50,30 @@ logger = logging.getLogger(__name__)
 MAX_ROUNDS = 50
 MAX_TOTAL_REMEDIATIONS = 10
 MAX_REMEDIATION_DEPTH = 3
-_WRITER_ROLES = {AgentRole.BACKEND_DEVELOPER, AgentRole.FRONTEND_DEVELOPER, AgentRole.DEVOPS,
-                 AgentRole.DEVELOPER, AgentRole.PYTHON_BACKEND, AgentRole.TYPESCRIPT_ARCHITECT,
-                 AgentRole.DATABASE_EXPERT}
-_READER_ROLES = {AgentRole.TEST_ENGINEER, AgentRole.TESTER, AgentRole.REVIEWER,
-                 AgentRole.SECURITY_AUDITOR, AgentRole.UX_CRITIC}
+_WRITER_ROLES = {
+    AgentRole.BACKEND_DEVELOPER,
+    AgentRole.FRONTEND_DEVELOPER,
+    AgentRole.DEVOPS,
+    AgentRole.DEVELOPER,
+    AgentRole.PYTHON_BACKEND,
+    AgentRole.TYPESCRIPT_ARCHITECT,
+    AgentRole.DATABASE_EXPERT,
+}
+_READER_ROLES = {
+    AgentRole.TEST_ENGINEER,
+    AgentRole.TESTER,
+    AgentRole.REVIEWER,
+    AgentRole.SECURITY_AUDITOR,
+    AgentRole.UX_CRITIC,
+}
 
 
 # ── Reducers ───────────────────────────────────────────────────────────────
 
-def _merge_completed(old: dict[str, TaskOutput], new: dict[str, TaskOutput]) -> dict[str, TaskOutput]:
+
+def _merge_completed(
+    old: dict[str, TaskOutput], new: dict[str, TaskOutput]
+) -> dict[str, TaskOutput]:
     """Merge completed task outputs — new entries override old ones."""
     merged = {**old}
     merged.update(new)
@@ -93,6 +105,7 @@ class DAGState(TypedDict):
 
     Every field uses a reducer so parallel nodes can update state safely.
     """
+
     # Core graph data (set once at init)
     graph: TaskGraph
     project_dir: str
@@ -128,6 +141,7 @@ class DAGState(TypedDict):
 
 
 # ── Helper: Plan batches (same logic as original) ─────────────────────────
+
 
 def _plan_batches(tasks: list[TaskInput]) -> list[list[TaskInput]]:
     """Split ready tasks into sequential batches respecting file conflicts."""
@@ -175,6 +189,7 @@ def _split_writers_by_conflicts(writers: list[TaskInput]) -> list[list[TaskInput
 
 # ── Helper: Get max turns / timeout / budget per role ─────────────────────
 
+
 def _get_max_turns(role: str) -> int:
     """Get max turns for a role."""
     role_turns = {
@@ -208,6 +223,7 @@ def _get_task_budget(role: str) -> float:
 
 # ── Node: select_batch ─────────────────────────────────────────────────────
 
+
 def select_batch(state: DAGState) -> dict:
     """Select the next batch of ready tasks to execute.
 
@@ -232,9 +248,7 @@ def select_batch(state: DAGState) -> dict:
             }
 
         # Check for failed dependencies blocking progress
-        has_failures = any(
-            not out.is_successful() for out in completed.values()
-        )
+        has_failures = any(not out.is_successful() for out in completed.values())
         if has_failures:
             return {
                 "status": "failed",
@@ -279,6 +293,7 @@ def select_batch(state: DAGState) -> dict:
 
 # ── Node: execute_batch ────────────────────────────────────────────────────
 
+
 async def execute_batch(state: DAGState) -> dict:
     """Execute all tasks in the current batch (potentially in parallel).
 
@@ -316,11 +331,7 @@ async def execute_batch(state: DAGState) -> dict:
                 pass
 
         # Build prompt from upstream context
-        context_outputs = {
-            tid: completed[tid]
-            for tid in task.context_from
-            if tid in completed
-        }
+        context_outputs = {tid: completed[tid] for tid in task.context_from if tid in completed}
         prompt = task_input_to_prompt(
             task,
             context_outputs,
@@ -340,6 +351,7 @@ async def execute_batch(state: DAGState) -> dict:
         # Inject project boundary
         try:
             from project_context import build_project_header
+
             _boundary = build_project_header(graph.project_id, project_dir)
             if _boundary and _boundary not in system_prompt:
                 system_prompt = _boundary + "\n\n" + system_prompt
@@ -377,11 +389,9 @@ async def execute_batch(state: DAGState) -> dict:
                 ),
                 timeout=task_timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             elapsed = time.monotonic() - t0
-            logger.warning(
-                f"[LG-DAG] Task {task.id}: timeout after {elapsed:.0f}s"
-            )
+            logger.warning(f"[LG-DAG] Task {task.id}: timeout after {elapsed:.0f}s")
             output = TaskOutput(
                 task_id=task.id,
                 status=TaskStatus.FAILED,
@@ -393,9 +403,7 @@ async def execute_batch(state: DAGState) -> dict:
             output.failure_category = FailureCategory.TIMEOUT
             return output
         except Exception as e:
-            logger.error(
-                f"[LG-DAG] Task {task.id}: exception: {e}", exc_info=True
-            )
+            logger.error(f"[LG-DAG] Task {task.id}: exception: {e}", exc_info=True)
             output = TaskOutput(
                 task_id=task.id,
                 status=TaskStatus.FAILED,
@@ -458,24 +466,27 @@ async def execute_batch(state: DAGState) -> dict:
                     tools=[],  # No tools for summary
                 )
                 if summary_response.text:
-                    summary_output = extract_task_output(
-                        summary_response.text, task.id, role_name
-                    )
+                    summary_output = extract_task_output(summary_response.text, task.id, role_name)
                     if summary_output.is_successful():
                         summary_output.cost_usd = output.cost_usd + summary_response.cost_usd
-                        summary_output.input_tokens = output.input_tokens + summary_response.input_tokens
-                        summary_output.output_tokens = output.output_tokens + summary_response.output_tokens
-                        summary_output.total_tokens = output.total_tokens + summary_response.total_tokens
+                        summary_output.input_tokens = (
+                            output.input_tokens + summary_response.input_tokens
+                        )
+                        summary_output.output_tokens = (
+                            output.output_tokens + summary_response.output_tokens
+                        )
+                        summary_output.total_tokens = (
+                            output.total_tokens + summary_response.total_tokens
+                        )
                         summary_output.turns_used = output.turns_used + summary_response.num_turns
                         output = summary_output
             except Exception as exc:
-                logger.warning(
-                    f"[LG-DAG] Task {task.id}: summary phase failed: {exc}"
-                )
+                logger.warning(f"[LG-DAG] Task {task.id}: summary phase failed: {exc}")
 
         # Reflexion: self-critique before accepting output
         try:
             from reflexion import run_reflexion, should_reflect
+
             if should_reflect(task, output):
                 logger.info(
                     f"[LG-DAG] Task {task.id}: entering Reflexion phase "
@@ -494,9 +505,7 @@ async def execute_batch(state: DAGState) -> dict:
                     f"{verdict.summary()} (cost=${verdict.critique_cost_usd:.4f})"
                 )
         except Exception as exc:
-            logger.warning(
-                f"[LG-DAG] Task {task.id}: Reflexion failed (non-fatal): {exc}"
-            )
+            logger.warning(f"[LG-DAG] Task {task.id}: Reflexion failed (non-fatal): {exc}")
 
         # FINAL VALIDATION: if task was marked successful but no files were written, mark as failed
         # This runs AFTER summary phase and reflexion to catch cases where the agent
@@ -504,9 +513,15 @@ async def execute_batch(state: DAGState) -> dict:
         if output.is_successful() and task.role in _WRITER_ROLES:
             project_files = []
             for root, dirs, filenames in os.walk(project_dir):
-                dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', '.pytest_cache', '.hivemind')]
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d not in (".git", "__pycache__", ".pytest_cache", ".hivemind")
+                ]
                 for fn in filenames:
-                    if fn.endswith(('.py', '.js', '.ts', '.json', '.yaml', '.yml', '.toml', '.html', '.css')):
+                    if fn.endswith(
+                        (".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".html", ".css")
+                    ):
                         project_files.append(os.path.relpath(os.path.join(root, fn), project_dir))
             if not project_files:
                 logger.warning(
@@ -525,9 +540,7 @@ async def execute_batch(state: DAGState) -> dict:
                 if os.path.exists(full_path):
                     validated.append(art_path)
                 else:
-                    logger.warning(
-                        f"[LG-DAG] Task {task.id}: artifact not found: {art_path}"
-                    )
+                    logger.warning(f"[LG-DAG] Task {task.id}: artifact not found: {art_path}")
             output.artifacts = validated
 
         logger.info(
@@ -556,11 +569,9 @@ async def execute_batch(state: DAGState) -> dict:
 
         # Convert exceptions to failed outputs
         processed = []
-        for task, result in zip(batch, results):
+        for task, result in zip(batch, results, strict=False):
             if isinstance(result, Exception):
-                logger.error(
-                    f"[LG-DAG] Task {task.id}: parallel execution error: {result}"
-                )
+                logger.error(f"[LG-DAG] Task {task.id}: parallel execution error: {result}")
                 output = TaskOutput(
                     task_id=task.id,
                     status=TaskStatus.FAILED,
@@ -596,6 +607,7 @@ async def execute_batch(state: DAGState) -> dict:
 
 # ── Node: post_batch ──────────────────────────────────────────────────────
 
+
 async def post_batch(state: DAGState) -> dict:
     """Post-batch processing: git commit, remediation, status update.
 
@@ -615,6 +627,7 @@ async def post_batch(state: DAGState) -> dict:
     # Git commit after batch
     try:
         from git_discipline import executor_commit
+
         successful_outputs = [r for r in batch_results if r.is_successful()]
         if successful_outputs:
             await executor_commit(
@@ -650,9 +663,7 @@ async def post_batch(state: DAGState) -> dict:
 
         # Check if we can create a remediation
         if new_remediation_count >= MAX_TOTAL_REMEDIATIONS:
-            logger.warning(
-                f"[LG-DAG] Remediation cap reached ({MAX_TOTAL_REMEDIATIONS})"
-            )
+            logger.warning(f"[LG-DAG] Remediation cap reached ({MAX_TOTAL_REMEDIATIONS})")
             continue
 
         # Check remediation depth
@@ -687,21 +698,19 @@ async def post_batch(state: DAGState) -> dict:
         if remediation:
             graph.add_task(remediation)
             new_remediation_count += 1
-            new_healing.append({
-                "action": "remediation_created",
-                "failed_task": task.id,
-                "failure_category": (
-                    result.failure_category or FailureCategory.UNKNOWN
-                ).value,
-                "remediation_task": remediation.id,
-                "detail": (
-                    f"Auto-created {remediation.id} ({remediation.role.value}) "
-                    f"to fix {task.id}: {result.failure_details[:100] if result.failure_details else 'unknown'}"
-                ),
-            })
-            logger.info(
-                f"[LG-DAG] Created remediation {remediation.id} for {task.id}"
+            new_healing.append(
+                {
+                    "action": "remediation_created",
+                    "failed_task": task.id,
+                    "failure_category": (result.failure_category or FailureCategory.UNKNOWN).value,
+                    "remediation_task": remediation.id,
+                    "detail": (
+                        f"Auto-created {remediation.id} ({remediation.role.value}) "
+                        f"to fix {task.id}: {result.failure_details[:100] if result.failure_details else 'unknown'}"
+                    ),
+                }
             )
+            logger.info(f"[LG-DAG] Created remediation {remediation.id} for {task.id}")
 
             if on_remediation:
                 try:
@@ -727,6 +736,7 @@ async def post_batch(state: DAGState) -> dict:
 
 # ── Node: review_code ─────────────────────────────────────────────────────
 
+
 async def review_code(state: DAGState) -> dict:
     """Review and improve code quality after all tasks complete.
 
@@ -749,13 +759,17 @@ async def review_code(state: DAGState) -> dict:
     # Collect all Python files
     py_files = []
     for root, dirs, filenames in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__', '.pytest_cache', '.hivemind', 'node_modules')]
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in (".git", "__pycache__", ".pytest_cache", ".hivemind", "node_modules")
+        ]
         for fn in filenames:
-            if fn.endswith('.py'):
+            if fn.endswith(".py"):
                 fpath = os.path.join(root, fn)
                 rel = os.path.relpath(fpath, project_dir)
                 try:
-                    with open(fpath, 'r') as f:
+                    with open(fpath) as f:
                         content = f.read()
                     py_files.append((rel, content))
                 except Exception:
@@ -803,6 +817,7 @@ Project files:
     # Inject project boundary
     try:
         from project_context import build_project_header
+
         _boundary = build_project_header(state["graph"].project_id, project_dir)
         if _boundary and _boundary not in system_prompt:
             system_prompt = _boundary + "\n\n" + system_prompt
@@ -813,6 +828,7 @@ Project files:
 
     try:
         from isolated_query import isolated_query
+
         response = await asyncio.wait_for(
             isolated_query(
                 sdk,
@@ -826,24 +842,29 @@ Project files:
             timeout=180,
         )
         logger.info(
-            f"[LG-DAG] Review complete: turns={response.num_turns}, "
-            f"tokens={response.total_tokens}"
+            f"[LG-DAG] Review complete: turns={response.num_turns}, tokens={response.total_tokens}"
         )
 
         # Git commit the review improvements
         try:
             result = subprocess.run(
                 ["git", "add", "-A"],
-                cwd=project_dir, capture_output=True, text=True,
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
             )
             result = subprocess.run(
                 ["git", "diff", "--cached", "--stat"],
-                cwd=project_dir, capture_output=True, text=True,
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
             )
             if result.stdout.strip():
                 subprocess.run(
                     ["git", "commit", "-m", "review: code quality improvements"],
-                    cwd=project_dir, capture_output=True, text=True,
+                    cwd=project_dir,
+                    capture_output=True,
+                    text=True,
                 )
                 logger.info("[LG-DAG] Review: committed quality improvements")
         except Exception:
@@ -851,9 +872,11 @@ Project files:
 
         return {
             "total_cost": response.cost_usd,
-            "blackboard_notes": [f"[review] Reviewed {len(py_files)} files, {response.num_turns} improvements made"],
+            "blackboard_notes": [
+                f"[review] Reviewed {len(py_files)} files, {response.num_turns} improvements made"
+            ],
         }
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("[LG-DAG] Review: timed out")
         return {}
     except Exception as exc:
@@ -862,6 +885,7 @@ Project files:
 
 
 # ── Routing ──────────────────────────────────────────────────────────────
+
 
 def should_continue(state: DAGState) -> Literal["select_batch", "review_code", "__end__"]:
     """Conditional edge: continue executing, review code, or stop."""
@@ -874,6 +898,7 @@ def should_continue(state: DAGState) -> Literal["select_batch", "review_code", "
 
 
 # ── Build the LangGraph ───────────────────────────────────────────────────
+
 
 def build_dag_graph() -> StateGraph:
     """Build and compile the LangGraph DAG executor graph.
@@ -918,6 +943,7 @@ def build_dag_graph() -> StateGraph:
 
 # ── ExecutionResult (same interface as original) ───────────────────────────
 
+
 class ExecutionResult:
     """Result of a graph execution, including healing history."""
 
@@ -955,6 +981,7 @@ class ExecutionResult:
 
 # ── Public API: execute_graph ──────────────────────────────────────────────
 
+
 async def execute_graph(
     graph: TaskGraph,
     project_dir: str,
@@ -976,6 +1003,7 @@ async def execute_graph(
     Same signature and return type as the original dag_executor.execute_graph().
     """
     import state as app_state
+
     sdk = sdk_client or app_state.sdk_client
     if sdk is None:
         raise RuntimeError("SDK client not initialized")
@@ -1056,6 +1084,7 @@ async def execute_graph(
 
 
 # ── Summary helper ─────────────────────────────────────────────────────────
+
 
 def build_execution_summary(graph: TaskGraph, result: ExecutionResult) -> str:
     """Build a human-readable summary of the graph execution."""

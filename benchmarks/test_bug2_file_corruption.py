@@ -4,7 +4,7 @@
 This test simulates multiple concurrent writers to the cross-project memory
 to see if file corruption actually occurs.
 """
-import asyncio
+
 import json
 import sys
 import tempfile
@@ -58,9 +58,11 @@ def test_concurrent_writes_threading():
             expected = 10 * 50  # 10 threads * 50 iterations
             print(f"Threading test: {lesson_count}/{expected} lessons saved ({elapsed:.2f}s)")
             if lesson_count < expected:
-                print(f"  ⚠️ LOST {expected - lesson_count} lessons ({(expected-lesson_count)/expected*100:.1f}% loss)")
+                print(
+                    f"  ⚠️ LOST {expected - lesson_count} lessons ({(expected - lesson_count) / expected * 100:.1f}% loss)"
+                )
             else:
-                print(f"  ✅ All lessons saved")
+                print("  ✅ All lessons saved")
         except json.JSONDecodeError as e:
             print(f"  ❌ FILE CORRUPTED: {e}")
             corruption_count += 1
@@ -115,13 +117,19 @@ def test_concurrent_writes_same_instance():
         except json.JSONDecodeError:
             disk_count = -1  # Corrupted
 
-        print(f"\nSame-instance test: memory={lesson_count}, disk={disk_count}, expected={expected} ({elapsed:.2f}s)")
+        print(
+            f"\nSame-instance test: memory={lesson_count}, disk={disk_count}, expected={expected} ({elapsed:.2f}s)"
+        )
         if lesson_count < expected:
-            print(f"  ⚠️ LOST {expected - lesson_count} lessons in memory ({(expected-lesson_count)/expected*100:.1f}% loss)")
+            print(
+                f"  ⚠️ LOST {expected - lesson_count} lessons in memory ({(expected - lesson_count) / expected * 100:.1f}% loss)"
+            )
         if disk_count >= 0 and disk_count < expected:
-            print(f"  ⚠️ LOST {expected - disk_count} lessons on disk ({(expected-disk_count)/expected*100:.1f}% loss)")
+            print(
+                f"  ⚠️ LOST {expected - disk_count} lessons on disk ({(expected - disk_count) / expected * 100:.1f}% loss)"
+            )
         elif disk_count < 0:
-            print(f"  ❌ DISK FILE CORRUPTED")
+            print("  ❌ DISK FILE CORRUPTED")
 
         if errors:
             print(f"  ❌ {len(errors)} errors during writes")
@@ -151,7 +159,7 @@ def test_read_write_race():
         def reader():
             for i in range(100):
                 try:
-                    context = mem.build_context_for_task("test task", max_tokens=5000)
+                    mem.build_context_for_task("test task", max_tokens=5000)
                     # Just verify it doesn't crash
                 except Exception as e:
                     read_errors.append(f"Read {i}: {e}")
@@ -170,7 +178,7 @@ def test_read_write_race():
         if read_errors:
             print(f"  Read errors: {read_errors[:3]}")
         if not errors and not read_errors:
-            print(f"  ✅ No errors (but data loss may still occur)")
+            print("  ✅ No errors (but data loss may still occur)")
 
 
 if __name__ == "__main__":

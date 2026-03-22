@@ -188,12 +188,15 @@ ENHANCED_PROMPT_REGISTRY: dict[str, str] = {
 
 # Copy remaining roles from original registry
 from prompts import PROMPT_REGISTRY as _ORIGINAL
+
 for _role, _prompt in _ORIGINAL.items():
     if _role not in ENHANCED_PROMPT_REGISTRY:
         ENHANCED_PROMPT_REGISTRY[_role] = _prompt
 
 # Legacy aliases
-ENHANCED_PROMPT_REGISTRY["typescript_architect"] = ENHANCED_PROMPT_REGISTRY.get("frontend_developer", "")
+ENHANCED_PROMPT_REGISTRY["typescript_architect"] = ENHANCED_PROMPT_REGISTRY.get(
+    "frontend_developer", ""
+)
 ENHANCED_PROMPT_REGISTRY["python_backend"] = ENHANCED_PROMPT_REGISTRY["backend_developer"]
 ENHANCED_PROMPT_REGISTRY["tester"] = ENHANCED_PROMPT_REGISTRY["test_engineer"]
 ENHANCED_PROMPT_REGISTRY["developer"] = ENHANCED_PROMPT_REGISTRY["backend_developer"]

@@ -5,6 +5,7 @@ Runs the same 3 projects (todo_api, calculator_cli, url_shortener) using
 the LangGraph-based dag_executor_langgraph.py and compares results against
 the baseline (original dag_executor.py).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,16 +23,18 @@ sys.path.insert(0, str(HIVEMIND_ROOT))
 
 # Monkey-patch isolated_query BEFORE importing anything else
 import isolated_query_openai
+
 sys.modules["isolated_query"] = isolated_query_openai
 
 # Mock state module
 import types
+
 state_mod = types.ModuleType("state")
 state_mod.sdk_client = "mock_sdk"
 sys.modules["state"] = state_mod
 
 from contracts import AgentRole, TaskGraph, TaskInput
-from dag_executor_langgraph import ExecutionResult, execute_graph, build_execution_summary
+from dag_executor_langgraph import execute_graph
 from prompts import PROMPT_REGISTRY
 
 logging.basicConfig(
@@ -219,16 +222,19 @@ def run_pytest(project_dir: str) -> dict:
         for line in output.split("\n"):
             if " passed" in line:
                 import re
+
                 m = re.search(r"(\d+) passed", line)
                 if m:
                     passed = int(m.group(1))
             if " failed" in line:
                 import re
+
                 m = re.search(r"(\d+) failed", line)
                 if m:
                     failed = int(m.group(1))
             if " error" in line:
                 import re
+
                 m = re.search(r"(\d+) error", line)
                 if m:
                     errors = int(m.group(1))
@@ -243,13 +249,21 @@ def run_pytest(project_dir: str) -> dict:
         }
     except subprocess.TimeoutExpired:
         return {
-            "passed": 0, "failed": 0, "errors": 1, "total": 1,
-            "returncode": -1, "output": "pytest timed out after 120s",
+            "passed": 0,
+            "failed": 0,
+            "errors": 1,
+            "total": 1,
+            "returncode": -1,
+            "output": "pytest timed out after 120s",
         }
     except Exception as e:
         return {
-            "passed": 0, "failed": 0, "errors": 1, "total": 1,
-            "returncode": -1, "output": f"Error running pytest: {e}",
+            "passed": 0,
+            "failed": 0,
+            "errors": 1,
+            "total": 1,
+            "returncode": -1,
+            "output": f"Error running pytest: {e}",
         }
 
 
@@ -267,11 +281,13 @@ async def run_project(project_name: str, results_dir: str) -> dict:
     subprocess.run(["git", "init"], cwd=project_dir, capture_output=True)
     subprocess.run(
         ["git", "config", "user.email", "bench@test.com"],
-        cwd=project_dir, capture_output=True,
+        cwd=project_dir,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Benchmark"],
-        cwd=project_dir, capture_output=True,
+        cwd=project_dir,
+        capture_output=True,
     )
 
     # Build TaskGraph
@@ -290,7 +306,7 @@ async def run_project(project_name: str, results_dir: str) -> dict:
             specialist_prompts[role.value] = PROMPT_REGISTRY[role.value]
 
     t0 = time.time()
-    logger.info(f"\n{'='*60}\n  Running: {project_name} (LangGraph)\n{'='*60}")
+    logger.info(f"\n{'=' * 60}\n  Running: {project_name} (LangGraph)\n{'=' * 60}")
 
     try:
         result = await execute_graph(
@@ -405,9 +421,7 @@ async def main():
 
     print("-" * 80)
     print(
-        f"{'TOTAL':<20} {'':>10} "
-        f"{total_tests_passed}/{total_tests_total}:>15 "
-        f"{total_tokens:>10,}"
+        f"{'TOTAL':<20} {'':>10} {total_tests_passed}/{total_tests_total}:>15 {total_tokens:>10,}"
     )
     print("=" * 80)
 

@@ -20,7 +20,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -249,6 +248,7 @@ PROJECTS = {
 
 class DummySDK:
     """Dummy SDK client — isolated_query_openai ignores it anyway."""
+
     pass
 
 
@@ -292,11 +292,11 @@ async def run_benchmark(
         tasks=project_def["tasks"],
     )
 
-    logger.info(f"\n{'='*60}")
+    logger.info(f"\n{'=' * 60}")
     logger.info(f"BENCHMARK: {project_name} ({variant})")
     logger.info(f"Project dir: {project_dir}")
     logger.info(f"Tasks: {len(graph.tasks)}")
-    logger.info(f"{'='*60}\n")
+    logger.info(f"{'=' * 60}\n")
 
     t0 = time.monotonic()
 
@@ -360,15 +360,17 @@ async def run_benchmark(
 
     # Add per-task details
     for output in result.outputs:
-        metrics["task_outputs"].append({
-            "task_id": output.task_id,
-            "status": output.status.value,
-            "summary": output.summary[:200],
-            "confidence": output.confidence,
-            "turns_used": output.turns_used,
-            "tokens": output.total_tokens,
-            "artifacts": output.artifacts[:10],
-        })
+        metrics["task_outputs"].append(
+            {
+                "task_id": output.task_id,
+                "status": output.status.value,
+                "summary": output.summary[:200],
+                "confidence": output.confidence,
+                "turns_used": output.turns_used,
+                "tokens": output.total_tokens,
+                "artifacts": output.artifacts[:10],
+            }
+        )
 
     return metrics
 
@@ -386,7 +388,7 @@ def _run_pytest(project_dir: str) -> dict:
 
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header"] + test_files,
+            [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header", *test_files],
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -404,6 +406,7 @@ def _run_pytest(project_dir: str) -> dict:
             # Look for the summary line like "5 passed, 2 failed"
             if "passed" in line or "failed" in line or "error" in line:
                 import re
+
                 m_passed = re.search(r"(\d+) passed", line)
                 m_failed = re.search(r"(\d+) failed", line)
                 m_errors = re.search(r"(\d+) error", line)
@@ -428,7 +431,9 @@ def _run_pytest(project_dir: str) -> dict:
         return {"passed": 0, "failed": 0, "errors": 0, "total": 0, "output": f"Error: {e}"}
 
 
-async def run_all_benchmarks(variant: str = "baseline", output_base: str | None = None) -> list[dict]:
+async def run_all_benchmarks(
+    variant: str = "baseline", output_base: str | None = None
+) -> list[dict]:
     """Run all benchmark projects and return results."""
     results = []
     output_dir = output_base or os.path.join(
@@ -437,9 +442,9 @@ async def run_all_benchmarks(variant: str = "baseline", output_base: str | None 
     os.makedirs(output_dir, exist_ok=True)
 
     for project_name in PROJECTS:
-        logger.info(f"\n{'#'*60}")
+        logger.info(f"\n{'#' * 60}")
         logger.info(f"# Starting benchmark: {project_name} ({variant})")
-        logger.info(f"{'#'*60}\n")
+        logger.info(f"{'#' * 60}\n")
 
         metrics = await run_benchmark(project_name, variant, output_dir)
         results.append(metrics)
@@ -449,14 +454,18 @@ async def run_all_benchmarks(variant: str = "baseline", output_base: str | None 
         with open(result_file, "w") as f:
             json.dump(metrics, f, indent=2)
 
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"RESULT: {project_name} ({variant})")
-        logger.info(f"  Tasks: {metrics.get('tasks_succeeded', 0)}/{metrics.get('tasks_total', 0)} succeeded")
-        logger.info(f"  Tests: {metrics.get('tests_passed', 0)} passed, {metrics.get('tests_failed', 0)} failed")
+        logger.info(
+            f"  Tasks: {metrics.get('tasks_succeeded', 0)}/{metrics.get('tasks_total', 0)} succeeded"
+        )
+        logger.info(
+            f"  Tests: {metrics.get('tests_passed', 0)} passed, {metrics.get('tests_failed', 0)} failed"
+        )
         logger.info(f"  Tokens: {metrics.get('total_tokens', 0)}")
         logger.info(f"  Time: {metrics.get('elapsed_seconds', 0)}s")
         logger.info(f"  Files: {metrics.get('files_count', 0)}")
-        logger.info(f"{'='*60}\n")
+        logger.info(f"{'=' * 60}\n")
 
     # Save combined results
     combined_file = os.path.join(output_dir, f"{variant}_combined_results.json")
@@ -488,14 +497,18 @@ def print_summary(results: list[dict]):
         tokens = str(r["total_tokens"])
         time_s = f"{r['elapsed_seconds']}s"
 
-        print(f"{r['project']:<20} {r['variant']:<12} {tasks:<10} {tests:<15} {tokens:<10} {time_s:<8}")
+        print(
+            f"{r['project']:<20} {r['variant']:<12} {tasks:<10} {tests:<15} {tokens:<10} {time_s:<8}"
+        )
 
         total_tests_passed += r.get("tests_passed", 0)
         total_tests_total += r.get("tests_total", 0)
         total_tokens += r.get("total_tokens", 0)
 
     print("-" * 80)
-    print(f"{'TOTAL':<20} {'':<12} {'':<10} {total_tests_passed}/{total_tests_total} passed   {total_tokens:<10}")
+    print(
+        f"{'TOTAL':<20} {'':<12} {'':<10} {total_tests_passed}/{total_tests_total} passed   {total_tokens:<10}"
+    )
     print("=" * 80)
 
 

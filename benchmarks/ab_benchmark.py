@@ -26,10 +26,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
-import re
 from pathlib import Path
 
 # Ensure hivemind root is on path
@@ -39,12 +39,14 @@ sys.path.insert(0, str(HIVEMIND_ROOT / "benchmarks"))
 
 # ── Monkey-patch isolated_query BEFORE importing dag_executor ──
 import isolated_query_openai
+
 sys.modules["isolated_query"] = isolated_query_openai
+
+from code_quality_scorer import score_project
 
 from contracts import AgentRole, TaskGraph, TaskInput
 from dag_executor import ExecutionResult, execute_graph
 from prompts import PROMPT_REGISTRY
-from code_quality_scorer import score_project
 
 logging.basicConfig(
     level=logging.INFO,
@@ -253,10 +255,12 @@ PROJECTS = {
 
 # ── Variant Configurations ───────────────────────────────────────────────
 
+
 def get_prompts_for_variant(variant: str) -> dict[str, str]:
     """Get the prompt registry for a given variant."""
     if variant == "enhanced_prompts":
         from enhanced_prompts import ENHANCED_PROMPT_REGISTRY
+
         return ENHANCED_PROMPT_REGISTRY
     elif variant == "with_memory":
         # Use original prompts but inject memory context into task goals
@@ -269,7 +273,7 @@ def get_prompts_for_variant(variant: str) -> dict[str, str]:
 
 def get_tasks_for_variant(variant: str, project_name: str) -> list[TaskInput]:
     """Get tasks, potentially modified for the variant."""
-    base_tasks = [t for t in PROJECTS[project_name]["tasks"]]  # shallow copy
+    base_tasks = list(PROJECTS[project_name]["tasks"])  # shallow copy
 
     if variant == "with_memory":
         # Inject cross-project memory lessons into task goals
@@ -283,14 +287,16 @@ def get_tasks_for_variant(variant: str, project_name: str) -> list[TaskInput]:
                 f"Apply them where relevant:\n{memory_context}\n"
                 f"</cross_project_lessons>"
             )
-            enhanced_tasks.append(TaskInput(
-                id=task.id,
-                role=task.role,
-                goal=enhanced_goal,
-                depends_on=task.depends_on,
-                context_from=getattr(task, 'context_from', []),
-                acceptance_criteria=task.acceptance_criteria,
-            ))
+            enhanced_tasks.append(
+                TaskInput(
+                    id=task.id,
+                    role=task.role,
+                    goal=enhanced_goal,
+                    depends_on=task.depends_on,
+                    context_from=getattr(task, "context_from", []),
+                    acceptance_criteria=task.acceptance_criteria,
+                )
+            )
         return enhanced_tasks
 
     elif variant == "with_review":
@@ -320,7 +326,7 @@ def get_tasks_for_variant(variant: str, project_name: str) -> list[TaskInput]:
                 "Review report written",
             ],
         )
-        return base_tasks + [review_task]
+        return [*base_tasks, review_task]
 
     return base_tasks
 
@@ -343,6 +349,7 @@ def _get_memory_lessons() -> str:
 
 # ── Benchmark Runner ─────────────────────────────────────────────────────
 
+
 class DummySDK:
     pass
 
@@ -355,7 +362,7 @@ def _run_pytest(project_dir: str) -> dict:
 
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header"] + test_files,
+            [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header", *test_files],
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -369,12 +376,18 @@ def _run_pytest(project_dir: str) -> dict:
                 m_passed = re.search(r"(\d+) passed", line)
                 m_failed = re.search(r"(\d+) failed", line)
                 m_errors = re.search(r"(\d+) error", line)
-                if m_passed: passed = int(m_passed.group(1))
-                if m_failed: failed = int(m_failed.group(1))
-                if m_errors: errors = int(m_errors.group(1))
+                if m_passed:
+                    passed = int(m_passed.group(1))
+                if m_failed:
+                    failed = int(m_failed.group(1))
+                if m_errors:
+                    errors = int(m_errors.group(1))
         return {
-            "passed": passed, "failed": failed, "errors": errors,
-            "total": passed + failed + errors, "output": output[-2000:],
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "total": passed + failed + errors,
+            "output": output[-2000:],
             "returncode": result.returncode,
         }
     except subprocess.TimeoutExpired:
@@ -395,8 +408,14 @@ async def run_single_benchmark(
 
     # Initialize git repo
     subprocess.run(["git", "init"], cwd=project_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "benchmark@hivemind.test"], cwd=project_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=project_dir, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "benchmark@hivemind.test"],
+        cwd=project_dir,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Benchmark"], cwd=project_dir, capture_output=True
+    )
     os.makedirs(os.path.join(project_dir, ".hivemind"), exist_ok=True)
 
     # Get variant-specific config
@@ -411,11 +430,11 @@ async def run_single_benchmark(
         tasks=tasks,
     )
 
-    logger.info(f"\n{'='*60}")
+    logger.info(f"\n{'=' * 60}")
     logger.info(f"A/B BENCHMARK: {project_name} ({variant})")
     logger.info(f"Project dir: {project_dir}")
     logger.info(f"Tasks: {len(graph.tasks)}")
-    logger.info(f"{'='*60}\n")
+    logger.info(f"{'=' * 60}\n")
 
     t0 = time.monotonic()
 
@@ -431,8 +450,10 @@ async def run_single_benchmark(
     except Exception as e:
         logger.error(f"DAG execution failed: {e}", exc_info=True)
         return {
-            "project": project_name, "variant": variant,
-            "error": str(e), "project_dir": project_dir,
+            "project": project_name,
+            "variant": variant,
+            "error": str(e),
+            "project_dir": project_dir,
         }
 
     elapsed = time.monotonic() - t0
@@ -487,9 +508,9 @@ async def run_all(variant: str) -> list[dict]:
 
     results = []
     for project_name in PROJECTS:
-        logger.info(f"\n{'#'*60}")
+        logger.info(f"\n{'#' * 60}")
         logger.info(f"# A/B Benchmark: {project_name} ({variant})")
-        logger.info(f"{'#'*60}\n")
+        logger.info(f"{'#' * 60}\n")
 
         metrics = await run_single_benchmark(project_name, variant, output_dir)
         results.append(metrics)
@@ -499,14 +520,16 @@ async def run_all(variant: str) -> list[dict]:
         with open(result_file, "w") as f:
             json.dump(metrics, f, indent=2, default=str)
 
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"RESULT: {project_name} ({variant})")
         logger.info(f"  Tasks: {metrics.get('tasks_succeeded', 0)}/{metrics.get('tasks_total', 0)}")
-        logger.info(f"  Tests: {metrics.get('tests_passed', 0)}/{metrics.get('tests_total', 0)} passed")
+        logger.info(
+            f"  Tests: {metrics.get('tests_passed', 0)}/{metrics.get('tests_total', 0)} passed"
+        )
         logger.info(f"  Tokens: {metrics.get('total_tokens', 0)}")
         logger.info(f"  Time: {metrics.get('elapsed_seconds', 0)}s")
         logger.info(f"  Code Quality: {metrics.get('code_quality_score', 'N/A')}/10")
-        logger.info(f"{'='*60}\n")
+        logger.info(f"{'=' * 60}\n")
 
     # Save combined
     combined_file = os.path.join(output_dir, f"{variant}_combined_results.json")
@@ -521,10 +544,12 @@ async def run_all(variant: str) -> list[dict]:
 
 def print_summary(results: list[dict]):
     """Print formatted summary."""
-    print(f"\n{'='*90}")
+    print(f"\n{'=' * 90}")
     print(f"{'A/B BENCHMARK RESULTS':^90}")
-    print(f"{'='*90}")
-    print(f"{'Project':<18} {'Variant':<18} {'Tasks':<8} {'Tests':<12} {'Tokens':<10} {'Time':<8} {'Quality':<8}")
+    print(f"{'=' * 90}")
+    print(
+        f"{'Project':<18} {'Variant':<18} {'Tasks':<8} {'Tests':<12} {'Tokens':<10} {'Time':<8} {'Quality':<8}"
+    )
     print("-" * 90)
 
     total_passed = total_total = total_tokens = 0
@@ -541,7 +566,9 @@ def print_summary(results: list[dict]):
         time_s = f"{r['elapsed_seconds']}s"
         quality = f"{r.get('code_quality_score', 'N/A')}/10"
 
-        print(f"{r['project']:<18} {r['variant']:<18} {tasks:<8} {tests:<12} {tokens:<10} {time_s:<8} {quality:<8}")
+        print(
+            f"{r['project']:<18} {r['variant']:<18} {tasks:<8} {tests:<12} {tokens:<10} {time_s:<8} {quality:<8}"
+        )
 
         total_passed += r.get("tests_passed", 0)
         total_total += r.get("tests_total", 0)
@@ -551,8 +578,10 @@ def print_summary(results: list[dict]):
 
     avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0
     print("-" * 90)
-    print(f"{'TOTAL':<18} {'':<18} {'':<8} {total_passed}/{total_total:<11} {total_tokens:<10} {'':<8} {avg_quality:.1f}/10")
-    print(f"{'='*90}")
+    print(
+        f"{'TOTAL':<18} {'':<18} {'':<8} {total_passed}/{total_total:<11} {total_tokens:<10} {'':<8} {avg_quality:.1f}/10"
+    )
+    print(f"{'=' * 90}")
 
 
 if __name__ == "__main__":
