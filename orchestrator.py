@@ -46,7 +46,7 @@ import orch_review
 import orch_watchdog
 from architect_agent import ArchitectureBrief, run_architect_review, should_run_architect
 from config import AGENT_EMOJI
-from cross_project_memory import CrossProjectMemory
+from semantic_memory import SemanticMemory as CrossProjectMemory
 
 # Regex to parse <delegate> blocks from orchestrator output
 # Match everything between <delegate> and </delegate> tags, then parse JSON separately
