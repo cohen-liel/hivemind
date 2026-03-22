@@ -1,0 +1,103 @@
+======================================================================
+HiveMind OSS Outsourcing — Performance Benchmark Suite
+======================================================================
+Date: 2026-03-21 20:57:08
+Python: 3.11.0rc1
+
+======================================================================
+BENCHMARK 1: Context Compression — Heuristic vs LLMLingua
+======================================================================
+
+[*] Loading LLMLingua model (first time may download ~400MB)...
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 4408.69it/s]
+Token indices sequence length is longer than the specified maximum sequence length for this model (554 > 512). Running this sequence through the model will result in indexing errors
+[✓] LLMLingua loaded successfully
+
+Sample                                   Original  Heuristic  H-Ratio   H-Time  LLMLingua  L-Ratio   L-Time
+------------------------------------------------------------------------------------------
+Backend agent — FastAPI setup                 180         62    0.344    0.04ms        136    0.756  459.37ms
+Frontend agent — React dashboard              208         48    0.231    0.03ms        147    0.707  784.81ms
+DevOps agent — CI/CD pipeline                 214         51    0.238    0.03ms        145    0.678  762.46ms
+Security agent — audit report                 239         35    0.146    0.03ms        151    0.632  847.89ms
+Architect agent — system design               275         36    0.131    0.04ms        184    0.669  782.54ms
+
+[*] Testing semantic preservation with LLM evaluation...
+  [heuristic] Backend agent — FastAPI setup: score=4/10
+  [llmlingua] Backend agent — FastAPI setup: score=5/10
+  [heuristic] Frontend agent — React dashboa: score=4/10
+  [llmlingua] Frontend agent — React dashboa: score=6/10
+  [heuristic] DevOps agent — CI/CD pipeline: score=4/10
+  [llmlingua] DevOps agent — CI/CD pipeline: score=7/10
+
+--- Semantic Preservation Summary ---
+     heuristic: avg score = 4.0/10 (n=3)
+     llmlingua: avg score = 6.0/10 (n=3)
+
+======================================================================
+BENCHMARK 2: Memory Search — JSON Keyword vs ChromaDB Semantic
+======================================================================
+
+[*] Populating both stores with 12 lessons...
+/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   0%|          | 0.00/79.3M [00:00<?, ?iB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   0%|          | 17.0k/79.3M [00:00<17:06, 81.0kiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   0%|          | 68.0k/79.3M [00:00<07:53, 176kiB/s] /home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   0%|          | 153k/79.3M [00:00<04:57, 279kiB/s] /home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   0%|          | 238k/79.3M [00:00<04:12, 328kiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   1%|          | 510k/79.3M [00:01<02:02, 674kiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   1%|▏         | 1.01M/79.3M [00:01<01:03, 1.29MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   3%|▎         | 2.04M/79.3M [00:01<00:32, 2.50MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   5%|▌         | 4.10M/79.3M [00:01<00:16, 4.88MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:   8%|▊         | 6.71M/79.3M [00:01<00:10, 7.31MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  11%|█▏        | 8.96M/79.3M [00:02<00:08, 8.42MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  15%|█▍        | 11.6M/79.3M [00:02<00:07, 9.71MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  17%|█▋        | 13.9M/79.3M [00:02<00:06, 10.2MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  21%|██        | 16.7M/79.3M [00:02<00:05, 11.3MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  25%|██▌       | 20.1M/79.3M [00:03<00:04, 12.8MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  29%|██▉       | 23.1M/79.3M [00:03<00:04, 13.3MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  33%|███▎      | 26.3M/79.3M [00:03<00:03, 13.9MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  37%|███▋      | 29.7M/79.3M [00:03<00:03, 14.8MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  41%|████▏     | 32.8M/79.3M [00:03<00:02, 17.6MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  44%|████▎     | 34.7M/79.3M [00:03<00:03, 15.6MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  46%|████▌     | 36.3M/79.3M [00:04<00:03, 14.5MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  49%|████▉     | 39.2M/79.3M [00:04<00:02, 17.7MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  52%|█████▏    | 41.1M/79.3M [00:04<00:02, 16.2MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  54%|█████▍    | 42.8M/79.3M [00:04<00:02, 14.2MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  58%|█████▊    | 45.8M/79.3M [00:04<00:01, 17.7MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  60%|██████    | 47.7M/79.3M [00:04<00:02, 16.1MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  63%|██████▎   | 49.7M/79.3M [00:04<00:02, 14.8MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  66%|██████▌   | 52.4M/79.3M [00:05<00:01, 17.6MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  68%|██████▊   | 54.3M/79.3M [00:05<00:01, 15.6MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  71%|███████   | 56.4M/79.3M [00:05<00:01, 14.9MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  74%|███████▍  | 58.8M/79.3M [00:05<00:01, 17.1MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  76%|███████▋  | 60.6M/79.3M [00:05<00:01, 15.3MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  79%|███████▉  | 62.9M/79.3M [00:05<00:01, 15.0MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  83%|████████▎ | 65.5M/79.3M [00:06<00:01, 14.1MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  87%|████████▋ | 69.0M/79.3M [00:06<00:00, 15.0MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  90%|█████████ | 71.8M/79.3M [00:06<00:00, 14.5MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  94%|█████████▎| 74.2M/79.3M [00:06<00:00, 16.5MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  96%|█████████▌| 75.9M/79.3M [00:06<00:00, 14.2MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz:  98%|█████████▊| 77.4M/79.3M [00:06<00:00, 13.4MiB/s]/home/ubuntu/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz: 100%|██████████| 79.3M/79.3M [00:07<00:00, 11.9MiB/s]
+  JSON store: {'lessons': 12, 'tech_patterns': 0, 'conventions': 0, 'backend': 'json'}
+  ChromaDB store: {'lessons': 12, 'tech_patterns': 0, 'conventions': 0, 'backend': 'chroma', 'chroma_documents': 12}
+
+[*] Running 8 semantic search queries...
+
+  Query: "container networking problems"
+    Expected: 3 | JSON: 2/3 (67%) | ChromaDB: 2/3 (67%) → TIE
+  Query: "database connection issues under heavy traffic"
+    Expected: 2 | JSON: 1/2 (50%) | ChromaDB: 2/2 (100%) → ChromaDB
+  Query: "how to secure API endpoints"
+    Expected: 2 | JSON: 1/2 (50%) | ChromaDB: 2/2 (100%) → ChromaDB
+  Query: "deployment pipeline keeps failing"
+    Expected: 3 | JSON: 1/3 (33%) | ChromaDB: 3/3 (100%) → ChromaDB
+  Query: "real-time updates dropping"
+    Expected: 2 | JSON: 1/2 (50%) | ChromaDB: 2/2 (100%) → ChromaDB
+  Query: "infrastructure as code best practices"
+    Expected: 1 | JSON: 0/1 (0%) | ChromaDB: 0/1 (0%) → TIE
+  Query: "frontend build optimization"
+    Expected: 3 | JSON: 1/3 (33%) | ChromaDB: 2/3 (67%) → ChromaDB
+  Query: "authentication token management"
+    Expected: 1 | JSON: 1/1 (100%) | ChromaDB: 1/1 (100%) → TIE
+
+--- Memory Search Summary ---
+  JSON avg recall:    47.9%
+  ChromaDB avg recall: 79.2%
+  Improvement:         +65%
+
+======================================================================
+BENCHMARK 3: Model Routing — Static vs Smart Classifier
+======================================================================
+
+Role            Expected      Got  Score  Correct  Reason
+-----------------------------------------------------------------------------------------------
+backend             weak     weak   0.30        ✓  Simple text fix
+backend             weak     weak   0.20        ✓  Documentation task
+formatter           weak     weak   0.00        ✓  Mechanical formatting
+backend             weak     weak   0.30        ✓  Simple rename
+backend             weak     weak   0.30        ✓  Version bump
+architect         strong   strong   0.80        ✓  Complex architecture design
+backend           strong     weak   0.40        ✗  Complex feature implementation
+security          strong   strong   0.70        ✓  Security audit
+devops            strong   strong   0.70        ✓  Complex DevOps setup
+tech_lead         strong   strong   0.80        ✓  Complex refactoring
+backend           strong     weak   0.40        ✗  Feature implementation from scratch
+pm                strong   strong   0.60        ✓  PM planning (always-strong role)
+backend           strong   strong   0.50        ✓  Complex debugging
+documenter          weak     weak   0.20        ✓  Documentation update
+backend             weak     weak   0.20        ✓  Cleanup task
+
+--- Routing Summary ---
+  Accuracy:      86.7% (13/15)
+  Strong model:  6/15 (40%)
+  Weak model:    9/15 (60%)
+  Cost (all strong): $2.25
+  Cost (routed):     $1.08
+  Savings:           $1.17 (52%)
+
+[*] Raw results saved to /home/ubuntu/hivemind/benchmarks/benchmark_results.json
+
+======================================================================
+BENCHMARK COMPLETE
+======================================================================
