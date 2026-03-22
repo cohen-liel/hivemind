@@ -1,0 +1,82 @@
+======================================================================
+FULL PIPELINE BENCHMARK — Old vs New (All Improvements)
+======================================================================
+
+============================================================
+Running Pipeline: Baseline (single-pass, no validation)
+============================================================
+  [task_001] database_expert (model=gpt-4.1-mini)... done (5.9s, 478 tokens)
+  [task_002] backend_developer (model=gpt-4.1-mini)... done (8.7s, 1543 tokens)
+  [task_003] backend_developer (model=gpt-4.1-mini)... done (3.3s, 578 tokens)
+  [task_004] backend_developer (model=gpt-4.1-mini)... done (8.8s, 1214 tokens)
+  [task_005] test_engineer (model=gpt-4.1-mini)... done (18.0s, 1802 tokens)
+  [task_006] reviewer (model=gpt-4.1-mini)... done (9.7s, 2015 tokens)
+  [task_007] security_auditor (model=gpt-4.1-mini)... done (10.4s, 1616 tokens)
+
+  Evaluating quality with LLM-as-judge...
+
+============================================================
+Running Pipeline: Improved (multi-pass, code gate, review-fix)
+============================================================
+  [task_001] database_expert (model=gpt-4.1-mini)... done (4.8s, 626 tokens)
+    → Code Gate: 1 errors caught
+  [task_002] backend_developer (model=gpt-4.1-mini)... done (9.3s, 2199 tokens)
+    → Reflexion: 3 iterations, 11 issues found & fixed
+  [task_003] backend_developer (model=gpt-4.1-mini)... done (13.0s, 3668 tokens)
+    → Code Gate: 1 errors caught
+  [task_004] backend_developer (model=gpt-4.1-mini)... done (15.0s, 3795 tokens)
+    → Reflexion: 3 iterations, 8 issues found & fixed
+  [task_005] test_engineer (model=gpt-4.1-nano)... done (6.2s, 6152 tokens)
+  [task_006] reviewer (model=gpt-4.1-mini)... done (10.4s, 7938 tokens)
+    → Review-Fix: 3 issues sent back for fixing
+  [task_007] security_auditor (model=gpt-4.1-mini)... done (12.9s, 5001 tokens)
+    → Reflexion: 3 iterations, 13 issues found & fixed
+    → Review-Fix: 5 issues sent back for fixing
+
+  Evaluating quality with LLM-as-judge...
+
+======================================================================
+RESULTS COMPARISON
+======================================================================
+
+Metric                        Baseline     Improved        Delta
+-----------------------------------------------------------------
+Wall Clock (s)                    64.8        215.7      +232.9%
+Total Tokens                    11,515       61,201      +431.5%
+
+Quality Dimension             Baseline     Improved        Delta
+-----------------------------------------------------------------
+correctness                          7            8           +1
+completeness                         6            9           +3
+security                             6            7           +1
+code_quality                         7            8           +1
+testing                              5            7           +2
+error_handling                       7            7            0
+best_practices                       7            7            0
+overall                              6            7           +1
+
+Error Detection               Baseline     Improved
+--------------------------------------------------
+Errors Caught                        0           34
+Review Issues Fixed                  0            8
+Reflexion Iterations                 0           13
+
+======================================================================
+KEY FINDINGS (LLM-as-Judge)
+======================================================================
+
+Baseline:
+  • Database schema is well-designed with constraints, indexes, and triggers, but the trigger implementation may cause recursive updates and potential issues.
+  • FastAPI backend partially implemented; Pydantic models and CRUD endpoints are incomplete or missing in the snippets provided.
+  • API key authentication is implemented cleanly with dependency injection, but the key storage is hardcoded and not configurable.
+  • Error handling middleware covers HTTP exceptions and validation errors with structured responses, improving robustness.
+  • Testing includes some pytest tests with fixtures and auth headers, but only partial tests are shown and coverage of all CRUD operations is unclear.
+
+Improved:
+  • The project implements all major requirements: FastAPI CRUD endpoints, SQLite schema, Pydantic models, API key authentication, error handling middleware, and unit tests.
+  • Database initialization uses proper schema with constraints and indexes; FastAPI endpoints use parameterized queries to prevent SQL injection.
+  • Authentication is implemented via API key header but the key is hardcoded in code instead of environment/config, which is a security concern.
+  • Error handling middleware and structured error responses are present but could be more comprehensive (e.g., handling DB connection errors, more edge cases).
+  • Unit tests cover basic CRUD operations but are limited in number (~5) and do not cover all edge cases or error scenarios.
+
+Results saved to /home/ubuntu/hivemind/benchmarks/full_pipeline_results.json

@@ -1,0 +1,240 @@
+{
+  "comparison": {
+    "old_name": "Baseline (single-pass, no validation)",
+    "new_name": "Improved (multi-pass, code gate, review-fix)",
+    "timing": {
+      "old_seconds": 64.8,
+      "new_seconds": 215.7,
+      "delta_pct": 232.9
+    },
+    "tokens": {
+      "old_total": 11515,
+      "new_total": 61201,
+      "delta_pct": 431.5
+    },
+    "quality": {
+      "correctness": {
+        "old": 7,
+        "new": 8,
+        "delta": 1
+      },
+      "completeness": {
+        "old": 6,
+        "new": 9,
+        "delta": 3
+      },
+      "security": {
+        "old": 6,
+        "new": 7,
+        "delta": 1
+      },
+      "code_quality": {
+        "old": 7,
+        "new": 8,
+        "delta": 1
+      },
+      "testing": {
+        "old": 5,
+        "new": 7,
+        "delta": 2
+      },
+      "error_handling": {
+        "old": 7,
+        "new": 7,
+        "delta": 0
+      },
+      "best_practices": {
+        "old": 7,
+        "new": 7,
+        "delta": 0
+      },
+      "overall": {
+        "old": 6,
+        "new": 7,
+        "delta": 1
+      }
+    },
+    "error_detection": {
+      "old_errors_caught": 0,
+      "new_errors_caught": 34,
+      "new_review_issues": 8,
+      "new_fix_iterations": 13
+    }
+  },
+  "old_quality": {
+    "correctness": 7,
+    "completeness": 6,
+    "security": 6,
+    "code_quality": 7,
+    "testing": 5,
+    "error_handling": 7,
+    "best_practices": 7,
+    "overall": 6,
+    "key_findings": [
+      "Database schema is well-designed with constraints, indexes, and triggers, but the trigger implementation may cause recursive updates and potential issues.",
+      "FastAPI backend partially implemented; Pydantic models and CRUD endpoints are incomplete or missing in the snippets provided.",
+      "API key authentication is implemented cleanly with dependency injection, but the key storage is hardcoded and not configurable.",
+      "Error handling middleware covers HTTP exceptions and validation errors with structured responses, improving robustness.",
+      "Testing includes some pytest tests with fixtures and auth headers, but only partial tests are shown and coverage of all CRUD operations is unclear."
+    ]
+  },
+  "new_quality": {
+    "correctness": 8,
+    "completeness": 9,
+    "security": 7,
+    "code_quality": 8,
+    "testing": 7,
+    "error_handling": 7,
+    "best_practices": 7,
+    "overall": 7,
+    "key_findings": [
+      "The project implements all major requirements: FastAPI CRUD endpoints, SQLite schema, Pydantic models, API key authentication, error handling middleware, and unit tests.",
+      "Database initialization uses proper schema with constraints and indexes; FastAPI endpoints use parameterized queries to prevent SQL injection.",
+      "Authentication is implemented via API key header but the key is hardcoded in code instead of environment/config, which is a security concern.",
+      "Error handling middleware and structured error responses are present but could be more comprehensive (e.g., handling DB connection errors, more edge cases).",
+      "Unit tests cover basic CRUD operations but are limited in number (~5) and do not cover all edge cases or error scenarios."
+    ]
+  },
+  "old_agents": [
+    {
+      "task_id": "task_001",
+      "role": "database_expert",
+      "model": "gpt-4.1-mini",
+      "tokens": 478,
+      "elapsed": 5.9,
+      "issues": []
+    },
+    {
+      "task_id": "task_002",
+      "role": "backend_developer",
+      "model": "gpt-4.1-mini",
+      "tokens": 1543,
+      "elapsed": 8.7,
+      "issues": []
+    },
+    {
+      "task_id": "task_003",
+      "role": "backend_developer",
+      "model": "gpt-4.1-mini",
+      "tokens": 578,
+      "elapsed": 3.3,
+      "issues": []
+    },
+    {
+      "task_id": "task_004",
+      "role": "backend_developer",
+      "model": "gpt-4.1-mini",
+      "tokens": 1214,
+      "elapsed": 8.8,
+      "issues": []
+    },
+    {
+      "task_id": "task_005",
+      "role": "test_engineer",
+      "model": "gpt-4.1-mini",
+      "tokens": 1802,
+      "elapsed": 18.0,
+      "issues": []
+    },
+    {
+      "task_id": "task_006",
+      "role": "reviewer",
+      "model": "gpt-4.1-mini",
+      "tokens": 2015,
+      "elapsed": 9.7,
+      "issues": []
+    },
+    {
+      "task_id": "task_007",
+      "role": "security_auditor",
+      "model": "gpt-4.1-mini",
+      "tokens": 1616,
+      "elapsed": 10.4,
+      "issues": []
+    }
+  ],
+  "new_agents": [
+    {
+      "task_id": "task_001",
+      "role": "database_expert",
+      "model": "gpt-4.1-mini",
+      "tokens": 1233,
+      "elapsed": 4.8,
+      "issues": [
+        "Function defined but no return statement"
+      ]
+    },
+    {
+      "task_id": "task_002",
+      "role": "backend_developer",
+      "model": "gpt-4.1-mini",
+      "tokens": 11025,
+      "elapsed": 9.3,
+      "issues": [
+        "The list_tasks endpoint is incomplete; it lacks the return statement to send the query results back to the client.",
+        "The code does not include the required GET /tasks/{id}, PUT /tasks/{id}, and DELETE /tasks/{id} endpoints, which are essential for full CRUD functionality as per the task goal.",
+        "The code lacks validation or handling for cases where a task with a given ID does not exist, especially in GET /tasks/{id}, PUT /tasks/{id}, and DELETE /tasks/{id} endpoints.",
+        "The code does not implement filtering for the GET /tasks endpoint beyond status and priority, which may be acceptable, but the acceptance criteria specify filtering\u2014additional filters could be considered.",
+        "The code does not include Pydantic models for request bodies in update operations (TaskUpdate is present but not used in endpoints)."
+      ]
+    },
+    {
+      "task_id": "task_003",
+      "role": "backend_developer",
+      "model": "gpt-4.1-mini",
+      "tokens": 4584,
+      "elapsed": 13.0,
+      "issues": [
+        "Hardcoded secret detected \u2014 use environment variables"
+      ]
+    },
+    {
+      "task_id": "task_004",
+      "role": "backend_developer",
+      "model": "gpt-4.1-mini",
+      "tokens": 10816,
+      "elapsed": 15.0,
+      "issues": [
+        "Incomplete unhandled_exception_handler: missing closing quote in 'content' value",
+        "No explicit 404 handler for not found resources",
+        "Error response structure inconsistent for different error types (e.g., validation vs HTTPException)",
+        "No custom exception handler for 404 errors or other specific status codes",
+        "Potential lack of structured error responses for other HTTP errors (e.g., 400, 422, 500)"
+      ]
+    },
+    {
+      "task_id": "task_005",
+      "role": "test_engineer",
+      "model": "gpt-4.1-nano",
+      "tokens": 7051,
+      "elapsed": 6.2,
+      "issues": []
+    },
+    {
+      "task_id": "task_006",
+      "role": "reviewer",
+      "model": "gpt-4.1-mini",
+      "tokens": 8754,
+      "elapsed": 10.4,
+      "issues": [
+        "- `401 Unauthorized` returned if API key is missing or invalid.",
+        "- Validation errors (missing required fields).",
+        "- Generic exception handler logs errors with stack trace \u2014 good for debugging."
+      ]
+    },
+    {
+      "task_id": "task_007",
+      "role": "security_auditor",
+      "model": "gpt-4.1-mini",
+      "tokens": 15290,
+      "elapsed": 12.9,
+      "issues": [
+        "Hardcoded API key in source code (`API_KEY = \"supersecretapikey\"`) poses a significant security risk.",
+        "No environment variable or secret management system is used to store secrets securely.",
+        "Lack of rate limiting or brute-force attack mitigation mechanisms.",
+        "No token expiration or rotation for API keys, increasing risk if key is compromised.",
+        "No user roles or access control; all authenticated users have full access, which may be a security concern if multi-user support is added."
+      ]
+    }
+  ]
+}
