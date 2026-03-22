@@ -1,0 +1,150 @@
+{
+  "compression": [
+    {
+      "name": "Backend agent \u2014 FastAPI setup",
+      "original_tokens": 180,
+      "heuristic_tokens": 62,
+      "heuristic_ratio": 0.344,
+      "heuristic_time_ms": 0.04,
+      "llmlingua_tokens": 136,
+      "llmlingua_ratio": 0.756,
+      "llmlingua_time_ms": 459.37
+    },
+    {
+      "name": "Frontend agent \u2014 React dashboard",
+      "original_tokens": 208,
+      "heuristic_tokens": 48,
+      "heuristic_ratio": 0.231,
+      "heuristic_time_ms": 0.03,
+      "llmlingua_tokens": 147,
+      "llmlingua_ratio": 0.707,
+      "llmlingua_time_ms": 784.81
+    },
+    {
+      "name": "DevOps agent \u2014 CI/CD pipeline",
+      "original_tokens": 214,
+      "heuristic_tokens": 51,
+      "heuristic_ratio": 0.238,
+      "heuristic_time_ms": 0.03,
+      "llmlingua_tokens": 145,
+      "llmlingua_ratio": 0.678,
+      "llmlingua_time_ms": 762.46
+    },
+    {
+      "name": "Security agent \u2014 audit report",
+      "original_tokens": 239,
+      "heuristic_tokens": 35,
+      "heuristic_ratio": 0.146,
+      "heuristic_time_ms": 0.03,
+      "llmlingua_tokens": 151,
+      "llmlingua_ratio": 0.632,
+      "llmlingua_time_ms": 847.89
+    },
+    {
+      "name": "Architect agent \u2014 system design",
+      "original_tokens": 275,
+      "heuristic_tokens": 36,
+      "heuristic_ratio": 0.131,
+      "heuristic_time_ms": 0.04,
+      "llmlingua_tokens": 184,
+      "llmlingua_ratio": 0.669,
+      "llmlingua_time_ms": 782.54
+    }
+  ],
+  "memory": [
+    {
+      "query": "container networking problems",
+      "expected": 3,
+      "json_hits": 2,
+      "json_recall": 0.67,
+      "json_time_ms": 0.01,
+      "chroma_hits": 2,
+      "chroma_recall": 0.67,
+      "chroma_time_ms": 242.28
+    },
+    {
+      "query": "database connection issues under heavy traffic",
+      "expected": 2,
+      "json_hits": 1,
+      "json_recall": 0.5,
+      "json_time_ms": 0.01,
+      "chroma_hits": 2,
+      "chroma_recall": 1.0,
+      "chroma_time_ms": 247.39
+    },
+    {
+      "query": "how to secure API endpoints",
+      "expected": 2,
+      "json_hits": 1,
+      "json_recall": 0.5,
+      "json_time_ms": 0.01,
+      "chroma_hits": 2,
+      "chroma_recall": 1.0,
+      "chroma_time_ms": 245.15
+    },
+    {
+      "query": "deployment pipeline keeps failing",
+      "expected": 3,
+      "json_hits": 1,
+      "json_recall": 0.33,
+      "json_time_ms": 0.01,
+      "chroma_hits": 3,
+      "chroma_recall": 1.0,
+      "chroma_time_ms": 240.71
+    },
+    {
+      "query": "real-time updates dropping",
+      "expected": 2,
+      "json_hits": 1,
+      "json_recall": 0.5,
+      "json_time_ms": 0.01,
+      "chroma_hits": 2,
+      "chroma_recall": 1.0,
+      "chroma_time_ms": 244.65
+    },
+    {
+      "query": "infrastructure as code best practices",
+      "expected": 1,
+      "json_hits": 0,
+      "json_recall": 0.0,
+      "json_time_ms": 0.01,
+      "chroma_hits": 0,
+      "chroma_recall": 0.0,
+      "chroma_time_ms": 247.92
+    },
+    {
+      "query": "frontend build optimization",
+      "expected": 3,
+      "json_hits": 1,
+      "json_recall": 0.33,
+      "json_time_ms": 0.01,
+      "chroma_hits": 2,
+      "chroma_recall": 0.67,
+      "chroma_time_ms": 247.67
+    },
+    {
+      "query": "authentication token management",
+      "expected": 1,
+      "json_hits": 1,
+      "json_recall": 1.0,
+      "json_time_ms": 0.01,
+      "chroma_hits": 1,
+      "chroma_recall": 1.0,
+      "chroma_time_ms": 241.47
+    }
+  ],
+  "routing": {
+    "accuracy": 0.8666666666666667,
+    "strong_ratio": 0.4,
+    "weak_ratio": 0.6,
+    "savings": {
+      "total_tasks": 15,
+      "strong_tasks": 6,
+      "weak_tasks": 9,
+      "estimated_cost": 1.08,
+      "all_strong_cost": 2.25,
+      "estimated_savings": 1.17,
+      "savings_percent": 52.0
+    }
+  }
+}

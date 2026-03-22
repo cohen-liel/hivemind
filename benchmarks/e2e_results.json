@@ -1,0 +1,282 @@
+{
+  "old_pipeline": {
+    "metrics": {
+      "name": "old",
+      "agents": [
+        {
+          "role": "pm",
+          "layer": 1,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 339,
+          "output_tokens": 532,
+          "wall_time_sec": 6.55,
+          "context_tokens_before_compression": 0,
+          "context_tokens_after_compression": 0,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "Here is the structured task breakdown for the TaskFlow project with assignments:\n\n1. Architecture & Design (architect)\n   - Define overall system architecture and API design\n   - Design database schema for tasks (fields: id, title, description, priority, due_date, status, created_at, updated_at)\n   - Define Pydantic models for request/response validation\n   - Define error handling strategy and HTTP status code mappings\n   - Design pagination and filtering approach for GET /tasks\n\n2. Backend Deve..."
+        },
+        {
+          "role": "architect",
+          "layer": 2,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 209,
+          "output_tokens": 1800,
+          "wall_time_sec": 17.97,
+          "context_tokens_before_compression": 356,
+          "context_tokens_after_compression": 19,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "Certainly. Below is the detailed system architecture design for TaskFlow based on the PM\u2019s task breakdown and lessons learned.\n\n---\n\n# TaskFlow System Architecture Design\n\n## 1. Technology Stack\n\n- **Backend Framework:** FastAPI (Python) \u2014 for async, high-performance REST API\n- **Database:** SQLite (initially, with option to migrate to PostgreSQL)\n- **ORM:** SQLAlchemy (with async support)\n- **Containerization:** Docker with multi-stage builds\n- **Validation:** Pydantic models for request/respon..."
+        },
+        {
+          "role": "backend_dev",
+          "layer": 3,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 239,
+          "output_tokens": 1072,
+          "wall_time_sec": 10.56,
+          "context_tokens_before_compression": 770,
+          "context_tokens_after_compression": 26,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "```python\n# main.py\nfrom fastapi import FastAPI, HTTPException, Path, Depends, status\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom sqlalchemy.orm import Session\nfrom typing import List\n\nfrom database import SessionLocal, engine, Base\nimport models\nimport schemas\n\n# Create all tables\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI(\n    title=\"TaskFlow API\",\n    description=\"A production-ready FastAPI backend for managing tasks.\",\n    version=\"1.0.0\",\n)\n\n# CORS middleware (adjust o..."
+        },
+        {
+          "role": "frontend_dev",
+          "layer": 3,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 255,
+          "output_tokens": 1053,
+          "wall_time_sec": 11.24,
+          "context_tokens_before_compression": 1051,
+          "context_tokens_after_compression": 33,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "```python\n# cli_client.py\nimport sys\nimport argparse\nimport requests\n\nAPI_URL = \"http://localhost:8000/tasks\"\n\ndef create_task(args):\n    data = {}\n    if args.title:\n        data[\"title\"] = args.title\n    if args.description:\n        data[\"description\"] = args.description\n    if not data.get(\"title\"):\n        print(\"Error: title is required to create a task.\")\n        return\n    resp = requests.post(API_URL, json=data)\n    if resp.status_code == 201:\n        print(\"Task created:\")\n        print..."
+        },
+        {
+          "role": "tester",
+          "layer": 4,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 280,
+          "output_tokens": 1917,
+          "wall_time_sec": 24.61,
+          "context_tokens_before_compression": 1322,
+          "context_tokens_after_compression": 40,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "```python\n# test_main.py\nimport pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom main import app, get_db, Base, Task\nfrom typing import Generator\n\n# Use a separate SQLite memory database for testing\nSQLALCHEMY_DATABASE_URL = \"sqlite:///:memory:\"\n\nengine = create_engine(\n    SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False}\n)\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind..."
+        },
+        {
+          "role": "devops",
+          "layer": 4,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 305,
+          "output_tokens": 473,
+          "wall_time_sec": 4.71,
+          "context_tokens_before_compression": 1657,
+          "context_tokens_after_compression": 47,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "```Dockerfile\n# Dockerfile for TaskFlow API\n\n# Stage 1: Builder\nFROM python:3.11-slim as builder\n\nWORKDIR /app\n\n# Install build dependencies\nRUN apt-get update && apt-get install -y build-essential gcc && rm -rf /var/lib/apt/lists/*\n\n# Install pip requirements\nCOPY requirements.txt .\nRUN pip install --prefix=/install -r requirements.txt\n\n# Stage 2: Runtime\nFROM python:3.11-slim\n\nWORKDIR /app\n\n# Copy installed packages from builder\nCOPY --from=builder /install /usr/local\n\n# Copy application code\n..."
+        },
+        {
+          "role": "code_reviewer",
+          "layer": 5,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 315,
+          "output_tokens": 1133,
+          "wall_time_sec": 14.3,
+          "context_tokens_before_compression": 1868,
+          "context_tokens_after_compression": 54,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "I have reviewed all the code submitted by the team for the TaskFlow project. Below is a detailed review covering bugs, security issues, performance, code style, error handling, and best practices.\n\n---\n\n### 1. Backend (FastAPI + SQLite)\n\n**Issues:**\n\n- **SQLite Engine Creation (Potential threading issue)**\n  - **Location:** Database setup code (likely in `database.py` or main backend file)\n  - **Issue:** The SQLite engine is created without `check_same_thread=False`.\n  - **Impact:** This can cau..."
+        }
+      ],
+      "total_time_sec": 89.94,
+      "total_input_tokens": 1942,
+      "total_output_tokens": 7980,
+      "estimated_cost": 0.0135
+    },
+    "quality_scores": {
+      "completeness": 8,
+      "code_quality": 7,
+      "correctness": 7,
+      "security": 6,
+      "testing": 7,
+      "documentation": 6,
+      "architecture": 8,
+      "memory_utilization": 7,
+      "overall": 7,
+      "strengths": [
+        "Well-defined task breakdown and clear role assignments by PM",
+        "Good architectural design with clear folder structure and technology stack",
+        "Backend implemented with FastAPI and SQLAlchemy, covering all main endpoints",
+        "Use of Pydantic models for validation and error handling",
+        "Dockerfile and CI pipeline well set up for build and test automation",
+        "Testing includes unit and integration tests with an isolated in-memory DB",
+        "Frontend CLI client to interact with the API, demonstrating usability"
+      ],
+      "weaknesses": [
+        "Incomplete or truncated outputs in some agents (e.g., PM's devops section cut off, backend code truncated)",
+        "Some missing or incomplete details in backend implementation (e.g., update_task endpoint incomplete)",
+        "Security considerations like authentication are mentioned as future scope but not implemented",
+        "Input validation is basic; no advanced sanitization or rate limiting shown",
+        "Documentation is minimal with few comments and no README content shown",
+        "Testing coverage and edge cases appear reasonable but not fully demonstrated",
+        "Frontend is a CLI client only, no web UI which was optional but not addressed",
+        "No mention of logging, monitoring, or error reporting mechanisms"
+      ],
+      "critical_issues": [
+        "Truncated backend code (update_task endpoint incomplete) risks incomplete functionality",
+        "PM's devops task list is cut off, possibly missing important deployment steps",
+        "No authentication or authorization implemented, leaving API open",
+        "Potential missing validation on some fields (e.g., priority, due_date) in backend",
+        "Frontend client does not handle all possible API errors or edge cases robustly"
+      ]
+    }
+  },
+  "new_pipeline": {
+    "metrics": {
+      "name": "new",
+      "agents": [
+        {
+          "role": "pm",
+          "layer": 1,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 339,
+          "output_tokens": 648,
+          "wall_time_sec": 8.0,
+          "context_tokens_before_compression": 0,
+          "context_tokens_after_compression": 0,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "Here is the detailed task breakdown for the TaskFlow project with assignments:\n\n1. Architecture & Design (architect)\n   - Define overall API design and data model schema\n   - Design database schema for tasks (fields: id, title, description, priority, due_date, status, created_at, updated_at)\n   - Define API request/response contracts and validation rules\n   - Design pagination and filtering approach for GET /tasks\n   - Define error handling and HTTP status code strategy\n\n2. Backend Development (..."
+        },
+        {
+          "role": "architect",
+          "layer": 2,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 540,
+          "output_tokens": 1713,
+          "wall_time_sec": 13.41,
+          "context_tokens_before_compression": 388,
+          "context_tokens_after_compression": 290,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "System Architecture Design for TaskFlow Project\n\n---\n\n1. Technology Stack\n\n- Backend Framework: FastAPI (Python) \u2014 for high performance, async support, and automatic OpenAPI docs\n- Database: SQLite \u2014 lightweight, file-based DB for simplicity and ease of setup\n- ORM: SQLAlchemy \u2014 for database interaction and schema definition\n- Data Validation: Pydantic \u2014 for request/response models and validation\n- Testing: Pytest \u2014 for unit testing backend code\n- Containerization: Docker \u2014 for environment consi..."
+        },
+        {
+          "role": "backend_dev",
+          "layer": 3,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 999,
+          "output_tokens": 1061,
+          "wall_time_sec": 6.87,
+          "context_tokens_before_compression": 803,
+          "context_tokens_after_compression": 614,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "```python\n# main.py\nfrom fastapi import FastAPI, HTTPException, Depends, Query, Path, status\nfrom fastapi.responses import JSONResponse\nfrom sqlalchemy.orm import Session\nfrom typing import List, Optional\nfrom datetime import date\n\nfrom app.database import SessionLocal, engine, Base\nfrom app import models, schemas\n\nBase.metadata.create_all(bind=engine)\n\napp = FastAPI(title=\"TaskFlow API\", version=\"1.0.0\")\n\n\n# Dependency to get DB session per request\ndef get_db():\n    db = SessionLocal()\n    try:..."
+        },
+        {
+          "role": "frontend_dev",
+          "layer": 3,
+          "model_used": "gpt-4.1-nano",
+          "input_tokens": 1491,
+          "output_tokens": 1654,
+          "wall_time_sec": 7.82,
+          "context_tokens_before_compression": 1081,
+          "context_tokens_after_compression": 956,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "Certainly! Here's a simple CLI client (`cli_client.py`) that interacts with the TaskFlow API using the `requests` library. It supports commands for creating, listing, getting, updating, deleting, and completing tasks.\n\n```python\n#!/usr/bin/env python3\n\nimport argparse\nimport requests\nimport sys\n\nAPI_BASE_URL = \"http://localhost:8000/api/v1\"  # Adjust if your API runs elsewhere\n\ndef create_task(args):\n    data = {\n        \"title\": args.title,\n        \"description\": args.description,\n        \"prio..."
+        },
+        {
+          "role": "tester",
+          "layer": 4,
+          "model_used": "gpt-4.1-nano",
+          "input_tokens": 1954,
+          "output_tokens": 1717,
+          "wall_time_sec": 8.19,
+          "context_tokens_before_compression": 1357,
+          "context_tokens_after_compression": 1280,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "```python\n# test_main.py\n\nimport pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app, get_db\nfrom app import models, schemas\nfrom app.database import Base\n\n# Setup in-memory SQLite for testing\nTEST_DATABASE_URL = \"sqlite:///:memory:\"\nengine = create_engine(TEST_DATABASE_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)..."
+        },
+        {
+          "role": "devops",
+          "layer": 4,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 2468,
+          "output_tokens": 693,
+          "wall_time_sec": 8.52,
+          "context_tokens_before_compression": 1639,
+          "context_tokens_after_compression": 1646,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "```Dockerfile\n# Dockerfile for TaskFlow API\n\n# Stage 1: Builder\nFROM python:3.11-slim as builder\n\n# Set workdir\nWORKDIR /app\n\n# Install build dependencies\nRUN apt-get update && apt-get install -y --no-install-recommends gcc\n\n# Copy requirements and install dependencies\nCOPY requirements.txt .\nRUN pip install --upgrade pip\nRUN pip wheel --wheel-dir=/wheels -r requirements.txt\n\n# Stage 2: Runtime\nFROM python:3.11-slim\n\nWORKDIR /app\n\n# Copy wheels and install runtime dependencies only\nCOPY --from=b..."
+        },
+        {
+          "role": "code_reviewer",
+          "layer": 5,
+          "model_used": "gpt-4.1-mini",
+          "input_tokens": 2866,
+          "output_tokens": 2145,
+          "wall_time_sec": 17.08,
+          "context_tokens_before_compression": 1940,
+          "context_tokens_after_compression": 1910,
+          "memory_lessons_retrieved": 3,
+          "memory_lessons_relevant": 0,
+          "output_text": "I have reviewed the entire codebase and pipeline artifacts provided by the team for the TaskFlow project. Below is a detailed review organized by component, highlighting bugs, security issues, performance concerns, code style, missing error handling, and best practices with line references and suggested fixes.\n\n---\n\n### 1. Backend - FastAPI + SQLAlchemy + Pydantic\n\n#### main.py (API endpoints and DB session)\n\n- **DB Session Dependency (line ~15):**  \n  ```python\n  def get_db():\n      db = Sessio..."
+        }
+      ],
+      "total_time_sec": 115.27,
+      "total_input_tokens": 10657,
+      "total_output_tokens": 9631,
+      "estimated_cost": 0.0146
+    },
+    "quality_scores": {
+      "completeness": 8,
+      "code_quality": 7,
+      "correctness": 7,
+      "security": 7,
+      "testing": 7,
+      "documentation": 6,
+      "architecture": 8,
+      "memory_utilization": 8,
+      "overall": 7,
+      "strengths": [
+        "Comprehensive task breakdown covering architecture, backend, testing, and devops",
+        "Well-structured project file layout with clear separation of concerns",
+        "Use of modern, appropriate tech stack (FastAPI, SQLAlchemy, Pydantic, Docker, GitHub Actions)",
+        "Good input validation using Pydantic and FastAPI Query/Path parameters",
+        "Unit tests with in-memory SQLite and dependency overrides for isolation",
+        "Dockerfile and CI pipeline included to support deployment and automation",
+        "Pagination and filtering implemented with sensible defaults and validation",
+        "Attention to lessons learned (e.g., check_same_thread=False, Path validation)"
+      ],
+      "weaknesses": [
+        "Several code snippets are incomplete or truncated (backend_dev, frontend_dev, tester)",
+        "Frontend is minimal and CLI-based rather than a full UI, and incomplete",
+        "Some missing or incomplete error handling in backend code snippet",
+        "Limited or no visible docstrings or inline comments in code samples",
+        "README content not shown or minimal, limiting documentation score",
+        "Testing coverage >80% claimed but actual coverage report or edge case tests not fully visible",
+        "Security considerations like authentication/authorization missing",
+        "No rate limiting or advanced security controls mentioned"
+      ],
+      "critical_issues": [
+        "Backend code snippet for DELETE /tasks/{task_id} endpoint is truncated and incomplete",
+        "Frontend CLI update_task function is incomplete, potentially missing key logic",
+        "Tester code snippet is truncated, missing full test cases and coverage confirmation",
+        "No visible handling of concurrency or DB transaction rollback on errors",
+        "Potential missing validation on some fields (e.g., priority range enforcement on input models not fully shown)",
+        "No authentication or authorization mechanisms implemented, which is critical for API security"
+      ]
+    }
+  }
+}

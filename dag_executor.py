@@ -1237,6 +1237,29 @@ async def _execute_graph_inner(
                 if not output.is_successful():
                     await _handle_failure(task, output, ctx)
 
+                # ── Review-Fix Loop: backtrack when reviewer finds issues ──
+                try:
+                    from review_fix_loop import inject_review_fix_tasks
+
+                    if output.is_successful():
+                        injected = await inject_review_fix_tasks(
+                            reviewer_task=task,
+                            reviewer_output=output,
+                            ctx=ctx,
+                        )
+                        if injected:
+                            logger.info(
+                                "[DAG] Task %s: Review-Fix loop triggered — "
+                                "fix tasks injected into graph",
+                                task.id,
+                            )
+                except ImportError:
+                    pass  # review_fix_loop not installed
+                except Exception as exc:
+                    logger.warning(
+                        f"[DAG] Task {task.id}: Review-Fix loop failed (non-fatal): {exc}"
+                    )
+
                 # Validate required artifacts
                 if output.is_successful() and task.required_artifacts:
                     _check_required_artifact_types(task, output)
@@ -2054,6 +2077,85 @@ async def _run_single_task(
                 )
         except Exception as exc:
             logger.warning(f"[DAG] Task {task.id}: Reflexion failed (non-fatal): {exc}")
+
+        # ── Code Execution Gate: validate agent code before acceptance ──
+        try:
+            from code_execution_gate import validate_code, CODE_GATE_ENABLED
+
+            if CODE_GATE_ENABLED and output.is_successful() and output.artifacts:
+                validation = await validate_code(output.artifacts, ctx.project_dir)
+                if not validation.passed:
+                    logger.warning(
+                        "[DAG] Task %s: Code Gate found %d errors — feeding back to agent",
+                        task.id,
+                        validation.error_count,
+                    )
+                    # Reduce confidence based on error count
+                    error_penalty = min(validation.error_count * 0.1, 0.4)
+                    output.confidence = max(output.confidence - error_penalty, 0.1)
+                    output.issues.extend(
+                        [e.to_prompt_str() for e in validation.errors[:CODE_GATE_MAX_ERRORS]]
+                    )
+
+                    # If we have a session, give the agent one chance to fix
+                    _gate_session = ctx.session_ids.get(session_key)
+                    if _gate_session:
+                        from isolated_query import isolated_query as _gate_query
+
+                        fix_prompt = (
+                            "## CODE VALIDATION ERRORS\n\n"
+                            "Your code was automatically validated and errors were found.\n"
+                            "Fix these errors NOW:\n\n"
+                            f"{validation.to_prompt()}\n\n"
+                            "Fix the errors using the available tools, then produce "
+                            "your updated JSON output block."
+                        )
+                        try:
+                            gate_fix = await _gate_query(
+                                ctx.sdk,
+                                prompt=fix_prompt,
+                                system_prompt=system_prompt,
+                                cwd=ctx.project_dir,
+                                session_id=_gate_session,
+                                max_turns=REFLEXION_MAX_FIX_TURNS,
+                                max_budget_usd=2.0,
+                                max_retries=0,
+                            )
+                            if gate_fix and not gate_fix.is_error:
+                                from contracts import extract_task_output
+
+                                gate_output = extract_task_output(
+                                    gate_fix.text, task.id, task.role.value,
+                                    tool_uses=gate_fix.tool_uses,
+                                )
+                                if gate_output.is_successful():
+                                    gate_output.cost_usd = output.cost_usd + gate_fix.cost_usd
+                                    gate_output.turns_used = output.turns_used + gate_fix.num_turns
+                                    gate_output.artifacts = list(set(
+                                        (output.artifacts or []) + (gate_output.artifacts or [])
+                                    ))
+                                    output = gate_output
+                                    logger.info(
+                                        "[DAG] Task %s: Code Gate fix applied",
+                                        task.id,
+                                    )
+                        except Exception as gate_fix_err:
+                            logger.warning(
+                                "[DAG] Task %s: Code Gate fix failed: %s",
+                                task.id,
+                                gate_fix_err,
+                            )
+                else:
+                    logger.info(
+                        "[DAG] Task %s: Code Gate passed (%d files, %.1fs)",
+                        task.id,
+                        validation.files_checked,
+                        validation.elapsed_seconds,
+                    )
+        except ImportError:
+            pass  # code_execution_gate not installed
+        except Exception as exc:
+            logger.warning(f"[DAG] Task {task.id}: Code Gate failed (non-fatal): {exc}")
 
         # ── Record structured notes from task output ──
         try:

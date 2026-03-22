@@ -162,8 +162,16 @@ class ClaudeCodeRuntime:
         system_prompt: str = "",
         context_files: list[str] | None = None,
     ) -> RuntimeResponse:
-        """Execute via Claude Code SDK (delegates to isolated_query)."""
+        """Execute via Claude Code SDK (delegates to isolated_query).
+
+        Uses smart_router to dynamically select the optimal model (Sonnet vs
+        Haiku) based on task complexity.  See ``smart_router.py`` for details.
+        """
         from isolated_query import isolated_query
+        from smart_router import route_model_for_task
+
+        # Smart routing: choose model based on task complexity
+        selected_model = route_model_for_task(role=role, prompt=prompt)
 
         start = time.monotonic()
         try:
@@ -175,6 +183,7 @@ class ClaudeCodeRuntime:
                 timeout=timeout,
                 budget_tokens=budget_usd,
                 system_prompt=system_prompt,
+                model=selected_model,
             )
             elapsed = time.monotonic() - start
 

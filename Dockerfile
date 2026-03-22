@@ -41,13 +41,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
-# Minimal system deps: curl (health-check probe), nodejs + npm (Claude CLI)
+# Minimal system deps: curl (health-check probe), nodejs + npm (Claude CLI),
+# firejail (optional process sandboxing for agent execution)
 # Combined into single RUN for fewer layers
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        curl \
        nodejs \
        npm \
+       firejail \
     && npm install -g @anthropic-ai/claude-code 2>/dev/null \
        || echo "WARN: Claude CLI npm install failed — set CLAUDE_CLI_PATH if needed" \
     && apt-get clean \
