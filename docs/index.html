@@ -677,19 +677,19 @@
           <div class="step-number">01</div>
           <h3>Describe the feature</h3>
           <p>"Add JWT authentication with a login page and protected routes."</p>
-          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Plain English. No config files. No YAML.</p>
+          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Plain English. No config files. No YAML. Simple tasks execute instantly — complex ones get the full pipeline.</p>
         </div>
         <div class="step fade-in">
           <div class="step-number">02</div>
           <h3>Watch the team work</h3>
-          <p>PM plans the DAG. Frontend, Backend, and DB agents work in parallel. Tests run. Reviewer checks quality.</p>
-          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Real-time streaming dashboard. Mobile-friendly.</p>
+          <p>Architect reviews the codebase. PM plans the DAG. Agents work in parallel. Send follow-up messages — they inject into the live DAG.</p>
+          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">One living DAG per project. Tasks added or cancelled dynamically.</p>
         </div>
         <div class="step fade-in">
           <div class="step-number">03</div>
           <h3>Get production code</h3>
-          <p>Tested, reviewed, committed. Open your IDE and it's already there. Go lie on the couch.</p>
-          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Self-healing. If something fails, it fixes itself.</p>
+          <p>Tested, reviewed (read-only critique), committed. Open your IDE and it's already there. Go lie on the couch.</p>
+          <p style="margin-top: 12px; color: var(--text-dim); font-size: 0.85rem;">Self-healing. If something fails, it fixes itself. If lint breaks tests, it reverts.</p>
         </div>
       </div>
     </div>
@@ -705,33 +705,48 @@
       <div class="features-grid">
         <div class="feature-card fade-in">
           <div class="feature-icon">🧩</div>
-          <h3>DAG-Based Planning</h3>
-          <p>Every feature is broken into a dependency-aware task graph. Independent tasks run in parallel.</p>
+          <h3>LangGraph DAG Executor</h3>
+          <p>Tasks execute in dependency order via a LangGraph StateGraph with SQLite checkpointing, self-healing retry, and dynamic task injection.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🔗</div>
+          <h3>Dynamic DAG</h3>
+          <p>Send new messages mid-execution — tasks are added or cancelled in the live DAG. Always one DAG per project, never parallel.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">⚡</div>
+          <h3>Adaptive Triage</h3>
+          <p>Simple tasks skip the full PM + Architect pipeline and execute directly — reducing latency and token waste.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🏗️</div>
+          <h3>Architect Agent</h3>
+          <p>Pre-planning codebase review identifies patterns, conventions, and key files — giving the PM better context for planning.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🛡️</div>
+          <h3>Read-Only Code Review</h3>
+          <p>Reviewer critiques but never modifies code. Automated lint/format runs separately — reverted if it breaks tests.</p>
         </div>
         <div class="feature-card fade-in">
           <div class="feature-icon">🔄</div>
           <h3>Self-Healing</h3>
-          <p>Failed tasks are classified by failure type and retried with targeted fixes — not blind restarts.</p>
+          <p>Failed tasks are classified by failure type and retried with targeted fixes. 5 stuck-detection signals with active escalation.</p>
         </div>
         <div class="feature-card fade-in">
           <div class="feature-icon">🔀</div>
           <h3>Artifact Flow</h3>
-          <p>Agents pass typed artifacts (API contracts, schemas, test reports) to downstream agents.</p>
+          <p>Agents pass typed artifacts (API contracts, schemas, test reports) to downstream agents as structured context.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🔒</div>
+          <h3>Project Write Lock</h3>
+          <p>Writer agents are serialized per project via asyncio.Lock. Reader agents run in parallel. No git conflicts.</p>
         </div>
         <div class="feature-card fade-in">
           <div class="feature-icon">🧠</div>
           <h3>Proactive Memory</h3>
           <p>Past failures and lessons are injected into agent prompts. The team learns across sessions.</p>
-        </div>
-        <div class="feature-card fade-in">
-          <div class="feature-icon">🛡️</div>
-          <h3>Code Review Gate</h3>
-          <p>A reviewer agent checks correctness, consistency, and code quality before the final commit.</p>
-        </div>
-        <div class="feature-card fade-in">
-          <div class="feature-icon">⚡</div>
-          <h3>Smart Concurrency</h3>
-          <p>Reader agents run in parallel. Writer agents are serialized when file scopes overlap.</p>
         </div>
         <div class="feature-card fade-in">
           <div class="feature-icon">💰</div>
@@ -744,24 +759,9 @@
           <p>Real-time streaming, DAG progress, file diffs, cost analytics — all from your phone.</p>
         </div>
         <div class="feature-card fade-in">
-          <div class="feature-icon">🔌</div>
-          <h3>Circuit Breaker</h3>
-          <p>SDK client prevents cascade failures when the LLM is overloaded. Other agents keep working.</p>
-        </div>
-        <div class="feature-card fade-in">
           <div class="feature-icon">🤝</div>
-          <h3>Structured Handoffs</h3>
-          <p>Agents write detailed handoff documents explaining what they built, why, and how to test it for the next agent.</p>
-        </div>
-        <div class="feature-card fade-in">
-          <div class="feature-icon">✅</div>
-          <h3>TDD Verification Loop</h3>
-          <p>The test engineer runs tests, fixes failures, and provides actual terminal output as proof — no hallucinated results.</p>
-        </div>
-        <div class="feature-card fade-in">
-          <div class="feature-icon">📋</div>
-          <h3>Two-Stage Review</h3>
-          <p>Code review is split into spec compliance (does it match requirements?) and code quality (is it well-written?).</p>
+          <h3>Typed Contracts & Handoffs</h3>
+          <p>Agents communicate via structured TaskInput/TaskOutput contracts and write detailed handoff documents for downstream agents.</p>
         </div>
       </div>
     </div>
@@ -801,7 +801,15 @@
             </tr>
             <tr>
               <td class="without">Agents write buggy code and you only find out after merging.</td>
-              <td class="with">Code review gate catches issues before commit. Test engineer validates. Security auditor checks OWASP Top 10.</td>
+              <td class="with">Read-only review gate catches issues before commit. If automated fixes break tests, they're reverted automatically.</td>
+            </tr>
+            <tr>
+              <td class="without">Simple tasks go through the same heavy pipeline as complex ones, wasting tokens and time.</td>
+              <td class="with">Adaptive triage routes simple requests directly to execution, skipping PM + Architect overhead.</td>
+            </tr>
+            <tr>
+              <td class="without">You send a follow-up message and it starts a whole new session, losing all progress.</td>
+              <td class="with">New messages inject tasks into the live DAG. One continuous execution, always growing — never parallel.</td>
             </tr>
           </tbody>
         </table>
@@ -814,18 +822,23 @@
     <div class="container">
       <div class="section-header fade-in">
         <h2>Meet the Team</h2>
-        <p>11 specialist agents. Each one built for a specific job.</p>
+        <p>Specialist agents, each built for a specific job.</p>
       </div>
       <div class="agents-grid fade-in">
         <div class="agent-card">
-          <div class="agent-emoji">📋</div>
-          <h4>PM Agent</h4>
-          <p>Brainstorms architectural approaches, evaluates trade-offs, then creates a dependency-aware task graph</p>
-        </div>
-        <div class="agent-card">
           <div class="agent-emoji">🎯</div>
           <h4>Orchestrator</h4>
-          <p>Coordinates the entire team — routes tasks, handles failures, and ensures agents work in parallel without conflicts</p>
+          <p>Central coordinator — triage, lifecycle management, DAG dispatch, dynamic task injection</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🏛️</div>
+          <h4>Architect</h4>
+          <p>Pre-planning codebase review — identifies patterns, conventions, and tech stack for better planning</p>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">📋</div>
+          <h4>PM Agent</h4>
+          <p>Decomposes requests into a typed TaskGraph DAG with dependency wiring and role assignments</p>
         </div>
         <div class="agent-card">
           <div class="agent-emoji">🧠</div>
@@ -843,6 +856,11 @@
           <p>Writes APIs, business logic, and server-side code with FastAPI and Python</p>
         </div>
         <div class="agent-card">
+          <div class="agent-emoji">🔧</div>
+          <h4>Fullstack Dev</h4>
+          <p>End-to-end implementation for simpler tasks routed through triage fast path</p>
+        </div>
+        <div class="agent-card">
           <div class="agent-emoji">🗄️</div>
           <h4>Database Expert</h4>
           <p>Designs schemas, writes migrations, and optimizes queries for production workloads</p>
@@ -853,14 +871,9 @@
           <p>Configures Docker, CI/CD pipelines, and deployment infrastructure</p>
         </div>
         <div class="agent-card">
-          <div class="agent-emoji">🏗️</div>
-          <h4>TS Architect</h4>
-          <p>Designs scalable TypeScript architectures with advanced patterns and type safety</p>
-        </div>
-        <div class="agent-card">
           <div class="agent-emoji">🧪</div>
           <h4>Test Engineer</h4>
-          <p>Writes tests in a strict TDD verification loop — runs them, fixes failures, and proves they pass with real output</p>
+          <p>Writes tests in a strict TDD loop — runs them, fixes failures, proves they pass with real output</p>
         </div>
         <div class="agent-card">
           <div class="agent-emoji">🔒</div>
@@ -870,7 +883,7 @@
         <div class="agent-card">
           <div class="agent-emoji">👁️</div>
           <h4>Reviewer</h4>
-          <p>Performs a rigorous two-stage review: first checks spec compliance, then evaluates code quality and security</p>
+          <p>Read-only code critique — identifies issues without modifying code. Lint/format reverted if tests break.</p>
         </div>
       </div>
     </div>
