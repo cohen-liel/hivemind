@@ -561,6 +561,30 @@ class TaskGraph(BaseModel):
         """Dynamically add a task to the graph (used by self-healing DAG)."""
         self.tasks.append(task)
 
+    def remove_task(
+        self, task_id: str, completed: dict[str, TaskOutput] | set[str] | None = None
+    ) -> bool:
+        """Remove a pending task from the graph.
+
+        Only removes tasks that have NOT been completed yet.  Also cleans up
+        dangling dependency references in remaining tasks.
+
+        Returns True if the task was removed, False if not found or already
+        completed.
+        """
+        completed_ids = set(completed) if completed else set()
+        if task_id in completed_ids:
+            return False  # already executed — cannot remove
+        idx = next((i for i, t in enumerate(self.tasks) if t.id == task_id), None)
+        if idx is None:
+            return False
+        self.tasks.pop(idx)
+        # Clean up dangling deps
+        for t in self.tasks:
+            if task_id in t.depends_on:
+                t.depends_on = [d for d in t.depends_on if d != task_id]
+        return True
+
     def validate_dag(self) -> list[str]:
         """Check for cycles, self-deps, duplicate IDs, and missing deps. Returns error list."""
         errors: list[str] = []

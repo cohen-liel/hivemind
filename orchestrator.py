@@ -1406,17 +1406,21 @@ class OrchestratorManager:
 
             # Build context about existing tasks so PM knows what's already planned
             existing_summary = []
+            completed_ids = set(self._dag_task_statuses.keys())
             for t in graph.tasks:
                 status = self._dag_task_statuses.get(t.id, "pending")
                 existing_summary.append(f"- {t.id} [{t.role.value}] ({status}): {t.goal[:80]}")
             existing_context = (
-                "\n\n## Existing DAG Tasks (DO NOT recreate these)\n"
+                "\n\n## Current DAG Tasks\n"
                 + "\n".join(existing_summary)
-                + "\n\nOnly create NEW tasks for the additional request. "
-                "Use task IDs that continue from the existing numbering "
-                f"(next available: task_{len(graph.tasks) + 1:03d}). "
-                "You may reference existing task IDs in depends_on if the new "
-                "tasks depend on work already planned."
+                + "\n\n**Instructions:**\n"
+                "- To ADD new tasks: create them with IDs continuing from "
+                f"task_{len(graph.tasks) + 1:03d}.\n"
+                "- To CANCEL a pending task: include a task with the same ID "
+                "and set its goal to exactly 'CANCEL'.\n"
+                "- Do NOT recreate tasks that already exist unchanged.\n"
+                "- Tasks with status 'completed' or 'working' cannot be cancelled.\n"
+                "- You may reference existing task IDs in depends_on."
             )
 
             # Call PM with enriched message
@@ -1441,20 +1445,34 @@ class OrchestratorManager:
             )
 
             if not new_graph or not new_graph.tasks:
-                await self._send_result("⚠️ PM Agent returned no additional tasks.")
+                await self._send_result("⚠️ PM Agent returned no changes to the DAG.")
                 return
 
-            # Filter out tasks whose IDs already exist in the live graph
             existing_ids = {t.id for t in graph.tasks}
-            new_tasks = [t for t in new_graph.tasks if t.id not in existing_ids]
+            changes: list[str] = []
 
-            if not new_tasks:
-                await self._send_result("⚠️ All planned tasks already exist in the DAG.")
-                return
+            # Process cancellations (tasks with goal == "CANCEL")
+            cancelled: list[str] = []
+            for t in new_graph.tasks:
+                if t.id in existing_ids and t.goal.strip().upper() == "CANCEL":
+                    if graph.remove_task(t.id, completed_ids):
+                        cancelled.append(t.id)
+                        logger.info(f"[{self.project_id}] CANCELLED pending task: {t.id}")
+            if cancelled:
+                changes.append(
+                    f"🗑️ Cancelled {len(cancelled)} task(s): "
+                    + ", ".join(f"`{tid}`" for tid in cancelled)
+                )
 
-            # Inject new tasks into the live graph
+            # Process additions (new task IDs)
+            # Re-read existing_ids after removals
+            existing_ids = {t.id for t in graph.tasks}
+            new_tasks = [
+                t
+                for t in new_graph.tasks
+                if t.id not in existing_ids and t.goal.strip().upper() != "CANCEL"
+            ]
             for task in new_tasks:
-                # Validate dependency references
                 valid_deps = [
                     d
                     for d in task.depends_on
@@ -1463,9 +1481,18 @@ class OrchestratorManager:
                 task.depends_on = valid_deps
                 graph.add_task(task)
                 logger.info(
-                    f"[{self.project_id}] INJECTED user task: {task.id} "
+                    f"[{self.project_id}] INJECTED task: {task.id} "
                     f"({task.role.value}) goal='{task.goal[:80]}' deps={task.depends_on}"
                 )
+            if new_tasks:
+                task_list = "\n".join(
+                    f"  - `{t.id}` [{t.role.value}]: {t.goal[:100]}" for t in new_tasks
+                )
+                changes.append(f"➕ Added {len(new_tasks)} task(s):\n{task_list}")
+
+            if not changes:
+                await self._send_result("⚠️ No changes to the DAG from new message.")
+                return
 
             # Update cached serialized graph
             self._current_dag_graph = graph.model_dump()
@@ -1476,12 +1503,9 @@ class OrchestratorManager:
                 graph=self._current_dag_graph,
             )
 
-            task_list = "\n".join(
-                f"  - `{t.id}` [{t.role.value}]: {t.goal[:100]}" for t in new_tasks
-            )
             await self._send_result(
-                f"✅ **{len(new_tasks)} new tasks injected** into running DAG:\n{task_list}\n\n"
-                f"_Tasks will be picked up in the next execution round._"
+                "✅ **DAG updated:**\n" + "\n".join(changes) + "\n\n"
+                "_Changes will take effect in the next execution round._"
             )
 
         except Exception as exc:
