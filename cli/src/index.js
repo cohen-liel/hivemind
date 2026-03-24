@@ -8,7 +8,7 @@ import figlet from 'figlet';
 
 const REPO_URL = 'https://github.com/cohen-liel/hivemind.git';
 const DEFAULT_DIR = 'hivemind';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 const hivemindGradient = gradient(['#6366f1', '#8b5cf6', '#a855f7']);
 

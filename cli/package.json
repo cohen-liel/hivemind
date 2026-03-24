@@ -1,7 +1,7 @@
 {
   "name": "create-hivemind",
-  "version": "1.1.0",
-  "description": "One prompt. A full AI engineering team. Go lie on the couch.",
+  "version": "1.2.0",
+  "description": "One prompt. A full AI engineering team. LangGraph DAG executor, adaptive triage, dynamic task injection, read-only code review. Go lie on the couch.",
   "type": "module",
   "author": "Liel Cohen",
   "license": "Apache-2.0",
@@ -20,7 +20,11 @@
     "orchestration",
     "engineering-team",
     "developer-tools",
-    "ai-coding"
+    "ai-coding",
+    "langgraph",
+    "dag-executor",
+    "code-review",
+    "self-healing"
   ],
   "bin": {
     "create-hivemind": "./bin/create-hivemind.js"
