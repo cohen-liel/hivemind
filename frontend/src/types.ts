@@ -10,7 +10,7 @@ export interface Project {
   project_id: string;
   project_name: string;
   project_dir: string;
-  status: 'running' | 'paused' | 'idle' | 'stopped';
+  status: 'running' | 'paused' | 'idle' | 'stopped' | 'completed';
   is_running: boolean;
   is_paused: boolean;
   turn_count: number;
