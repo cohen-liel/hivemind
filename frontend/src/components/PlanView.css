@@ -27,9 +27,19 @@
 
 .planview-step--pending   { opacity: 1; }
 .planview-step--active    { opacity: 1; }
-.planview-step--done      { opacity: 0.6; }
+.planview-step--done      { opacity: 0.65; }
 .planview-step--error     { opacity: 1; }
 .planview-step--cancelled { opacity: 0.45; }
+
+/* Done cards get a subtle green left border accent */
+.planview-step--done .planview-card {
+  border-left: 2px solid rgba(61, 214, 140, 0.3);
+}
+
+/* Active cards get a stronger glow */
+.planview-step--active .planview-card {
+  border-left: 2px solid var(--accent-blue);
+}
 
 /* ── Status icon container — fixed size ── */
 
@@ -122,6 +132,43 @@
   height: 6px;
   border-radius: 50%;
   animation: planParticleFloat 1s ease-out forwards;
+}
+
+/* ── Building plan indicator ── */
+
+.plan-building-indicator {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.plan-building-ring {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  border: 2px solid rgba(99, 140, 255, 0.15);
+  animation: planBuildingPulse 2s ease-in-out infinite;
+}
+
+.plan-building-ring--delayed {
+  inset: -16px;
+  animation-delay: 0.5s;
+  border-color: rgba(99, 140, 255, 0.08);
+}
+
+.plan-building-icon {
+  animation: planBuildingBounce 1.5s ease-in-out infinite;
+}
+
+@keyframes planBuildingPulse {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.15); opacity: 0.2; }
+}
+
+@keyframes planBuildingBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
 }
 
 /* ── Dep line ── */

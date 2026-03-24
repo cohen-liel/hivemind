@@ -7,6 +7,8 @@ interface Props {
   onSelectAgent?: (name: string) => void;
   selectedAgent?: string | null;
   layout?: 'grid' | 'compact' | 'bubbles';
+  /** When true, idle agents show "READY" instead of "STANDBY" */
+  isProjectRunning?: boolean;
 }
 
 function stateStyles(state: string, agentName: string) {
@@ -33,6 +35,7 @@ function stateStyles(state: string, agentName: string) {
     default: return {
       border: '1px solid rgba(255,255,255,0.04)', boxShadow: 'none',
       dotColor: '#4a4e63', pulse: false, label: 'STANDBY', labelColor: '#4a4e63', bgTint: 'transparent',
+      isIdle: true,
     };
   }
 }
@@ -42,7 +45,7 @@ function isRecentDelegation(agent: AgentState): boolean {
   return Date.now() - agent.delegated_at < 5000;
 }
 
-export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent, layout = 'grid' }: Props) {
+export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent, layout = 'grid', isProjectRunning }: Props) {
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [soloAgent, setSoloAgent] = useState<string | null>(null);
 
@@ -273,6 +276,33 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                   </div>
                 ))}
               </div>
+            ) : isProjectRunning ? (
+              /* Running but no agents active yet — preparing/planning phase */
+              <div className="text-center animate-[fadeSlideIn_0.3s_ease-out] w-full max-w-xs">
+                <div className="relative inline-flex items-center justify-center mb-4">
+                  {/* Pulsing rings */}
+                  <div className="absolute w-20 h-20 rounded-full animate-ping"
+                    style={{ border: '2px solid rgba(99,140,255,0.1)', animationDuration: '2s' }} />
+                  <div className="absolute w-16 h-16 rounded-full animate-pulse"
+                    style={{ border: '2px solid rgba(99,140,255,0.15)' }} />
+                  <div className="w-12 h-12 rounded-xl flex items-center justify-center text-xl"
+                    style={{ background: 'rgba(99,140,255,0.1)', border: '2px solid rgba(99,140,255,0.25)' }}>
+                    🎯
+                  </div>
+                </div>
+                <p className="text-sm font-semibold mb-1" style={{ color: 'var(--accent-blue)' }}>
+                  Preparing Execution
+                </p>
+                <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+                  Building the task plan before activating agents...
+                </p>
+                <div className="flex items-center justify-center gap-1.5">
+                  {[0, 1, 2].map(i => (
+                    <span key={i} className="w-1.5 h-1.5 rounded-full animate-bounce"
+                      style={{ background: 'var(--accent-blue)', animationDelay: `${i * 200}ms`, animationDuration: '1s' }} />
+                  ))}
+                </div>
+              </div>
             ) : (
               /* Idle stage — animated network flow */
               <div className="text-center animate-[fadeSlideIn_0.5s_ease-out] w-full max-w-xs">
@@ -445,7 +475,7 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                 <div className="flex-1 min-w-0">
                   <h3 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{label}</h3>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[9px] font-bold tracking-[0.1em]" style={{ color: s.labelColor, fontFamily: 'var(--font-mono)' }}>{s.label}</span>
+                    <span className="text-[9px] font-bold tracking-[0.1em]" style={{ color: s.labelColor, fontFamily: 'var(--font-mono)' }}>{(s as any).isIdle && isProjectRunning ? 'READY' : s.label}</span>
                     {(agent.state === 'working' || agent.state === 'waiting') && (() => {
                       const elapsed = agent.started_at ? Math.round((Date.now() - agent.started_at) / 1000) : (agent.duration > 0 ? Math.round(agent.duration) : 0);
                       const isStale = agent.last_update_at ? (Date.now() - agent.last_update_at) > 90000 : (agent.started_at ? (Date.now() - agent.started_at) > 90000 : false);
@@ -482,7 +512,11 @@ export default function AgentStatusPanel({ agents, onSelectAgent, selectedAgent,
                   {agent.last_result.replace(/\*\w+\*\s*/, '').slice(0, 120)}
                 </div>
               )}
-              {agent.state === 'idle' && !agent.task && <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>Ready for tasks</p>}
+              {agent.state === 'idle' && !agent.task && (
+                <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
+                  {isProjectRunning ? 'Waiting for plan...' : 'Ready for tasks'}
+                </p>
+              )}
               {(agent.state === 'working' || agent.state === 'waiting') && (
                 <div className="h-[2px] rounded-full overflow-hidden mt-3" style={{ background: 'var(--border-dim)' }}>
                   <div className="h-full rounded-full animate-[loading_2s_ease-in-out_infinite]"

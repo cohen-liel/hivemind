@@ -131,6 +131,8 @@ const MobileLayout = React.memo(function MobileLayout(): React.ReactElement {
               dagGraph={dagGraph}
               dagTaskStatus={dagTaskStatus}
               dagTaskFailureReasons={dagTaskFailureReasons}
+              projectStatus={project.status}
+              orchestratorTask={orchestratorState?.current_tool || orchestratorState?.task}
             />
           </PanelErrorBoundary>
         )}

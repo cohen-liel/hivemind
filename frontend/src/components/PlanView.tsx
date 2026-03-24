@@ -16,6 +16,10 @@ interface Props {
   dagGraph?: DagGraph | null;
   dagTaskStatus?: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'>;
   dagTaskFailureReasons?: Record<string, string>;
+  /** Current project status — used to show "building plan" indicator */
+  projectStatus?: string;
+  /** Orchestrator task description — shown during plan building */
+  orchestratorTask?: string;
 }
 
 // ============================================================================
@@ -214,7 +218,7 @@ function DependencyBadges({ dependsOn, steps }: { dependsOn: string[]; steps: Pl
 // Main Component
 // ============================================================================
 
-export default function PlanView({ activities, dagGraph, dagTaskStatus = {}, dagTaskFailureReasons = {} }: Props): React.ReactElement {
+export default function PlanView({ activities, dagGraph, dagTaskStatus = {}, dagTaskFailureReasons = {}, projectStatus, orchestratorTask }: Props): React.ReactElement {
   const isDagMode = !!(dagGraph?.tasks?.length);
   const prevStepsRef = useRef<Map<string, PlanStep['status']>>(new Map());
   const prevCompletedRef = useRef<number>(0);
@@ -224,7 +228,9 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {}, dag
   const feedback = useFeedback({ enabled: true });
 
   const steps = useMemo(() => {
-    if (dagGraph?.tasks?.length) return dagToPlanSteps(dagGraph, dagTaskStatus, dagTaskFailureReasons);
+    if (dagGraph?.tasks?.length) {
+      return dagToPlanSteps(dagGraph, dagTaskStatus, dagTaskFailureReasons);
+    }
     return extractPlan(activities);
   }, [activities, dagGraph, dagTaskStatus, dagTaskFailureReasons]);
 
@@ -273,6 +279,76 @@ export default function PlanView({ activities, dagGraph, dagTaskStatus = {}, dag
   useEffect(() => { prevCompletedRef.current = completedCount; }, [completedCount]);
 
   if (steps.length === 0) {
+    const isBuilding = projectStatus === 'running';
+
+    if (isBuilding) {
+      // Determine which phase we're in based on orchestrator task
+      const taskLower = (orchestratorTask || '').toLowerCase();
+      let phaseLabel = 'Analyzing request...';
+      let phaseIcon = '🔍';
+      if (taskLower.includes('loading') || taskLower.includes('memory') || taskLower.includes('context')) {
+        phaseLabel = 'Loading project context...';
+        phaseIcon = '📚';
+      } else if (taskLower.includes('architect') || taskLower.includes('codebase') || taskLower.includes('review')) {
+        phaseLabel = 'Reviewing architecture...';
+        phaseIcon = '🏗️';
+      } else if (taskLower.includes('pm') || taskLower.includes('plan') || taskLower.includes('task graph')) {
+        phaseLabel = 'Creating execution plan...';
+        phaseIcon = '📋';
+      } else if (taskLower.includes('critic') || taskLower.includes('evaluat')) {
+        phaseLabel = 'Validating plan quality...';
+        phaseIcon = '🔍';
+      }
+
+      return (
+        <div className="flex flex-col items-center justify-center h-full px-4">
+          {/* Animated building indicator */}
+          <div className="plan-building-indicator mb-5">
+            <div className="plan-building-ring" />
+            <div className="plan-building-ring plan-building-ring--delayed" />
+            <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl relative z-10"
+              style={{ background: 'rgba(99,140,255,0.08)', border: '2px solid rgba(99,140,255,0.25)' }}>
+              <span className="plan-building-icon">{phaseIcon}</span>
+            </div>
+          </div>
+          <p className="text-sm font-semibold mb-1" style={{ color: 'var(--accent-blue)' }}>
+            Building Execution Plan
+          </p>
+          <p className="text-xs text-center mb-4" style={{ color: 'var(--text-secondary)' }}>
+            {phaseLabel}
+          </p>
+          {/* Animated progress dots */}
+          <div className="flex items-center gap-3 mb-3">
+            {['📚 Context', '🏗️ Architecture', '📋 Planning', '🔍 Validation'].map((step, i) => {
+              const stepKeys = [['loading', 'context', 'memory'], ['architect', 'codebase', 'review'], ['pm', 'plan', 'task graph'], ['critic', 'evaluat']];
+              const isCurrentStep = stepKeys[i].some(k => taskLower.includes(k));
+              const isPastStep = i < stepKeys.findIndex(keys => keys.some(k => taskLower.includes(k)));
+              return (
+                <div key={step} className="flex flex-col items-center gap-1.5">
+                  <div className={`w-3 h-3 rounded-full transition-all duration-500 ${isCurrentStep ? 'animate-pulse' : ''}`}
+                    style={{
+                      background: isPastStep ? 'var(--accent-green)' : isCurrentStep ? 'var(--accent-blue)' : 'var(--border-subtle)',
+                      boxShadow: isCurrentStep ? '0 0 10px rgba(99,140,255,0.4)' : 'none',
+                    }} />
+                  <span className="text-[8px] font-medium" style={{
+                    color: isPastStep ? 'var(--accent-green)' : isCurrentStep ? 'var(--accent-blue)' : 'var(--text-muted)',
+                    fontFamily: 'var(--font-mono)',
+                  }}>
+                    {step.split(' ')[1]}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {/* Shimmer loading bar */}
+          <div className="w-48 h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-elevated)' }}>
+            <div className="h-full rounded-full animate-[loading_2s_ease-in-out_infinite]"
+              style={{ width: '60%', background: 'linear-gradient(90deg, var(--accent-blue), var(--accent-cyan))' }} />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-center justify-center h-full px-4">
         <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3 text-2xl"

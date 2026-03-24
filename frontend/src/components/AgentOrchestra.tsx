@@ -654,8 +654,77 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
   const isRunning = projectStatus === 'running';
   const hasActiveAgents = agentStateList.some(a => a.state !== 'idle' && a.name !== 'orchestrator');
 
+  // Detect planning phase: project is running but no sub-agents are active yet.
+  // This covers both the timing gap (before orchestrator state arrives) and the
+  // actual planning phase (orchestrator working, sub-agents idle).
+  const orchestrator = agentStateList.find(a => a.name === 'orchestrator');
+  const isPlanningPhase = isRunning && !hasActiveAgents;
+
   return (
     <div className="p-6 space-y-5">
+      {/* Planning phase indicator — replaces the idle grid during startup */}
+      {isPlanningPhase && (
+        <div className="rounded-xl p-5 animate-[fadeSlideIn_0.3s_ease-out]"
+          style={{
+            background: 'linear-gradient(135deg, rgba(99,140,255,0.06), rgba(139,92,246,0.04))',
+            border: '1px solid rgba(99,140,255,0.15)',
+          }}>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="relative">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg"
+                style={{ background: 'rgba(99,140,255,0.1)' }}>
+                🎯
+              </div>
+              <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[var(--bg-panel)] animate-pulse"
+                style={{ background: 'var(--accent-blue)' }} />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-xs font-bold tracking-wider"
+                  style={{ color: 'var(--accent-blue)', fontFamily: 'var(--font-mono)' }}>
+                  PREPARING
+                </span>
+                <div className="flex gap-[3px]">
+                  {[0, 1, 2].map(i => (
+                    <span key={i} className="w-1 h-1 rounded-full animate-bounce"
+                      style={{ background: 'var(--accent-blue)', animationDelay: `${i * 150}ms`, animationDuration: '0.8s' }} />
+                  ))}
+                </div>
+              </div>
+              <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                {orchestrator?.current_tool || orchestrator?.task || 'Starting up — preparing the execution plan...'}
+              </p>
+            </div>
+          </div>
+          {/* Mini progress bar */}
+          <div className="h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--border-dim)' }}>
+            <div className="h-full rounded-full animate-[loading_2.5s_ease-in-out_infinite]"
+              style={{ width: '50%', background: 'linear-gradient(90deg, var(--accent-blue), var(--accent-cyan))' }} />
+          </div>
+          {/* Agent readiness indicator */}
+          <div className="flex items-center gap-2 mt-3">
+            <span className="text-[9px] font-medium" style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+              AGENTS READY
+            </span>
+            <div className="flex -space-x-1.5">
+              {agentStateList.filter(a => a.name !== 'orchestrator').slice(0, 6).map(a => {
+                const ac = getAgentAccent(a.name);
+                return (
+                  <div key={a.name} className="w-5 h-5 rounded-full flex items-center justify-center text-[8px] ring-1 ring-[var(--bg-panel)]"
+                    style={{ background: ac.bg, border: `1px solid ${ac.color}20` }}
+                    title={AGENT_LABELS[a.name] || a.name}>
+                    {AGENT_ICONS[a.name] || '🔧'}
+                  </div>
+                );
+              })}
+            </div>
+            <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+              — waiting for plan
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Status summary strip — shows when agents are running */}
       {isRunning && workingAgents.length > 0 && (
         <div className="flex items-center gap-3 px-4 py-3 rounded-xl animate-[fadeSlideIn_0.3s_ease-out]"
@@ -709,6 +778,7 @@ export const HivemindTabContent = React.memo(function HivemindTabContent({
         onSelectAgent={onSelectAgent}
         selectedAgent={selectedAgent}
         layout="grid"
+        isProjectRunning={isRunning}
       />
 
       {/* Agent metrics (when available) */}

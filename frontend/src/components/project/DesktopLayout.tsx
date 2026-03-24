@@ -131,6 +131,8 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
                 dagGraph={dagGraph}
                 dagTaskStatus={dagTaskStatus}
                 dagTaskFailureReasons={dagTaskFailureReasons}
+                projectStatus={project.status}
+                orchestratorTask={orchestratorState?.current_tool || orchestratorState?.task}
               />
             </PanelErrorBoundary>
           )}
