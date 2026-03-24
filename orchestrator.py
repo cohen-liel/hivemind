@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from complexity import READER_ROLES, WRITER_ROLES
 from config import (
@@ -338,10 +339,13 @@ class OrchestratorManager:
         self._current_loop: int = 0
         # Effective budget (respects per-project override)
         self._effective_budget: float = MAX_BUDGET_USD
+        # Track whether the session completed successfully (vs manual stop/error)
+        self._completed_successfully: bool = False
 
         # DAG execution state — exposed via /live for cross-tab/refresh recovery
         self._dag_task_statuses: dict[str, str] = {}  # task_id → "working"/"completed"/"failed"
         self._current_dag_graph: dict | None = None  # serialized TaskGraph for the active session
+        self._live_graph: Any = None  # Reference to live TaskGraph object during execution
 
         # Agent silence watchdog — detects agents that stop producing output
         self._watchdog_task: asyncio.Task | None = None
@@ -358,6 +362,10 @@ class OrchestratorManager:
         self._last_user_message: str = ""
         # Stuck escalation hint (injected into review prompt when stuck detected)
         self._stuck_escalation_hint: str = ""
+
+        # Agent streaming buffers for throttled WebSocket updates
+        self._agent_stream_buffers: dict[str, str] = {}
+        self._agent_stream_last_emit: dict[str, float] = {}
 
         # ── Parallel task ingestion ─────────────────────────────────────────
         # When a new user message arrives while a graph is already executing,
@@ -978,10 +986,20 @@ class OrchestratorManager:
         - is_multi_agent=False → solo mode
         """
         if self.is_running:
-            # Route through the parallel ingestion queue instead of dropping.
-            # This makes start_session() truly non-blocking: it returns
-            # immediately and the submitted graph waits in the queue until
-            # the current session finishes and the semaphore has capacity.
+            # If a DAG is actively running, inject new tasks into it instead
+            # of creating a separate DAG (append-to-DAG mode).
+            if self._live_graph is not None:
+                logger.info(
+                    f"[{self.project_id}] start_session: already running — "
+                    f"injecting new tasks into live DAG"
+                )
+                self._create_background_task(
+                    self._inject_user_tasks(user_message),
+                )
+                return
+
+            # Fallback: no live graph (non-DAG mode or graph not yet created).
+            # Route through the parallel ingestion queue.
             logger.info(
                 f"[{self.project_id}] start_session: already running — "
                 f"queuing new task (queue depth will be "
@@ -1193,8 +1211,16 @@ class OrchestratorManager:
         _total_k = self.total_tokens / 1000 if self.total_tokens else 0
         _in_k = self.total_input_tokens / 1000 if self.total_input_tokens else 0
         _out_k = self.total_output_tokens / 1000 if self.total_output_tokens else 0
+
+        if self._completed_successfully:
+            _header = f"✅ Project *{self.project_name}* finished successfully!"
+            _final_status = "completed"
+        else:
+            _header = f"🛑 Project *{self.project_name}* stopped."
+            _final_status = "idle"
+
         _stop_lines = [
-            f"🛑 Project *{self.project_name}* stopped.",
+            _header,
             f"📊 Turns: {self.turn_count} | "
             f"🔤 Tokens: {_total_k:.1f}K ({_in_k:.1f}K in / {_out_k:.1f}K out)",
         ]
@@ -1204,6 +1230,7 @@ class OrchestratorManager:
             for s in self._task_summaries[-10:]:  # Show last 10
                 _stop_lines.append(f"  • {s}")
         await self._send_final("\n".join(_stop_lines))
+        await self._emit_event("project_status", status=_final_status)
 
     async def request_approval(self, description: str) -> bool:
         """Request human approval before proceeding. Blocks until approved/rejected."""
@@ -1273,6 +1300,124 @@ class OrchestratorManager:
 
         # Ensure the dispatcher is running to pick up this new entry
         self._ensure_graph_dispatcher()
+
+    async def _inject_user_tasks(self, user_message: str) -> None:
+        """Inject tasks from a new user message into the live running DAG.
+
+        Instead of creating a separate DAG, this calls the PM agent to
+        decompose the new message into additional tasks and adds them to
+        the existing TaskGraph. The executor's ``select_batch`` will pick
+        them up in the next round automatically.
+        """
+        from pm_agent import create_task_graph
+
+        graph = self._live_graph
+        if graph is None:
+            logger.warning(
+                f"[{self.project_id}] _inject_user_tasks: no live graph — falling back to queue"
+            )
+            await self._submit_to_graph_ingestion_queue(user_message)
+            return
+
+        await self._send_result(
+            f"📥 **New message received** — planning additional tasks...\n"
+            f"> {user_message[:200]}{'...' if len(user_message) > 200 else ''}"
+        )
+
+        try:
+            # Load project context for PM
+            manifest, memory_snapshot, file_tree = await self._load_project_context()
+
+            # Build context about existing tasks so PM knows what's already planned
+            existing_summary = []
+            for t in graph.tasks:
+                status = self._dag_task_statuses.get(t.id, "pending")
+                existing_summary.append(f"- {t.id} [{t.role.value}] ({status}): {t.goal[:80]}")
+            existing_context = (
+                "\n\n## Existing DAG Tasks (DO NOT recreate these)\n"
+                + "\n".join(existing_summary)
+                + "\n\nOnly create NEW tasks for the additional request. "
+                "Use task IDs that continue from the existing numbering "
+                f"(next available: task_{len(graph.tasks) + 1:03d}). "
+                "You may reference existing task IDs in depends_on if the new "
+                "tasks depend on work already planned."
+            )
+
+            # Call PM with enriched message
+            augmented_message = user_message + existing_context
+
+            async def _pm_stream(text: str) -> None:
+                preview = text[-300:] if len(text) > 300 else text
+                await self._emit_event(
+                    "agent_update",
+                    agent="pm",
+                    text=preview,
+                    summary="PM planning additional tasks...",
+                )
+
+            new_graph = await create_task_graph(
+                user_message=augmented_message,
+                project_id=self.project_id,
+                manifest=manifest,
+                file_tree=file_tree,
+                memory_snapshot=memory_snapshot,
+                on_stream=_pm_stream,
+            )
+
+            if not new_graph or not new_graph.tasks:
+                await self._send_result("⚠️ PM Agent returned no additional tasks.")
+                return
+
+            # Filter out tasks whose IDs already exist in the live graph
+            existing_ids = {t.id for t in graph.tasks}
+            new_tasks = [t for t in new_graph.tasks if t.id not in existing_ids]
+
+            if not new_tasks:
+                await self._send_result("⚠️ All planned tasks already exist in the DAG.")
+                return
+
+            # Inject new tasks into the live graph
+            for task in new_tasks:
+                # Validate dependency references
+                valid_deps = [
+                    d
+                    for d in task.depends_on
+                    if d in existing_ids or d in {t.id for t in new_tasks}
+                ]
+                task.depends_on = valid_deps
+                graph.add_task(task)
+                logger.info(
+                    f"[{self.project_id}] INJECTED user task: {task.id} "
+                    f"({task.role.value}) goal='{task.goal[:80]}' deps={task.depends_on}"
+                )
+
+            # Update cached serialized graph
+            self._current_dag_graph = graph.model_dump()
+
+            # Re-emit task_graph so frontend updates PlanView
+            await self._emit_event(
+                "task_graph",
+                graph=self._current_dag_graph,
+            )
+
+            task_list = "\n".join(
+                f"  - `{t.id}` [{t.role.value}]: {t.goal[:100]}" for t in new_tasks
+            )
+            await self._send_result(
+                f"✅ **{len(new_tasks)} new tasks injected** into running DAG:\n{task_list}\n\n"
+                f"_Tasks will be picked up in the next execution round._"
+            )
+
+        except Exception as exc:
+            logger.error(
+                f"[{self.project_id}] _inject_user_tasks failed: {exc}",
+                exc_info=True,
+            )
+            await self._send_result(
+                f"⚠️ Could not inject tasks: {str(exc)[:200]}\n"
+                f"_Queuing as separate execution instead._"
+            )
+            await self._submit_to_graph_ingestion_queue(user_message)
 
     def _ensure_graph_dispatcher(self) -> None:
         """Start the graph ingestion dispatcher if it is not already running.
@@ -1494,7 +1639,7 @@ class OrchestratorManager:
         racing with a callback that creates a new one.
         """
         # Lazy imports to avoid circular dependency
-        from dag_executor import ExecutionResult, build_execution_summary, execute_graph
+        from dag_executor_langgraph import ExecutionResult, build_execution_summary, execute_graph
         from memory_agent import update_project_memory
         from pm_agent import create_task_graph, fallback_single_task_graph
 
@@ -1614,12 +1759,33 @@ class OrchestratorManager:
                 await self._send_result(
                     "🏗️ **Architect Agent** is reviewing the codebase architecture before planning..."
                 )
+                # Stream callback for architect
+                _arch_buf = ""
+                _arch_last_emit = 0.0
+
+                async def _arch_stream(text: str):
+                    nonlocal _arch_buf, _arch_last_emit
+                    _arch_buf += text
+                    now = time.time()
+                    if now - _arch_last_emit < 2.0:
+                        return
+                    _arch_last_emit = now
+                    preview = _arch_buf[-300:] if len(_arch_buf) > 300 else _arch_buf
+                    await self._emit_event(
+                        "agent_update",
+                        agent="architect",
+                        summary=f"Architect analyzing ({len(_arch_buf)} chars)...",
+                        text=preview,
+                        status="working",
+                    )
+
                 try:
                     architect_brief = await run_architect_review(
                         project_dir=self.project_dir,
                         project_id=self.project_id,
                         user_task=user_message,
                         memory_snapshot={"memory": memory_snapshot} if memory_snapshot else None,
+                        on_stream=_arch_stream,
                     )
                     if architect_brief and architect_brief.codebase_summary:
                         # Inject architect brief into memory_snapshot for PM
@@ -1630,6 +1796,19 @@ class OrchestratorManager:
                             if architect_brief.key_files
                             else "(none identified)"
                         )
+                        # Format tradeoffs if the architect provided them
+                        _tradeoffs_str = ""
+                        if architect_brief.tradeoffs:
+                            _tradeoff_lines = []
+                            for t in architect_brief.tradeoffs:
+                                approach = t.get("approach", "?")
+                                pros = ", ".join(t.get("pros", []))
+                                cons = ", ".join(t.get("cons", []))
+                                _tradeoff_lines.append(f"  - {approach}: Pro({pros}) Con({cons})")
+                            _tradeoffs_str = (
+                                "Tradeoffs considered:\n" + "\n".join(_tradeoff_lines) + "\n"
+                            )
+
                         arch_context = (
                             f"\n\n<architect_brief>\n"
                             f"Codebase: {architect_brief.codebase_summary}\n"
@@ -1638,6 +1817,7 @@ class OrchestratorManager:
                             f"Key files:\n{_key_files_str}\n"
                             f"Constraints: {'; '.join(architect_brief.constraints)}\n"
                             f"Risks: {'; '.join(architect_brief.risks)}\n"
+                            f"{_tradeoffs_str}"
                             f"Recommended approach: {architect_brief.recommended_approach}\n"
                             f"Parallelism hints: {'; '.join(architect_brief.parallelism_hints)}\n"
                             f"</architect_brief>"
@@ -1739,6 +1919,62 @@ class OrchestratorManager:
                 # Step 1: PM Agent → TaskGraph (now with memory context)
                 _pm_start = _pm_time.time()
                 logger.info(f"[{self.project_id}] PM Agent starting task graph creation...")
+
+                # Stream callback: forward PM's live text to the UI via WebSocket
+                _pm_buffer = ""  # accumulates raw PM output
+                _pm_last_emit = 0.0
+                _PM_EMIT_INTERVAL = 2.0  # emit at most every 2 seconds
+
+                async def _pm_stream_to_ws(text: str):
+                    """Forward PM stream chunks to the frontend as agent_update events."""
+                    nonlocal _pm_buffer, _pm_last_emit
+                    _pm_buffer += text
+                    now = _pm_time.time()
+                    # Throttle: emit at most every 2s to avoid flooding WebSocket
+                    if now - _pm_last_emit < _PM_EMIT_INTERVAL:
+                        return
+                    _pm_last_emit = now
+                    elapsed = now - _pm_start
+                    # Show last ~300 chars of the buffer (most recent generation)
+                    preview = _pm_buffer[-300:] if len(_pm_buffer) > 300 else _pm_buffer
+                    # Clean up partial JSON for readability
+                    preview = preview.replace("\\n", "\n").strip()
+                    self.agent_states["orchestrator"] = {
+                        "state": "working",
+                        "task": f"PM creating execution plan ({elapsed:.0f}s)...",
+                        "current_tool": f"Generated {len(_pm_buffer)} chars",
+                    }
+                    await self._emit_event(
+                        "agent_update",
+                        agent="pm",
+                        summary=f"PM generating plan ({len(_pm_buffer)} chars, {elapsed:.0f}s)...",
+                        text=preview,
+                    )
+
+                # Heartbeat: emit elapsed time even if PM stream is quiet
+                async def _pm_heartbeat():
+                    while True:
+                        await asyncio.sleep(10)
+                        elapsed = _pm_time.time() - _pm_start
+                        chars = len(_pm_buffer)
+                        msg = (
+                            f"PM Agent working... ({chars} chars, {elapsed:.0f}s)"
+                            if chars
+                            else f"PM Agent starting... ({elapsed:.0f}s)"
+                        )
+                        self.agent_states["orchestrator"] = {
+                            "state": "working",
+                            "task": f"PM creating execution plan ({elapsed:.0f}s)...",
+                            "current_tool": msg,
+                        }
+                        await self._emit_event(
+                            "agent_update",
+                            agent="pm",
+                            summary=msg,
+                            text=msg,
+                        )
+
+                _heartbeat_task = asyncio.create_task(_pm_heartbeat())
                 try:
                     graph = await create_task_graph(
                         user_message=user_message,
@@ -1746,6 +1982,7 @@ class OrchestratorManager:
                         manifest=manifest,
                         file_tree=file_tree,
                         memory_snapshot=memory_snapshot,
+                        on_stream=_pm_stream_to_ws,
                     )
                     _pm_elapsed = _pm_time.time() - _pm_start
                     logger.info(
@@ -1764,10 +2001,27 @@ class OrchestratorManager:
                         f"[{self.project_id}] PM Agent failed after {_pm_elapsed:.1f}s: {pm_err}. Using fallback."
                     )
                     graph = fallback_single_task_graph(user_message, self.project_id)
+                finally:
+                    _heartbeat_task.cancel()
+                    try:
+                        await _heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
 
                 # --- Critic: validate graph quality before execution ---
                 # This is the Evaluator half of the Evaluator-Optimizer pattern.
                 # Quality issues are logged but don't block execution.
+                self.agent_states["orchestrator"] = {
+                    "state": "working",
+                    "task": "Evaluating plan quality...",
+                    "current_tool": "Critic validating task graph",
+                }
+                await self._emit_event(
+                    "agent_update",
+                    agent="orchestrator",
+                    summary="Validating plan quality before execution...",
+                    text="Evaluating plan quality...",
+                )
                 try:
                     from pm_agent import validate_graph_quality
 
@@ -1926,28 +2180,61 @@ class OrchestratorManager:
             # Cache serialized graph for /live recovery endpoint (cross-tab/refresh)
             self._current_dag_graph = graph.model_dump()
             self._dag_task_statuses = {}
+            # Store live reference so _inject_user_tasks can add tasks mid-execution
+            self._live_graph = graph
 
             # Session IDs shared across tasks (agent resume)
             session_id_store: dict[str, str] = {}
 
             # ── Step 1.5: Debate Engine — structured review for critical tasks ──
+            # Cap at 2 debates max to avoid blocking task execution for 10+ minutes.
+            _MAX_DEBATES = 2
             try:
                 from debate_engine import DebateEngine
 
                 _debate = DebateEngine()
+                _debate_count = 0
                 for task in graph.tasks:
-                    if _debate.should_debate(task):
+                    if _debate_count >= _MAX_DEBATES:
                         logger.info(
-                            f"[{self.project_id}] Debate triggered for task {task.id} ({task.role.value})"
+                            f"[{self.project_id}] Debate cap reached ({_MAX_DEBATES}), skipping remaining"
+                        )
+                        break
+                    if _debate.should_debate(task):
+                        _debate_count += 1
+                        logger.info(
+                            f"[{self.project_id}] Debate {_debate_count}/{_MAX_DEBATES} triggered "
+                            f"for task {task.id} ({task.role.value})"
                         )
                         await self._notify(
                             f"🗣️ **Debate Engine** reviewing critical task: {task.goal[:80]}..."
                         )
+                        # Debate stream callback
+                        _debate_buf = ""
+                        _debate_last_emit = 0.0
+
+                        async def _debate_stream(text: str, _task=task):
+                            nonlocal _debate_buf, _debate_last_emit
+                            _debate_buf += text
+                            now = _pm_time.time()
+                            if now - _debate_last_emit < 2.0:
+                                return
+                            _debate_last_emit = now
+                            preview = _debate_buf[-300:] if len(_debate_buf) > 300 else _debate_buf
+                            await self._emit_event(
+                                "agent_update",
+                                agent="debate",
+                                summary=f"Debate on {_task.role.value}: {len(_debate_buf)} chars...",
+                                text=preview,
+                                status="working",
+                            )
+
                         debate_result = await _debate.run_debate(
                             task=task,
                             project_dir=self.project_dir,
                             sdk=self.sdk,
                             context=graph.vision,
+                            on_stream=_debate_stream,
                         )
                         if debate_result and debate_result.merged_approach:
                             # Enrich the task goal with debate insights
@@ -2005,12 +2292,34 @@ class OrchestratorManager:
             # Step 3: Memory Agent — update project knowledge
             try:
                 await self._notify("🧠 **Memory Agent** is updating project knowledge...")
+
+                # Memory agent stream callback
+                _mem_buf = ""
+                _mem_last_emit = 0.0
+
+                async def _mem_stream(text: str):
+                    nonlocal _mem_buf, _mem_last_emit
+                    _mem_buf += text
+                    now = _pm_time.time()
+                    if now - _mem_last_emit < 2.0:
+                        return
+                    _mem_last_emit = now
+                    preview = _mem_buf[-300:] if len(_mem_buf) > 300 else _mem_buf
+                    await self._emit_event(
+                        "agent_update",
+                        agent="memory",
+                        summary=f"Memory Agent updating ({len(_mem_buf)} chars)...",
+                        text=preview,
+                        status="working",
+                    )
+
                 await update_project_memory(
                     project_dir=self.project_dir,
                     project_id=self.project_id,
                     graph=graph,
                     outputs=result.outputs,
                     use_llm=len(result.outputs) >= 3,
+                    on_stream=_mem_stream,
                 )
                 await self._notify("📝 Project memory updated successfully.")
                 # Cross-project memory: extract lessons from this execution
@@ -2078,6 +2387,7 @@ class OrchestratorManager:
             self.total_output_tokens += result.total_output_tokens
             self.total_tokens += result.total_tokens
             _dag_exit_reason = "normal"  # Reached end of try block = success
+            self._completed_successfully = True
 
         except asyncio.CancelledError:
             # ── Distinguish REAL cancellation from SPURIOUS anyio leak ──
@@ -2361,7 +2671,14 @@ class OrchestratorManager:
             # Only clear dag_task_statuses working states — keep completed/failed.
             # The graph itself stays until the next session starts.
             # self._current_dag_graph = None  # REMOVED: keep for /live recovery
-            await self._emit_event("project_status", status="idle")
+            self._live_graph = None  # Execution done — no more task injection
+            if self.is_paused:
+                _final_status = "paused"
+            elif self._completed_successfully:
+                _final_status = "completed"
+            else:
+                _final_status = "idle"
+            await self._emit_event("project_status", status=_final_status)
 
     async def _on_dag_task_start(self, task: TaskInput):
         """Callback: fired when DAG executor starts a task."""
@@ -2409,6 +2726,11 @@ class OrchestratorManager:
     async def _on_dag_task_done(self, task: TaskInput, output: TaskOutput):
         """Callback: fired when DAG executor completes a task."""
         import time as _time
+
+        # Clear stream buffer for this agent role
+        role_name = task.role.value
+        self._agent_stream_buffers.pop(role_name, None)
+        self._agent_stream_last_emit.pop(role_name, None)
 
         is_ok = output.is_successful()
         real_duration = round(_time.time() - getattr(task, "_started_at", _time.time()), 1)
@@ -2533,23 +2855,38 @@ class OrchestratorManager:
         )
 
     async def _on_dag_agent_stream(self, agent_role: str, text: str, task_id: str = ""):
-        """Callback: fired when a DAG agent streams text — enables real-time UI updates."""
-        # Throttle: only emit if text is meaningful (>20 chars)
-        if len(text) < 20:
-            return
-        # Truncate to avoid flooding the WebSocket
-        summary = text[:200].replace("\n", " ").strip()
+        """Callback: fired when a DAG agent streams text — enables real-time UI updates.
+
+        Accumulates text per agent and emits at most every 2 seconds to avoid
+        flooding the WebSocket while still showing meaningful live output.
+        """
+        # Accumulate text per agent
+        buf = self._agent_stream_buffers.get(agent_role, "")
+        buf += text
+        self._agent_stream_buffers[agent_role] = buf
+
         # Update agent_states so heartbeat knows the agent is alive
         if agent_role in self.agent_states:
             self.agent_states[agent_role]["last_stream_at"] = time.time()
             self.agent_states[agent_role]["last_activity_at"] = time.time()
             self.agent_states[agent_role]["last_activity_type"] = "stream"
-            # Agent is active — clear silence alert
             self._silence_alerted.discard(agent_role)
+
+        # Throttle: emit at most every 2 seconds
+        now = time.time()
+        last = self._agent_stream_last_emit.get(agent_role, 0.0)
+        if now - last < 2.0:
+            return
+        self._agent_stream_last_emit[agent_role] = now
+
+        # Show the most recent ~300 chars for readability
+        preview = buf[-300:] if len(buf) > 300 else buf
+        summary = preview.replace("\n", " ").strip()[:200]
         await self._emit_event(
             "agent_update",
             agent=agent_role,
             summary=summary,
+            text=preview,
             status="working",
             task_id=task_id,
         )
@@ -3178,6 +3515,7 @@ class OrchestratorManager:
                         )
 
                     # Clear persisted state (task completed successfully)
+                    self._completed_successfully = True
                     try:
                         if self.session_mgr:
                             await self.session_mgr.clear_orchestrator_state(self.project_id)
@@ -3729,7 +4067,13 @@ class OrchestratorManager:
                     )
 
             # Always emit project_status so frontend knows the state changed
-            await self._emit_event("project_status", status="paused" if self.is_paused else "idle")
+            if self.is_paused:
+                _final_status = "paused"
+            elif self._completed_successfully:
+                _final_status = "completed"
+            else:
+                _final_status = "idle"
+            await self._emit_event("project_status", status=_final_status)
             # Reset all agent states to idle — clear task so page-refresh doesn't
             # show STANDBY with a stale task description from the previous round.
             for agent_name in list(self.agent_states.keys()):
