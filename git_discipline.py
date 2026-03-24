@@ -92,6 +92,8 @@ def _git_lock(project_dir: str) -> asyncio.Lock:
 async def commit_single_task(
     project_dir: str,
     output: TaskOutput,
+    task_goal: str = "",
+    task_role: str = "",
 ) -> str | None:
     """
     Auto-commit changes after a single task completes.
@@ -110,7 +112,12 @@ async def commit_single_task(
 
     async with _git_lock(project_dir):
         return await _do_commit(
-            project_dir, [output], task_id=output.task_id, scoped_files=scoped_files
+            project_dir,
+            [output],
+            task_id=output.task_id,
+            scoped_files=scoped_files,
+            task_goal=task_goal,
+            task_role=task_role,
         )
 
 
@@ -138,6 +145,8 @@ async def _do_commit(
     task_id: str = "",
     round_num: int = 0,
     scoped_files: list[str] | None = None,
+    task_goal: str = "",
+    task_role: str = "",
 ) -> str | None:
     """Internal: perform the actual git add + commit. Caller must hold the lock.
 
@@ -171,8 +180,16 @@ async def _do_commit(
         logger.debug("[git] All changes were sensitive files — nothing to commit")
         return None
 
-    # Build commit message from outputs
-    message = _build_commit_message(outputs, round_num, task_id)
+    # Build commit message from actual staged files + task context
+    staged_files = [f.strip() for f in staged.strip().splitlines() if f.strip()]
+    message = _build_commit_message(
+        outputs,
+        round_num,
+        task_id,
+        staged_files=staged_files,
+        task_goal=task_goal,
+        task_role=task_role,
+    )
 
     await _run(["git", "commit", "-m", message], cwd=project_dir)
 
@@ -272,31 +289,136 @@ async def _unstage_metadata_files(project_dir: str) -> None:
         )
 
 
-def _build_commit_message(outputs: list[TaskOutput], round_num: int = 0, task_id: str = "") -> str:
-    """Build a structured commit message from task outputs."""
+def _infer_commit_type(staged_files: list[str], task_role: str, summary: str) -> str:
+    """Infer conventional commit type from changed files and context."""
+    lower_summary = summary.lower()
+    names = [Path(f).name.lower() for f in staged_files]
+    dirs = {Path(f).parts[0].lower() for f in staged_files if len(Path(f).parts) > 1}
+
+    if (
+        any(
+            n.startswith("test_") or n.startswith("test.") or "_test." in n or ".test." in n
+            for n in names
+        )
+        or "tests" in dirs
+        or task_role == "test_engineer"
+    ):
+        return "test"
+    if (
+        any(n in ("dockerfile", "docker-compose.yml", ".github", "ci.yml") for n in names)
+        or task_role == "devops"
+    ):
+        return "ci"
+    if any(n.endswith(".md") for n in names) and all(n.endswith(".md") for n in names):
+        return "docs"
+    if "fix" in lower_summary or "bug" in lower_summary or "repair" in lower_summary:
+        return "fix"
+    if "refactor" in lower_summary:
+        return "refactor"
+    if "style" in lower_summary or task_role == "ux_critic":
+        return "style"
+    if "security" in lower_summary or task_role == "security_auditor":
+        return "security"
+    if "review" in lower_summary or task_role == "reviewer":
+        return "chore"
+    return "feat"
+
+
+def _infer_scope(staged_files: list[str]) -> str:
+    """Infer a short scope from the staged files (e.g. 'auth', 'api', 'ui')."""
+    if not staged_files:
+        return ""
+    dirs = []
+    for f in staged_files:
+        parts = Path(f).parts
+        if len(parts) > 1:
+            dirs.append(parts[0])
+        else:
+            dirs.append(Path(f).stem)
+
+    # If all files share a common directory, use it as scope
+    if dirs and len(set(dirs)) == 1:
+        scope = dirs[0]
+        # Shorten common patterns
+        if scope in ("src", "lib", "app"):
+            # Use subdirectory if available
+            subdirs = [Path(f).parts[1] for f in staged_files if len(Path(f).parts) > 2]
+            if subdirs and len(set(subdirs)) == 1:
+                scope = subdirs[0]
+        return scope[:20]
+
+    # Multiple directories — pick the most common
+    if dirs:
+        from collections import Counter
+
+        most_common = Counter(dirs).most_common(1)[0][0]
+        return most_common[:20]
+
+    return ""
+
+
+def _summarize_first_line(task_goal: str, summary: str, max_len: int = 60) -> str:
+    """Pick the best short description for the first line of the commit."""
+    # Prefer task_goal — it's what was asked, which is more descriptive
+    # than the agent's summary which tends to be generic
+    text = task_goal or summary or "update code"
+
+    # Clean up: remove markdown, leading emojis, "Task:" prefixes
+    text = text.strip().lstrip("*#- ")
+    # Lowercase first char for conventional commit style
+    if text and text[0].isupper() and not text[:2].isupper():
+        text = text[0].lower() + text[1:]
+
+    if len(text) > max_len:
+        text = text[:max_len].rsplit(" ", 1)[0]
+
+    return text
+
+
+def _build_commit_message(
+    outputs: list[TaskOutput],
+    round_num: int = 0,
+    task_id: str = "",
+    staged_files: list[str] | None = None,
+    task_goal: str = "",
+    task_role: str = "",
+) -> str:
+    """Build a structured commit message from task outputs and actual staged files."""
     successful = [o for o in outputs if o.status == TaskStatus.COMPLETED]
     failed = [o for o in outputs if o.status == TaskStatus.FAILED]
+    files = staged_files or []
 
-    # Single-task commit: clean, focused message
+    # Single-task commit: clean conventional commit
     if task_id and len(successful) == 1:
         o = successful[0]
-        first_line = f"feat: {o.summary[:72]}"
-        body_lines = [f"\nTask: {o.task_id}"]
-        if o.artifacts:
-            unique = list(dict.fromkeys(o.artifacts[:5]))
-            body_lines.append(f"Files: {', '.join(unique)}")
-        body_lines.append(f"Cost: ${o.cost_usd:.4f}")
+        commit_type = _infer_commit_type(files, task_role, o.summary)
+        scope = _infer_scope(files)
+        desc = _summarize_first_line(task_goal, o.summary)
+        scope_part = f"({scope})" if scope else ""
+        first_line = f"{commit_type}{scope_part}: {desc}"
+
+        body_lines = []
+        if o.summary and task_goal and o.summary != task_goal:
+            body_lines.append(f"\n{o.summary[:200]}")
+        if files:
+            body_lines.append(f"\nFiles ({len(files)}):")
+            for f in files[:10]:
+                body_lines.append(f"  - {f}")
+            if len(files) > 10:
+                body_lines.append(f"  ... and {len(files) - 10} more")
+        body_lines.append(
+            f"\nTask: {o.task_id} [{task_role}]" if task_role else f"\nTask: {o.task_id}"
+        )
         return first_line + "\n" + "\n".join(body_lines)
 
-    # Multi-task fallback (round commit for leftovers)
-    all_artifacts: list[str] = []
-    for o in successful:
-        all_artifacts.extend(o.artifacts[:3])
-
+    # Multi-task round commit
     if len(successful) == 1:
-        first_line = f"feat: {successful[0].summary[:72]}"
+        o = successful[0]
+        commit_type = _infer_commit_type(files, task_role, o.summary)
+        desc = _summarize_first_line(task_goal, o.summary)
+        first_line = f"{commit_type}: {desc}"
     elif successful:
-        first_line = f"feat: complete round {round_num} — {len(successful)} tasks"
+        first_line = f"feat: complete {len(successful)} tasks (round {round_num})"
     else:
         first_line = f"wip: round {round_num} (partial — {len(failed)} failed)"
 
@@ -306,12 +428,12 @@ def _build_commit_message(outputs: list[TaskOutput], round_num: int = 0, task_id
     for o in failed:
         body_lines.append(f"  - [{o.task_id}] FAILED: {'; '.join(o.issues[:2])[:80]}")
 
-    if all_artifacts:
-        unique = list(dict.fromkeys(all_artifacts))[:10]
-        body_lines.append(f"\nFiles: {', '.join(unique)}")
-
-    total_cost = sum(o.cost_usd for o in outputs)
-    body_lines.append(f"Cost: ${total_cost:.4f}")
+    if files:
+        body_lines.append(f"\nFiles ({len(files)}):")
+        for f in files[:15]:
+            body_lines.append(f"  - {f}")
+        if len(files) > 15:
+            body_lines.append(f"  ... and {len(files) - 15} more")
 
     return first_line + "\n" + "\n".join(body_lines)
 
