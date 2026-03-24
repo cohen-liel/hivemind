@@ -649,6 +649,7 @@ class EventBus:
             "delegation",
             "task_graph",
             "self_healing",
+            "dag_task_update",
         ):
             agent = event.get("agent", "")
             extra = ""
