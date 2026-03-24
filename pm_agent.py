@@ -25,6 +25,7 @@ import html
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import state
@@ -112,9 +113,10 @@ PM_SYSTEM_PROMPT = (
     "  4. Database tasks MUST have required_artifacts: ['schema', 'file_manifest']\n"
     "</artifact_system>\n\n"
     "<critical_rule>\n"
-    "NEVER create a single-task plan. Every request MUST be decomposed into MULTIPLE tasks\n"
+    "NEVER create a single-task plan. Every request MUST be decomposed into MANY fine-grained tasks\n"
     "assigned to DIFFERENT specialist agents. You are managing a TEAM, not a single developer.\n"
-    "Minimum 3 tasks for simple requests, 5+ for complex requests.\n"
+    "Minimum 3 tasks for simple requests, 10+ for medium requests, 20+ for complex requests.\n"
+    "When in doubt, CREATE MORE TASKS with smaller scope rather than fewer tasks with larger scope.\n"
     "If the user asks for broad improvements (e.g., 'make this better', 'improve quality',\n"
     "'be the best version'), you MUST create tasks for ALL relevant specialists:\n"
     "  - backend_developer for Python/API improvements\n"
@@ -127,8 +129,8 @@ PM_SYSTEM_PROMPT = (
     "<instructions>\n"
     "Think step-by-step before producing JSON:\n"
     "1. VISION — One sentence: 'We will [outcome] by [method].'\n"
-    "2. EPICS — 3-7 high-level epics (what, not how)\n"
-    "3. TASKS — For each epic, 1-4 specific tasks with:\n"
+    "2. EPICS — Break the work into high-level epics (what, not how). No limit on count.\n"
+    "3. TASKS — For each epic, create as many FINE-GRAINED tasks as needed:\n"
     "   - role: the RIGHT specialist (USE MULTIPLE DIFFERENT ROLES)\n"
     "   - goal: CLEAR, MEASURABLE, >= 15 words, describes WHAT + WHY + HOW\n"
     "     IMPORTANT: Reformulate the user's raw message into a professional,\n"
@@ -142,15 +144,45 @@ PM_SYSTEM_PROMPT = (
     "   - files_scope: files this task will touch (for conflict detection)\n"
     "   - required_artifacts: artifact types this task MUST produce\n"
     "</instructions>\n\n"
+    "<task_granularity>\n"
+    "CRITICAL: Match task count to request complexity. More tasks = better quality.\n"
+    "Each task should do ONE focused thing well (1-3 files max).\n\n"
+    "Scale guide:\n"
+    "- Simple bug fix / config change → 3-5 tasks\n"
+    "- Add a feature / refactor a module → 8-15 tasks\n"
+    "- Build a service / major feature → 15-30 tasks\n"
+    "- Full app / system-wide improvements → 30-50 tasks\n\n"
+    "Splitting strategy:\n"
+    "- Split by FILE: one task per file or small group of related files\n"
+    "- Split by CONCERN: separate API, logic, validation, error handling, types\n"
+    "- Split by LAYER: frontend/backend/database/config each get their own tasks\n"
+    "- ALWAYS create separate tasks for: tests, security audit, review\n"
+    "- NEVER bundle 'improve X, Y, and Z' into one task — make 3 tasks\n\n"
+    "Example: 'Improve the authentication system' should become:\n"
+    "  task_001: Refactor password hashing to use argon2\n"
+    "  task_002: Add rate limiting to login endpoint\n"
+    "  task_003: Add account lockout after 5 failed attempts\n"
+    "  task_004: Add password strength validation\n"
+    "  task_005: Add refresh token rotation\n"
+    "  task_006: Update auth middleware error messages\n"
+    "  task_007: Add auth event logging/audit trail\n"
+    "  task_008: Write tests for password hashing changes\n"
+    "  task_009: Write tests for rate limiting and lockout\n"
+    "  task_010: Write tests for refresh token rotation\n"
+    "  task_011: Security audit of all auth changes\n"
+    "  task_012: Code review of all changes\n"
+    "NOT just 3-4 big tasks that each do multiple things.\n"
+    "</task_granularity>\n\n"
     "<parallelism_rules>\n"
     "- Tasks with NO shared files_scope CAN run in parallel\n"
     "- Tasks touching the SAME files MUST be sequential (depends_on)\n"
     "- research/review tasks can almost always run in parallel\n"
     "- security_auditor should come AFTER code is written\n"
+    "- Maximize parallelism: the more independent tasks, the faster the execution\n"
     "</parallelism_rules>\n\n"
     "<constraints>\n"
     "- Task IDs: 'task_001', 'task_002', etc. (zero-padded, sequential)\n"
-    "- Maximum 20 tasks per graph\n"
+    "- No hard limit on task count — create as many as needed for quality results\n"
     "- Always include a reviewer task at the end\n"
     "- Backend tasks that frontend depends on MUST have required_artifacts: ['api_contract', 'file_manifest']\n"
     "</constraints>\n\n"
@@ -227,27 +259,15 @@ PM_SYSTEM_PROMPT = (
     "and task_005 (reviewer) waits for ALL tasks and gets ALL context.\n"
     "</example>\n\n"
     "<output_format>\n"
-    "Before producing JSON, think through these stages in order:\n\n"
-    "<brainstorm>\n"
-    "FIRST — Explore the problem space before committing to a plan:\n"
-    "1. What are 2-3 different approaches to solving this request?\n"
-    "2. What are the trade-offs of each approach? (complexity, time, risk)\n"
-    "3. Which approach best fits the project's current state and constraints?\n"
-    "4. Are there any non-obvious dependencies or risks I should plan for?\n"
-    "Write your exploration in <brainstorm> tags. This prevents premature commitment\n"
-    "to the first approach that comes to mind.\n"
-    "</brainstorm>\n\n"
-    "<self_review>\n"
-    "THEN — Validate your chosen approach against these criteria:\n"
-    "1. Do I have AT LEAST 3 tasks? (If not, I need to decompose further!)\n"
-    "2. Am I using MULTIPLE DIFFERENT agent roles? (If all tasks go to one role, I'm not using the team!)\n"
-    "3. Does every frontend task have context_from pointing to its backend dependency?\n"
-    "4. Do all code-writing tasks have required_artifacts: ['file_manifest']?\n"
-    "5. Are there tasks that could run in parallel (no shared files_scope)?\n"
-    "6. Does the reviewer task depend on ALL code tasks?\n"
-    "7. Did I reformulate the user's message into clear, professional task goals?\n"
-    "</self_review>\n\n"
-    "Then OUTPUT ONLY THE JSON. No markdown, no explanation. Start with { and end with }.\n\n"
+    "OUTPUT ONLY THE JSON. No brainstorming, no explanation, no markdown fences.\n"
+    "Start your response with { and end with }.\n\n"
+    "Self-check (do NOT write these out — just verify mentally):\n"
+    "- Each task focused on 1-3 files?\n"
+    "- Using MULTIPLE DIFFERENT agent roles?\n"
+    "- Frontend tasks have context_from pointing to backend?\n"
+    "- Writer tasks have required_artifacts: ['file_manifest']?\n"
+    "- Reviewer depends on ALL code tasks?\n"
+    "- Goals are reformulated, not copied from user message?\n\n"
     "JSON Schema:\n"
     "```json\n" + json.dumps(task_graph_schema(), indent=2) + "\n```\n"
     "</output_format>"
@@ -266,6 +286,7 @@ async def create_task_graph(
     file_tree: str = "",
     memory_snapshot: str = "",
     max_retries: int = 2,
+    on_stream: Callable[[str], Awaitable[None]] | None = None,
 ) -> TaskGraph:
     """
     Query the PM Agent and return a validated TaskGraph.
@@ -298,6 +319,26 @@ async def create_task_graph(
         logger.info(
             f"[PM] Attempt {attempt + 1}/{max_retries + 1}: calling SDK via isolated_query (max_turns={_pm_cfg.turns}, budget=${_pm_cfg.budget})"
         )
+        # Stream callback: log PM generation progress + forward to caller
+        _pm_chars = 0
+        _pm_last_log = 0.0
+        import time as _time
+
+        async def _pm_stream(text: str):
+            nonlocal _pm_chars, _pm_last_log
+            _pm_chars += len(text)
+            now = _time.monotonic()
+            # Log every 30 seconds to avoid flooding
+            if now - _pm_last_log >= 30:
+                _pm_last_log = now
+                logger.info(f"[PM] Stream progress: {_pm_chars} chars generated so far...")
+            # Forward to external callback (e.g. orchestrator → WebSocket)
+            if on_stream:
+                try:
+                    await on_stream(text)
+                except Exception:
+                    pass  # never let stream callback break PM execution
+
         # PM runs via isolated_query so anyio's cleanup is contained in its own
         # thread/event-loop and never injects CancelledError into the main loop.
         response = await isolated_query(
@@ -310,11 +351,20 @@ async def create_task_graph(
             allowed_tools=[],
             max_retries=1,
             per_message_timeout=_pm_cfg.timeout,
+            on_stream=_pm_stream,
         )
 
         if response.is_error:
             last_error = response.error_message
             continue
+
+        # Guard: if the response is excessively long, the PM likely produced
+        # pages of brainstorming text instead of just JSON. Log a warning.
+        if len(response.text) > 50_000:
+            logger.warning(
+                f"[PM] Response excessively long ({len(response.text)} chars) — "
+                f"PM may have generated brainstorming text instead of pure JSON"
+            )
 
         graph, error = _parse_task_graph(response.text, project_id, user_message)
         if graph is not None:
@@ -357,9 +407,18 @@ def _build_pm_prompt(
     file_tree: str,
     memory_snapshot: str = "",
 ) -> str:
+    # Cap user message to prevent excessively long prompts that cause
+    # the PM to generate 100K+ char responses of brainstorming text.
+    capped_message = user_message[:3000]
+    if len(user_message) > 3000:
+        capped_message += "\n\n[... message truncated for planning efficiency ...]"
+        logger.info(
+            f"[PM] User message truncated from {len(user_message)} to 3000 chars for PM prompt"
+        )
+
     parts = [
         f"<project_id>{html.escape(project_id)}</project_id>",
-        f"<user_request>{html.escape(user_message)}</user_request>",
+        f"<user_request>{html.escape(capped_message)}</user_request>",
     ]
     if memory_snapshot:
         parts.append(f"<project_memory>\n{memory_snapshot[:4000]}\n</project_memory>")
@@ -384,7 +443,11 @@ def _build_pm_prompt(
     except Exception:
         logger.debug("git log collection failed (non-critical)", exc_info=True)
 
-    parts.append("\nCreate the TaskGraph JSON now. Output ONLY the JSON object, nothing else.")
+    parts.append(
+        "\nCreate the TaskGraph JSON now. Output ONLY the raw JSON object.\n"
+        "Do NOT include any explanation, brainstorming, or markdown fences.\n"
+        "Your entire response must be a single JSON object starting with { and ending with }."
+    )
     return "\n\n".join(parts)
 
 
@@ -461,8 +524,8 @@ def _parse_task_graph(
             if len(graph.tasks) < 2 and len(user_message.split()) > 15:
                 return None, (
                     "TaskGraph has only 1 task for a complex request. You MUST decompose "
-                    "into MULTIPLE tasks assigned to DIFFERENT specialist agents. "
-                    "Minimum 3 tasks for simple requests, 5+ for complex requests."
+                    "into MANY fine-grained tasks assigned to DIFFERENT specialist agents. "
+                    "Minimum 3 tasks for simple requests, 10+ for medium, 20+ for complex."
                 )
 
             return graph, ""
