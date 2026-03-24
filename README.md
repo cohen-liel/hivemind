@@ -17,7 +17,7 @@
 
 **Describe a feature in plain English. Hivemind deploys a PM, developers, reviewer, and QA — all working in parallel — and delivers tested, committed code. No babysitting. No copy-pasting. No "continue".**
 
-[Website](https://cohen-liel.github.io/hivemind/) · [Quick Start](#-quick-start) · [How It Works](#-how-it-works) · [Features](#-features) · [Dashboard](#-dashboard) · [Agent Roster](#-agent-roster) · [Templates](#-templates) · [Contributing](CONTRIBUTING.md)
+[Website](https://cohen-liel.github.io/hivemind/) · [Quick Start](#-quick-start) · [How It Works](#-how-it-works) · [Architecture](#-architecture) · [Features](#-features) · [Dashboard](#-dashboard) · [Agent Roster](#-agent-roster) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -31,14 +31,14 @@
 
 Hivemind is a Python orchestrator and React dashboard that turns AI coding agents into a full software engineering team. Give it one prompt — it plans the work, spins up specialist agents in parallel, passes artifacts between them, reviews the output, and commits tested code.
 
-It looks like a project dashboard — but under the hood it has DAG-based task planning, parallel execution, self-healing, artifact flow, code review gates, and proactive memory.
+Under the hood: a LangGraph-based DAG executor, adaptive complexity triage, read-only code review, self-healing retry logic, and a single living DAG that grows dynamically as you send new messages.
 
 **Ship features, not prompts.**
 
 | Step | | Example |
 | --- | --- | --- |
 | **01** | Describe the feature | *"Add JWT authentication with a login page and protected routes"* |
-| **02** | Watch the team work | PM plans → Frontend + Backend + DB work in parallel → Tests → Review |
+| **02** | Watch the team work | Triage → Architect → PM plans → Frontend + Backend + DB work in parallel → Tests → Review |
 | **03** | Get production code | Tested, reviewed, committed. Open your IDE and it's already there. |
 
 > **COMING SOON: Template Marketplace** — Download pre-built project DAGs and run them with one click. SaaS starters, API backends, full-stack apps — pick a template and let the team build it.
@@ -56,22 +56,135 @@ It looks like a project dashboard — but under the hood it has DAG-based task p
 - ✅ You want to **describe a feature once** and get production-ready code back
 - ✅ You're tired of **babysitting Claude Code** — typing "continue", fixing context loss, managing files manually
 - ✅ You want **parallel execution** — frontend, backend, and tests built simultaneously
-- ✅ You want a **code review gate** before anything gets committed
+- ✅ You want a **read-only code review gate** that critiques without breaking your code
 - ✅ You want to **monitor everything from your phone** while lying on the couch
 - ✅ You want **self-healing** — when an agent fails, the system fixes it automatically
 - ✅ You want **zero extra API costs** — runs on your existing Claude Code subscription
 
 &nbsp;
 
+---
+
+## ⚡ How It Works
+
+```
+You: "Add user authentication with JWT tokens and a login page"
+                    │
+                    ▼
+         ┌──────────────────┐
+         │   Triage          │  Simple task? → Skip planning, execute directly
+         │   (Adaptive)      │  Complex task? → Full pipeline below
+         └────────┬─────────┘
+                  │
+         ┌────────▼─────────┐
+         │  Architect Agent  │  Reviews codebase, identifies patterns,
+         │  (Pre-planning)   │  produces architecture brief
+         └────────┬─────────┘
+                  │
+         ┌────────▼─────────┐
+         │    PM Agent       │  Creates TaskGraph (DAG) with dependencies,
+         │    (Planning)     │  file scopes, and role assignments
+         └────────┬─────────┘
+                  │
+         ┌────────▼─────────┐
+         │   LangGraph DAG   │  Executes tasks in dependency order.
+         │    Executor       │  Parallel where safe, sequential where needed.
+         └────────┬─────────┘
+                  │
+    ┌─────────────┼─────────────┐
+    ▼             ▼             ▼
+┌────────┐  ┌────────┐  ┌────────┐
+│Backend │  │Frontend│  │Database│   Writer agents serialized (write lock),
+│  Dev   │  │  Dev   │  │ Expert │   reader agents run in parallel
+└───┬────┘  └───┬────┘  └───┬────┘
+    │           │           │
+    └─────────┬─┘───────────┘
+              ▼
+    ┌──────────────────┐
+    │   Test Engineer   │   Tests the combined output
+    └────────┬─────────┘
+             ▼
+    ┌──────────────────┐
+    │    Reviewer       │   Read-only critique (no code modification).
+    │  (Code Review)    │   Automated lint/format with test safety net.
+    └────────┬─────────┘
+             ▼
+        ✅ Committed & Ready
+```
+
+**New message mid-execution?** It gets injected into the live DAG — adding or cancelling tasks dynamically. There is always exactly one DAG per project. No parallel DAGs, no lost messages.
+
+&nbsp;
+
+---
+
+## 🏗️ Architecture
+
+### Core Pipeline
+
+| Stage | Component | File | Description |
+|---|---|---|---|
+| **Triage** | `_triage_is_simple()` | `orchestrator.py` | Lightweight heuristic that routes simple tasks directly to a single-agent execution, skipping PM + Architect. Inspired by SEMAG adaptive complexity. |
+| **Architect** | `ArchitectAgent` | `architect_agent.py` | Pre-planning codebase review. Produces an `ArchitectureBrief` (patterns, conventions, key files) that the PM uses for better planning. |
+| **PM** | `create_task_graph()` | `pm_agent.py` | Decomposes the request into a `TaskGraph` — a DAG of typed `TaskInput` nodes with role assignments, file scopes, and dependency wiring. Task count scales with complexity (no forced minimums). |
+| **DAG Executor** | LangGraph `StateGraph` | `dag_executor_langgraph.py` | `select_batch → execute_batch → post_batch → (loop)`. SQLite checkpointing for fault tolerance. Self-healing retry with failure classification. |
+| **Review** | Read-only critic | `dag_executor_langgraph.py` | ACC-Collab Critic pattern: reviewer reads code but never modifies it. Automated lint/format runs separately with a test-after-review safety net — reverts if tests break. |
+| **Memory** | `update_project_memory()` | `memory_agent.py` | Post-execution memory update. Lessons learned are injected into future PM prompts. |
+
+### Concurrency Model
+
+| Mechanism | Description |
+|---|---|
+| **Single DAG per project** | New messages are injected into the live DAG (add/cancel tasks), never spawning a parallel DAG. Messages arriving during PM/Architect phase are buffered and drained when the graph is ready. |
+| **Writer/Reader separation** | Writer agents (code-modifying) run sequentially under a project write lock. Reader agents (analysis, research) run in parallel. |
+| **Per-project write lock** | `asyncio.Lock` in `ProjectTaskQueue` prevents concurrent file modifications within the same project directory. |
+| **Cross-project parallelism** | Different projects execute independently, bounded by `DAG_MAX_CONCURRENT_GRAPHS`. |
+
+### Dynamic DAG
+
+The DAG is a living structure. While execution is in progress:
+
+- **User sends a new message** → PM decomposes it into additional tasks → tasks are injected into the live graph → executor picks them up in the next round
+- **PM can cancel pending tasks** → tasks that haven't started are removed, dangling dependencies are cleaned up
+- **Self-healing adds remediation tasks** → when a task fails, the executor creates a targeted fix task and adds it to the graph
+- **`select_batch` re-evaluates every round** → newly injected tasks are discovered via `ready_tasks()` and `is_complete()`
+
+### Typed Contract Protocol
+
+Agents communicate via structured contracts, not free-form text:
+
+```
+TaskInput (goal, role, file_scope, depends_on, context_from)
+    → Agent execution (two-phase: work + structured summary)
+        → TaskOutput (status, artifacts, files_modified, handoff_notes)
+```
+
+Artifacts flow downstream through `context_from` wiring — a frontend agent automatically receives the API contract produced by the backend agent.
+
+### Self-Healing
+
+| Signal | Detection | Response |
+|---|---|---|
+| Agent stuck | Text similarity > 85%, no file progress | Reassign → simplify → kill & respawn |
+| Task failure | Exit code, error classification | Targeted retry with failure context |
+| Circular delegation | Watchdog pattern detection | Break cycle, direct assignment |
+| Post-review regression | Tests fail after lint/format | `git reset --hard` to pre-review HEAD |
+| Rate limiting (429) | Per-agent circuit breaker | Exponential backoff, other agents continue |
+
+&nbsp;
+
+---
+
 ## ⚡ Features
 
 | | | |
 |---|---|---|
-| 🧩 **DAG-Based Planning** | Every feature is broken into a dependency-aware task graph. Independent tasks run in parallel; dependent tasks wait for upstream artifacts. | 🔄 **Self-Healing Execution** | Failed tasks are classified by failure type and retried with targeted fixes — not blind restarts. |
+| 🧩 **LangGraph DAG Executor** | Tasks execute in dependency order via a LangGraph `StateGraph` with SQLite checkpointing, self-healing retry, and dynamic task injection. | 🔄 **Self-Healing Execution** | Failed tasks are classified by failure type and retried with targeted fixes — not blind restarts. |
 | 🔀 **Artifact Flow** | Agents pass typed artifacts (API contracts, schemas, test reports) to downstream agents as structured context. | 🧠 **Proactive Memory** | The orchestrator injects lessons learned from past sessions to prevent repeating the same mistakes. |
-| 🛡️ **Code Review Gate** | A reviewer agent checks the combined output for correctness, consistency, and code quality before the final commit. | ⚡ **Smart Concurrency** | Reader agents run in parallel; writer agents are serialized when their file scopes overlap to prevent conflicts. |
+| 🛡️ **Read-Only Code Review** | Reviewer critiques code without modifying it (ACC-Collab pattern). Lint/format changes are reverted if they break tests. | ⚡ **Adaptive Triage** | Simple tasks skip the full PM + Architect pipeline and execute directly — reducing latency and token waste. |
 | 💰 **Zero Extra Cost** | No API keys needed. Runs directly on your Claude Code CLI subscription. No token charges. | 🔒 **Project Isolation** | Every agent is sandboxed to its project directory. Cross-project file access is blocked at multiple enforcement layers. |
 | 📱 **Mobile Dashboard** | Real-time streaming, DAG progress, file diffs, cost analytics — all from your phone. | 🔌 **Circuit Breaker** | SDK client implements circuit breaker pattern to prevent cascade failures when the LLM is overloaded. |
+| 🏗️ **Architect Agent** | Pre-planning codebase review identifies patterns, conventions, and key files — giving the PM better context for planning. | 🔗 **Dynamic DAG** | Send new messages mid-execution — tasks are added or cancelled in the live DAG. Always one DAG, never parallel. |
 
 &nbsp;
 
@@ -83,27 +196,26 @@ It looks like a project dashboard — but under the hood it has DAG-based task p
 | ❌ For a full-stack feature, you manually coordinate backend → frontend → tests → review. Copy-pasting context between sessions. | ✅ Artifact flow passes API contracts, schemas, and test reports between agents automatically. No copy-pasting. |
 | ❌ An agent gets stuck in a loop. You kill it, lose context, start over. | ✅ Self-healing detects stuck agents (5 distinct signals), reassigns, simplifies, or respawns — automatically. |
 | ❌ You can't leave your desk. If you walk away, the agent stops or goes off track. | ✅ Monitor from your phone. The dashboard streams everything in real-time. Walk away. Go to the couch. |
-| ❌ Agents write buggy code and you only find out after merging. | ✅ Code review gate catches issues before commit. Test engineer validates. Security auditor checks OWASP Top 10. |
-| ❌ You pay per token and have no idea what each agent is costing you. | ✅ Cost analytics dashboard tracks token usage per session, per agent, over time. |
+| ❌ Agents write buggy code and you only find out after merging. | ✅ Read-only review gate catches issues before commit. If automated fixes break tests, they're reverted automatically. |
+| ❌ Simple tasks go through the same heavy pipeline as complex ones, wasting tokens and time. | ✅ Triage routes simple requests directly to execution, skipping PM + Architect overhead. |
+| ❌ You send a follow-up message and it starts a whole new session, losing all progress. | ✅ New messages inject tasks into the live DAG. One continuous execution, always growing. |
 
 &nbsp;
 
 ## Why Hivemind is special
 
-Hivemind handles the hard orchestration details correctly.
-
 | | |
 |---|---|
-| **Dependency-aware DAG execution.** | Tasks execute in optimal order. The PM creates a real dependency graph, not a flat list. |
+| **Adaptive complexity routing.** | Simple tasks skip PM + Architect and execute immediately. Complex tasks get the full pipeline. No wasted tokens. |
+| **Single living DAG.** | There is always one DAG per project. New messages add or cancel tasks dynamically — never spawning parallel DAGs. |
+| **Read-only code review with safety net.** | The reviewer critiques but never modifies code. Automated lint/format runs separately, and if tests break, changes are reverted to pre-review HEAD. |
+| **Architect-informed planning.** | Before the PM creates a plan, the Architect Agent reviews the codebase and produces a brief — patterns, conventions, key files — so the plan fits the existing architecture. |
 | **Two-phase agent protocol.** | Each agent runs a work phase (tools enabled) followed by a structured summary phase, guaranteeing parseable output. |
-| **Structured Handoff Protocol.** | Agents don't just finish tasks; they write detailed handoff documents explaining *what* they built, *why*, and *how* to test it for the next agent. |
-| **TDD Verification Loop.** | The test engineer doesn't just write tests—they are forced to run them, fix bugs, and provide actual terminal output as proof. |
-| **Two-Stage Code Review.** | The reviewer agent performs a strict two-stage check: Stage 1 for spec compliance, and Stage 2 for code quality and security. |
-| **PM Brainstorming Phase.** | Before committing to a plan, the PM agent evaluates 3 different architectural approaches and documents trade-offs. |
+| **Structured Handoff Protocol.** | Agents write detailed handoff documents explaining *what* they built, *why*, and *how* to test it for the next agent. |
+| **Project write lock.** | Writer agents are serialized within a project directory via `asyncio.Lock`, preventing git conflicts and race conditions. |
 | **Active escalation.** | Watchdog monitors 5 stuck signals (text similarity > 85%, no file progress, circular delegation). Triggers reassign → simplify → kill & respawn. |
 | **Exponential backoff with circuit breaker.** | Rate limits (429) are caught per-agent with retry strategy. Other agents continue working. |
 | **Proactive memory injection.** | Past failures and lessons are injected into agent prompts so the team learns across sessions. |
-| **File-scope enforcement.** | Agents can only touch files assigned to their task. Cross-scope writes are blocked at the SDK layer. |
 | **Typed artifact contracts.** | Agents communicate via structured `TaskInput → TaskOutput` contracts, not free-form text. |
 
 &nbsp;
@@ -165,47 +277,6 @@ That's it. Go lie on the couch.
 
 ---
 
-## ⚡ How It Works
-
-```
-You: "Add user authentication with JWT tokens and a login page"
-                    │
-                    ▼
-         ┌──────────────────┐
-         │    PM Agent       │  Analyzes request, creates TaskGraph (DAG)
-         │    (Planning)     │  with dependencies and file scopes
-         └────────┬─────────┘
-                  │
-         ┌────────▼─────────┐
-         │   DAG Executor    │  Launches agents in parallel
-         │   (Orchestration) │  where dependencies allow
-         └────────┬─────────┘
-                  │
-    ┌─────────────┼─────────────┐
-    ▼             ▼             ▼
-┌────────┐  ┌────────┐  ┌────────┐
-│Backend │  │Frontend│  │Database│   Agents work in parallel,
-│  Dev   │  │  Dev   │  │ Expert │   passing typed artifacts downstream
-└───┬────┘  └───┬────┘  └───┬────┘
-    │           │           │
-    └─────────┬─┘───────────┘
-              ▼
-    ┌──────────────────┐
-    │   Test Engineer   │   Tests the combined output
-    └────────┬─────────┘
-             ▼
-    ┌──────────────────┐
-    │    Reviewer       │   Quality gate — checks correctness,
-    │  (Code Review)    │   consistency, and code quality
-    └────────┬─────────┘
-             ▼
-        ✅ Committed & Ready
-```
-
-&nbsp;
-
----
-
 ## 📊 Dashboard
 
 <div align="center">
@@ -234,8 +305,8 @@ The web dashboard gives you full visibility into what every agent is doing:
 |---|---|
 | **Live Agent Output** | Stream each agent's work in real-time via WebSocket |
 | **DAG Progress** | Visual task graph showing agent status and dependencies |
-| **Agent Cards** | See all 11 agents with their current status (Standby, Working, Done) |
-| **Plan View** | Live execution plan with ✓ completion tracking and progress bar |
+| **Agent Cards** | See all agents with their current status (Standby, Working, Done) |
+| **Plan View** | Live execution plan with completion tracking and progress bar |
 | **Code Browser** | Browse and diff the files agents are creating and modifying |
 | **Cost Analytics** | Monitor token usage and cost per session over time |
 | **Schedules** | Set up recurring tasks with cron expressions |
@@ -260,8 +331,9 @@ Hivemind deploys the right agent for each task. Here is the full team:
 
 | Agent | Role |
 |---|---|
-| **PM Agent** | Brainstorms architectural approaches, analyzes trade-offs, and creates the structured execution plan (TaskGraph) |
-| **Orchestrator** | Routes messages, manages delegation, tracks progress, handles lifecycle |
+| **Orchestrator** | Central coordinator — triage, lifecycle management, DAG dispatch, session state |
+| **Architect Agent** | Pre-planning codebase review. Produces architecture brief (patterns, conventions, tech stack) |
+| **PM Agent** | Decomposes requests into a typed `TaskGraph` DAG with dependency wiring and role assignments |
 | **Memory Agent** | Updates project knowledge after each execution to improve future runs |
 
 ### Development
@@ -270,6 +342,7 @@ Hivemind deploys the right agent for each task. Here is the full team:
 |---|---|
 | **Frontend Developer** | React, TypeScript, Tailwind, state management |
 | **Backend Developer** | FastAPI, async Python, REST APIs, WebSockets |
+| **Fullstack Developer** | End-to-end implementation for simpler tasks (used by triage fast path) |
 | **Database Expert** | Schema design, query optimization, migrations |
 | **DevOps** | Docker, CI/CD, deployment, environment configuration |
 | **TypeScript Architect** | Advanced TypeScript patterns, generics, design systems |
@@ -280,7 +353,7 @@ Hivemind deploys the right agent for each task. Here is the full team:
 |---|---|
 | **Test Engineer** | Writes tests, runs them in a strict TDD verification loop, and proves they pass |
 | **Security Auditor** | OWASP Top 10, dependency scanning |
-| **Reviewer** | Performs a rigorous two-stage review: spec compliance followed by code quality checks |
+| **Reviewer** | Read-only code critique (ACC-Collab pattern) — identifies issues without modifying code |
 | **UX Critic** | Accessibility, usability heuristics |
 | **Researcher** | Technical research, documentation, best practices |
 
@@ -333,6 +406,8 @@ All configuration via `.env`:
 | `MAX_BUDGET_USD` | `100` | Budget limit per session in USD |
 | `DEVICE_AUTH_ENABLED` | `true` | Enable device-based authentication |
 | `SANDBOX_ENABLED` | `true` | Restrict agents to project directories |
+| `DAG_MAX_CONCURRENT_NODES` | `8` | Max parallel agent executions within a DAG |
+| `DAG_MAX_CONCURRENT_GRAPHS` | `5` | Max parallel DAG executions across projects |
 
 &nbsp;
 
@@ -382,7 +457,7 @@ pnpm dev              # Full dev (backend + frontend, watch mode)
 pnpm dev:frontend     # Frontend only with hot reload
 pnpm dev:backend      # Backend only
 
-python3 -m pytest tests/ -v   # Run 1,319 tests
+python3 -m pytest tests/ -v   # Run tests
 cd frontend && npx tsc --noEmit   # Type checking
 ```
 
@@ -394,15 +469,20 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
 ## 🗺️ Roadmap
 
-- 🟢 DAG-based parallel execution
+- 🟢 LangGraph DAG executor with SQLite checkpointing
 - 🟢 Real-time mobile dashboard
 - 🟢 Self-healing and active escalation
 - 🟢 Proactive memory
-- 🟢 Code review gate
-- ⚪ OpenClaw agent runtime support
+- 🟢 Read-only code review with test safety net
+- 🟢 Adaptive triage (skip planning for simple tasks)
+- 🟢 Architect Agent pre-planning
+- 🟢 Dynamic DAG (inject/cancel tasks mid-execution)
+- 🟢 Project write lock (sequential writer execution)
 - 🟢 Structured agent handoff protocol
-- 🟢 Strict TDD verification loop
-- 🟢 Two-stage code review
+- 🟢 Typed artifact contracts
+- ⚪ Reactive debate engine (trigger on failure, not proactively)
+- ⚪ Experience library with measurement
+- ⚪ OpenClaw agent runtime support
 - ⚪ Template marketplace (pre-built project DAGs)
 - ⚪ Plugin system for custom agent types
 - ⚪ Multi-project orchestration
