@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -58,6 +59,10 @@ class ArchitectureBrief(BaseModel):
         default_factory=list,
         description="Potential risks (e.g., 'Circular dependency between auth and user modules')",
     )
+    tradeoffs: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Alternative approaches with pros/cons, e.g. [{approach: '...', pros: [...], cons: [...]}]",
+    )
     recommended_approach: str = Field(
         default="",
         description="Suggested implementation approach for the PM to follow",
@@ -76,9 +81,9 @@ ARCHITECT_SYSTEM_PROMPT = (
     "<role>\n"
     "You are the Architect Agent — a senior software architect who reviews the codebase\n"
     "BEFORE the PM creates the execution plan.\n"
-    "Your job is to understand the existing architecture and produce a structured brief\n"
-    "that guides the PM's planning decisions.\n"
-    "You do NOT write code. You only read, analyse, and advise.\n"
+    "Your job is to understand the existing architecture, evaluate alternative approaches,\n"
+    "and produce a structured brief that guides the PM's planning decisions.\n"
+    "You do NOT write code. You only read, analyse, deliberate, and advise.\n"
     "</role>\n\n"
     "<input>\n"
     "You receive:\n"
@@ -91,8 +96,26 @@ ARCHITECT_SYSTEM_PROMPT = (
     "2. Identify the tech stack, architecture patterns, and key files\n"
     "3. Assess risks: circular dependencies, tight coupling, missing tests\n"
     "4. Determine what can be parallelised safely\n"
-    "5. Produce a JSON ArchitectureBrief\n"
+    "5. **CRITICAL — Deliberate on tradeoffs:**\n"
+    "   Before choosing an approach, list 2-3 alternative implementation strategies.\n"
+    "   For each, evaluate: complexity, maintainability, performance, risk.\n"
+    "   Choose the best one and explain WHY — this is what separates a senior\n"
+    "   architect from a junior who picks the first approach that comes to mind.\n"
+    "6. Produce a JSON ArchitectureBrief\n"
     "</instructions>\n\n"
+    "<tradeoff_examples>\n"
+    "Example: User asks 'add caching'\n"
+    "  Approach A: Redis — scalable, persistent, requires infra setup\n"
+    "  Approach B: in-memory Map — simple, fast, lost on restart\n"
+    "  Approach C: file-based — persistent, simple, slow at scale\n"
+    "  → Recommendation: B for MVP (simplest), migrate to A when scaling.\n"
+    "  → Reasoning: premature infrastructure adds complexity without clear benefit.\n\n"
+    "Example: User asks 'support Hebrew'\n"
+    "  Approach A: 60 individual regex patterns — correct but O(60) per check\n"
+    "  Approach B: 8 consolidated regex with alternation — same coverage, 7x faster\n"
+    "  Approach C: Unicode range detection — most robust, handles edge cases\n"
+    "  → Recommendation: C with B as fallback for specific patterns.\n"
+    "</tradeoff_examples>\n\n"
     "<output_schema>\n"
     "Produce a JSON object with these fields:\n"
     "  - codebase_summary: 3-5 sentence overview\n"
@@ -101,7 +124,8 @@ ARCHITECT_SYSTEM_PROMPT = (
     "  - key_files: {path: purpose} for critical files\n"
     "  - constraints: hard rules the PM must follow\n"
     "  - risks: potential issues to watch for\n"
-    "  - recommended_approach: suggested implementation strategy\n"
+    "  - tradeoffs: [{approach: '...', pros: [...], cons: [...]}] — at least 2 alternatives\n"
+    "  - recommended_approach: the chosen strategy WITH reasoning (why this over others)\n"
     "  - parallelism_hints: what can/cannot run in parallel\n"
     "</output_schema>\n\n"
     "<output_format>\n"
@@ -120,6 +144,7 @@ async def run_architect_review(
     project_id: str,
     user_task: str,
     memory_snapshot: dict[str, Any] | None = None,
+    on_stream: Callable[[str], Any] | None = None,
 ) -> ArchitectureBrief:
     """Run the Architect Agent to produce an architecture brief.
 
@@ -146,8 +171,8 @@ async def run_architect_review(
             prompt=prompt,
             system_prompt=ARCHITECT_SYSTEM_PROMPT,
             cwd=project_dir,
-            max_turns=5,
-            max_budget_usd=1.0,
+            max_turns=8,
+            max_budget_usd=5.0,
             permission_mode="bypassPermissions",
             allowed_tools=[
                 "Read",
@@ -160,6 +185,7 @@ async def run_architect_review(
                 "Bash(wc *)",
             ],
             agent_role="architect",
+            on_stream=on_stream,
         )
 
         if response.is_error:
@@ -188,22 +214,17 @@ async def run_architect_review(
 def should_run_architect(task: str, has_memory: bool) -> bool:
     """Decide whether the Architect Agent should run before the PM.
 
-    Returns True for EPIC tasks (always) or LARGE tasks when there's no
-    existing memory (first time working on a project).
+    Only runs for LARGE/EPIC tasks on projects WITHOUT memory (first time).
+    When memory exists, the PM already has enough context from the memory
+    snapshot — running the architect just wastes 2+ minutes on timeout.
     """
+    if has_memory:
+        return False
+
     from orch_watchdog import estimate_task_complexity
 
     complexity = estimate_task_complexity(task)
-
-    # Always run for EPIC tasks
-    if complexity == "EPIC":
-        return True
-
-    # Run for LARGE tasks when there's no memory (new project)
-    if complexity == "LARGE" and not has_memory:
-        return True
-
-    return False
+    return complexity in ("LARGE", "EPIC")
 
 
 # ---------------------------------------------------------------------------
@@ -218,10 +239,15 @@ def _build_architect_prompt(
     memory_snapshot: dict[str, Any] | None,
 ) -> str:
     """Build the prompt for the Architect Agent."""
+    # Cap user task to prevent excessively long prompts
+    capped_task = user_task[:3000]
+    if len(user_task) > 3000:
+        capped_task += "\n[... truncated for efficiency ...]"
+
     parts = [
         f"<project_id>{project_id}</project_id>",
         f"<project_dir>{project_dir}</project_dir>",
-        f"<user_task>{user_task}</user_task>",
+        f"<user_task>{capped_task}</user_task>",
     ]
 
     if memory_snapshot:
