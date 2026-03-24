@@ -340,6 +340,24 @@ class TaskInput(BaseModel):
         return v.strip()
 
 
+class DiscoveredTask(BaseModel):
+    """A task proposed by an agent during execution (Dynamic DAG).
+
+    Agents can propose new tasks when they discover work that wasn't
+    anticipated in the original plan. The DAG executor injects these
+    into the live graph with safety constraints (max count, depth limit).
+    """
+
+    goal: str = Field(..., min_length=10, description="Clear objective for the new task")
+    role: str = Field(..., description="Agent role to handle this (e.g. 'backend_developer')")
+    reason: str = Field(..., description="Why this task is needed — what was discovered")
+    priority: str = Field(default="normal", description="high, normal, or low")
+    depends_on_source: bool = Field(
+        default=True,
+        description="If True, this task depends on the source task completing first",
+    )
+
+
 class TaskOutput(BaseModel):
     """What an agent returns — the contract coming OUT."""
 
@@ -381,6 +399,12 @@ class TaskOutput(BaseModel):
     )
     failure_details: str = Field(
         default="", description="Detailed explanation of the failure for remediation agent"
+    )
+    # v3: Dynamic DAG — agents can propose new tasks discovered during execution
+    discovered_tasks: list[DiscoveredTask] = Field(
+        default_factory=list,
+        description="Tasks discovered during execution that weren't in the original plan",
+        max_length=5,
     )
 
     def is_successful(self) -> bool:
@@ -1528,16 +1552,18 @@ def task_input_to_prompt(
     context_outputs: dict[str, TaskOutput],
     graph_vision: str = "",
     graph_epics: list[str] | None = None,
+    user_message: str = "",
 ) -> str:
     """Serialise a TaskInput into a structured XML prompt for the agent.
 
-    v3: XML-wrapped context, safe JSON truncation, big-picture injection.
-    Every agent sees the mission vision and where their task fits in the plan.
+    v4: Full user context injection — every agent sees the original user prompt
+    so critical details (API keys, code examples, architecture decisions) are
+    never lost in the "telephone game" between PM → DAG → agent.
     """
     parts: list[str] = []
 
     # ── Big Picture: every agent sees the original mission ──
-    if graph_vision or graph_epics:
+    if graph_vision or graph_epics or user_message:
         parts.append("<mission>")
         if graph_vision:
             parts.append(f"  <vision>{graph_vision}</vision>")
@@ -1546,6 +1572,20 @@ def task_input_to_prompt(
             for i, epic in enumerate(graph_epics, 1):
                 parts.append(f"    <epic id='{i}'>{epic}</epic>")
             parts.append("  </epics>")
+        # ── Original user prompt — the full context that started this project ──
+        # This ensures agents don't lose critical details like API keys,
+        # code examples, specific instructions, or architectural decisions
+        # that were in the user's original message but not in their narrow task goal.
+        if user_message:
+            # Truncate very long messages to avoid bloating the prompt,
+            # but keep enough to preserve all important details.
+            _max_user_msg = 8000  # ~2k tokens — generous enough for API keys, examples, etc.
+            _truncated = user_message[:_max_user_msg]
+            if len(user_message) > _max_user_msg:
+                _truncated += "\n... (truncated — see project files for full context)"
+            parts.append("  <original_user_request>")
+            parts.append(f"    {_truncated}")
+            parts.append("  </original_user_request>")
         parts.append("</mission>\n")
 
     # ── Task Assignment ──
