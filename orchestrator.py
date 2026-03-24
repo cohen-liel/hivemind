@@ -92,8 +92,8 @@ def _triage_is_simple(user_message: str) -> bool:
     """Decide if a user message is simple enough to bypass PM+Architect.
 
     A task is considered SIMPLE when:
-    1. The message is short (≤ 40 words)
-    2. No complex keywords are present
+    1. The message is short (≤ 40 words AND ≤ 150 characters)
+    2. No complex keywords are present (English or Hebrew)
     3. It's not asking for broad/vague improvements
 
     This is intentionally conservative — false negatives (treating a simple
@@ -104,15 +104,49 @@ def _triage_is_simple(user_message: str) -> bool:
     if len(words) > 40:
         return False
 
+    # Character-length guard — catches longer non-English messages where
+    # word count is low but the request is actually complex.
+    if len(user_message) > 150:
+        return False
+
     msg_lower = user_message.lower()
 
-    # Check for complex keywords
+    # Check for complex keywords (English)
     for kw in _COMPLEX_KEYWORDS:
         if kw in msg_lower:
             return False
 
+    # Check for complex indicators (Hebrew)
+    _hebrew_complex = [
+        "ארכיטקטורה",
+        "מיגרציה",
+        "אימות",
+        "אבטחה",
+        "מערכת",
+        "עיצוב",
+        "רפקטור",
+        "אינטגרציה",
+        "תשתית",
+        "פריסה",
+        "בסיס נתונים",
+        "full stack",
+        "תבין על מה",
+        "תבדוק את",
+    ]
+    if any(hk in msg_lower for hk in _hebrew_complex):
+        return False
+
     # Vague broad requests need PM decomposition
-    vague_patterns = ["make it better", "improve everything", "be the best", "fix all"]
+    vague_patterns = [
+        "make it better",
+        "improve everything",
+        "be the best",
+        "fix all",
+        "תשפר הכל",
+        "תתקן הכל",
+        "הכי טוב",
+        "ברמות הכי גבוהות",
+    ]
     if any(vp in msg_lower for vp in vague_patterns):
         return False
 
@@ -3007,6 +3041,17 @@ class OrchestratorManager:
             f"🔧 **Self-healing:** Task {failed_task.id} failed ({cat_str}). "
             f"Auto-created fix task {remediation_task.id} ({remediation_task.role.value})."
         )
+
+        # Re-emit the updated graph so the frontend learns about the new
+        # remediation task.  Without this, PlanView still shows the old
+        # task count and fires the "All tasks completed" celebration while
+        # remediation is still running.
+        if self._live_graph is not None:
+            self._current_dag_graph = self._live_graph.model_dump()
+            await self._emit_event(
+                "task_graph",
+                graph=self._current_dag_graph,
+            )
 
     async def _on_dag_agent_stream(self, agent_role: str, text: str, task_id: str = ""):
         """Callback: fired when a DAG agent streams text — enables real-time UI updates.
