@@ -87,10 +87,12 @@ except OSError as e:
     # Already exists (race with another process) — safe to continue
 
 # Agent limits
-MAX_TURNS_PER_CYCLE: int = _get("MAX_TURNS_PER_CYCLE", "25", int)
-MAX_BUDGET_USD: float = _get("MAX_BUDGET_USD", "50.0", float)
+MAX_TURNS_PER_CYCLE: int = _get("MAX_TURNS_PER_CYCLE", "500", int)  # High for long autonomous runs
+MAX_BUDGET_USD: float = _get(
+    "MAX_BUDGET_USD", "9999.0", float
+)  # Effectively disabled — Claude Code manages billing
 AGENT_TIMEOUT_SECONDS: int = _get("AGENT_TIMEOUT_SECONDS", "300", int)  # 5 min default
-SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "28800", int)  # 8h default
+SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "43200", int)  # 12h default
 
 # ── AGENT REGISTRY — Single Source of Truth ─────────────────────────
 # Every per-role configuration lives here.  All consumers (dag_executor,
@@ -116,7 +118,7 @@ class AgentConfig:
 
     timeout: int = 900  # seconds
     turns: int = 100  # max_turns
-    budget: float = 50.0  # USD per task
+    budget: float = 9999.0  # Effectively unlimited — Claude Code manages billing
     layer: str = "execution"  # brain | execution | quality
     emoji: str = "\U0001f527"  # 🔧
     label: str = ""
@@ -129,19 +131,29 @@ class AgentConfig:
 AGENT_REGISTRY: dict[str, AgentConfig] = {
     # ── Layer 1: Brain ────────────────────────────────────────────
     "pm": AgentConfig(
-        timeout=600,
-        turns=10,
-        budget=10.0,
+        timeout=300,
+        turns=3,
+        budget=9999.0,
         layer="brain",
         emoji="\U0001f9e0",
         label="PM",
         tw_color="orange",
         accent="#f97316",
     ),
+    "architect": AgentConfig(
+        timeout=120,
+        turns=8,
+        budget=5.0,
+        layer="brain",
+        emoji="\U0001f3d7\ufe0f",
+        label="Architect",
+        tw_color="indigo",
+        accent="#6366f1",
+    ),
     "orchestrator": AgentConfig(
         timeout=1800,
         turns=25,
-        budget=20.0,
+        budget=9999.0,
         layer="brain",
         emoji="\U0001f3af",
         label="Orchestrator",
@@ -149,9 +161,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#8b90a5",
     ),
     "memory": AgentConfig(
-        timeout=300,
+        timeout=900,
         turns=30,
-        budget=5.0,
+        budget=9999.0,
         layer="brain",
         emoji="\U0001f4da",
         label="Memory",
@@ -162,7 +174,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "frontend_developer": AgentConfig(
         timeout=1800,
         turns=200,
-        budget=50.0,
+        budget=9999.0,
         layer="execution",
         emoji="\U0001f3a8",
         label="Frontend",
@@ -172,7 +184,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "backend_developer": AgentConfig(
         timeout=1800,
         turns=200,
-        budget=50.0,
+        budget=9999.0,
         layer="execution",
         emoji="\u26a1",
         label="Backend",
@@ -182,7 +194,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "database_expert": AgentConfig(
         timeout=900,
         turns=150,
-        budget=50.0,
+        budget=9999.0,
         layer="execution",
         emoji="\U0001f5c4\ufe0f",
         label="Database",
@@ -192,7 +204,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "devops": AgentConfig(
         timeout=900,
         turns=150,
-        budget=50.0,
+        budget=9999.0,
         layer="execution",
         emoji="\U0001f680",
         label="DevOps",
@@ -203,7 +215,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "security_auditor": AgentConfig(
         timeout=600,
         turns=50,
-        budget=50.0,
+        budget=9999.0,
         layer="quality",
         emoji="\U0001f510",
         label="Security",
@@ -213,7 +225,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "test_engineer": AgentConfig(
         timeout=900,
         turns=100,
-        budget=50.0,
+        budget=9999.0,
         layer="quality",
         emoji="\U0001f9ea",
         label="Tester",
@@ -223,7 +235,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "reviewer": AgentConfig(
         timeout=600,
         turns=50,
-        budget=50.0,
+        budget=9999.0,
         layer="quality",
         emoji="\U0001f50d",
         label="Reviewer",
@@ -233,7 +245,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "researcher": AgentConfig(
         timeout=1200,
         turns=75,
-        budget=50.0,
+        budget=9999.0,
         layer="quality",
         emoji="\U0001f50e",
         label="Researcher",
@@ -243,7 +255,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "ux_critic": AgentConfig(
         timeout=600,
         turns=40,
-        budget=50.0,
+        budget=9999.0,
         layer="quality",
         emoji="\U0001f3ad",
         label="UX",
@@ -254,7 +266,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "developer": AgentConfig(
         timeout=1800,
         turns=200,
-        budget=50.0,
+        budget=9999.0,
         layer="execution",
         emoji="\U0001f4bb",
         label="Developer",
@@ -265,7 +277,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "tester": AgentConfig(
         timeout=900,
         turns=100,
-        budget=50.0,
+        budget=9999.0,
         layer="quality",
         emoji="\U0001f9ea",
         label="Tester",
@@ -276,7 +288,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "typescript_architect": AgentConfig(
         timeout=1800,
         turns=200,
-        budget=50.0,
+        budget=9999.0,
         layer="execution",
         emoji="\U0001f3a8",
         label="TS Architect",
@@ -287,7 +299,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "python_backend": AgentConfig(
         timeout=1800,
         turns=200,
-        budget=50.0,
+        budget=9999.0,
         layer="execution",
         emoji="\u26a1",
         label="Py Backend",
@@ -325,8 +337,8 @@ TIMEOUT_ESCALATION_FACTOR: float = _get("TIMEOUT_ESCALATION_FACTOR", "1.5", floa
 SDK_MAX_RETRIES: int = _get("SDK_MAX_RETRIES", "2", int)
 SDK_MAX_TURNS_PER_QUERY: int = _get("SDK_MAX_TURNS_PER_QUERY", "25", int)
 SDK_MAX_BUDGET_PER_QUERY: float = _get(
-    "SDK_MAX_BUDGET_PER_QUERY", "2.0", float
-)  # Conservative per-query budget
+    "SDK_MAX_BUDGET_PER_QUERY", "9999.0", float
+)  # Effectively unlimited — Claude Code manages billing
 
 # Session persistence
 SESSION_EXPIRY_HOURS: int = _get("SESSION_EXPIRY_HOURS", "24", int)
@@ -334,8 +346,8 @@ SESSION_EXPIRY_HOURS: int = _get("SESSION_EXPIRY_HOURS", "24", int)
 # Stuck detection
 STUCK_SIMILARITY_THRESHOLD: float = 0.85
 STUCK_WINDOW_SIZE: int = 4
-MAX_ORCHESTRATOR_LOOPS: int = _get("MAX_ORCHESTRATOR_LOOPS", "20", int)
-RATE_LIMIT_SECONDS: float = _get("RATE_LIMIT_SECONDS", "3.0", float)
+MAX_ORCHESTRATOR_LOOPS: int = _get("MAX_ORCHESTRATOR_LOOPS", "1000", int)
+RATE_LIMIT_SECONDS: float = _get("RATE_LIMIT_SECONDS", "0.5", float)
 
 # Budget warning threshold (fraction of MAX_BUDGET_USD, e.g. 0.8 = warn at 80%)
 BUDGET_WARNING_THRESHOLD: float = _get("BUDGET_WARNING_THRESHOLD", "0.8", float)
@@ -353,7 +365,7 @@ PIPELINE_MAX_STEPS: int = _get("PIPELINE_MAX_STEPS", "10", int)
 # single graph execution.  Lower values reduce memory/CPU contention;
 # higher values increase throughput for graphs with many independent tasks.
 # Override via env var or data/settings_overrides.json.
-DAG_MAX_CONCURRENT_NODES: int = _get("DAG_MAX_CONCURRENT_NODES", "4", int)
+DAG_MAX_CONCURRENT_NODES: int = _get("DAG_MAX_CONCURRENT_NODES", "8", int)
 
 # Maximum number of full task-graphs (i.e. user requests) that may execute
 # concurrently at the server level.  Each graph runs inside an
@@ -385,7 +397,7 @@ except OSError:
 DB_VACUUM_INTERVAL_HOURS: int = _get("DB_VACUUM_INTERVAL_HOURS", "168", int)  # Weekly
 
 # User input validation
-MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "20000", int)
+MAX_USER_MESSAGE_LENGTH: int = _get("MAX_USER_MESSAGE_LENGTH", "200000", int)
 
 # Request body size limit (bytes)
 MAX_REQUEST_BODY_SIZE: int = _get("MAX_REQUEST_BODY_SIZE", str(1 * 1024 * 1024), int)  # 1MB default
@@ -447,7 +459,7 @@ MAX_REMEDIATION_DEPTH: int = _get("MAX_REMEDIATION_DEPTH", "2", int)  # Max fix_
 MAX_TOTAL_REMEDIATIONS: int = _get(
     "MAX_TOTAL_REMEDIATIONS", "5", int
 )  # Total remediations per graph
-MAX_DAG_ROUNDS: int = _get("MAX_DAG_ROUNDS", "50", int)  # Safety round limit
+MAX_DAG_ROUNDS: int = _get("MAX_DAG_ROUNDS", "500", int)  # High limit for long autonomous runs
 
 # ── Feature flags ────────────────────────────────────────────────────
 # Previously read via os.getenv() inside orchestrator.py (H-3 fix).
@@ -784,7 +796,7 @@ ORCHESTRATOR_SYSTEM_PROMPT: str = (
     "You have READ-ONLY tools: Read, Glob, Grep, LS, and limited Bash (git log/diff/status, cat, pytest).\n"
     "Use these tools to INSPECT the project state before deciding what to delegate.\n"
     "You delegate to your executive team and specialist agents — you never write code yourself.\n"
-    "You operate on a MARATHON mindset — complex tasks take many rounds. You have up to 100 rounds.\n"
+    "You operate on a MARATHON mindset — complex tasks take many rounds. You have up to 500 rounds.\n"
     "</role>\n\n" + _build_org_section() + "\n\n"
     "<task_classification>\n"
     "Before your first delegation, classify the task scale. Your strategy MUST match:\n"

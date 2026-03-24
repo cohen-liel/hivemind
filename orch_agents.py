@@ -136,15 +136,31 @@ async def query_agent(
     # Try to resume session
     session_id = await mgr.session_mgr.get_session(mgr.user_id, mgr.project_id, agent_role)
 
-    # Stream callback
+    # Stream callback — accumulate + throttle to avoid flooding WebSocket
+    _stream_buf = ""
+    _stream_last_emit = 0.0
+
     async def on_stream(text: str):
         """Handle a streaming text chunk from the Claude SDK."""
-        emoji = AGENT_EMOJI.get(agent_role, "\U0001f527")
-        await mgr._notify(f"{emoji} *{agent_role}*\n{text[-500:]}")
+        nonlocal _stream_buf, _stream_last_emit
+        _stream_buf += text
         if agent_role in mgr.agent_states:
             mgr.agent_states[agent_role]["last_activity_at"] = time.time()
             mgr.agent_states[agent_role]["last_activity_type"] = "stream"
             mgr._silence_alerted.discard(agent_role)
+        # Throttle: emit at most every 2 seconds
+        now = time.time()
+        if now - _stream_last_emit < 2.0:
+            return
+        _stream_last_emit = now
+        preview = _stream_buf[-300:] if len(_stream_buf) > 300 else _stream_buf
+        await mgr._emit_event(
+            "agent_update",
+            agent=agent_role,
+            summary=preview.replace("\n", " ").strip()[:200],
+            text=preview,
+            status="working",
+        )
 
     # Tool use callback
     async def on_tool_use(tool_name: str, tool_info: str, tool_input: dict):

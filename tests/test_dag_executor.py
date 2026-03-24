@@ -23,7 +23,7 @@ from contracts import (
     TaskOutput,
     TaskStatus,
 )
-from dag_executor import (
+from dag_executor_langgraph import (
     ExecutionResult,
     _get_max_turns,
     _get_task_budget,

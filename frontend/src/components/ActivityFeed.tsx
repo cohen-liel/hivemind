@@ -852,12 +852,17 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
   }, []);
 
   // Calculate spacer heights for off-screen groups
+  // Clamp visibleRange to current groups length (groups can shrink when
+  // MAX_ACTIVITIES cap drops oldest entries during rapid streaming).
+  const safeStart = Math.min(visibleRange.start, groups.length);
+  const safeEnd = Math.min(visibleRange.end, groups.length);
+
   let offsetBefore = 0;
-  for (let i = 0; i < visibleRange.start; i++) {
+  for (let i = 0; i < safeStart; i++) {
     offsetBefore += getGroupHeight(groups[i].key);
   }
   let offsetAfter = 0;
-  for (let i = visibleRange.end; i < groups.length; i++) {
+  for (let i = safeEnd; i < groups.length; i++) {
     offsetAfter += getGroupHeight(groups[i].key);
   }
 
@@ -958,8 +963,8 @@ export default function ActivityFeed({ activities, hasMore, onLoadMore }: Props)
         )}
 
         {/* Render only visible groups */}
-        {groups.slice(visibleRange.start, visibleRange.end).map((group, i) => {
-          const gi = visibleRange.start + i;
+        {groups.slice(safeStart, safeEnd).map((group, i) => {
+          const gi = safeStart + i;
           return (
             <div
               key={group.key}

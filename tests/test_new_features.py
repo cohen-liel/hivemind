@@ -108,14 +108,22 @@ class TestArchitectAgent:
         assert brief.codebase_summary == ""
 
     def test_should_run_architect_epic(self):
-        """Architect should run for EPIC tasks."""
+        """Architect runs for EPIC tasks without memory, skips when memory exists."""
         from architect_agent import should_run_architect
 
+        # Without memory → should run for EPIC tasks
+        assert (
+            should_run_architect(
+                "Build a complete e-commerce platform from scratch", has_memory=False
+            )
+            is True
+        )
+        # With memory → skip (PM already has context from memory snapshot)
         assert (
             should_run_architect(
                 "Build a complete e-commerce platform from scratch", has_memory=True
             )
-            is True
+            is False
         )
 
     def test_should_run_architect_simple(self):

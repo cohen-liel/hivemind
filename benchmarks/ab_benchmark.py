@@ -45,7 +45,7 @@ sys.modules["isolated_query"] = isolated_query_openai
 from code_quality_scorer import score_project
 
 from contracts import AgentRole, TaskGraph, TaskInput
-from dag_executor import ExecutionResult, execute_graph
+from dag_executor_langgraph import ExecutionResult, execute_graph
 from prompts import PROMPT_REGISTRY
 
 logging.basicConfig(

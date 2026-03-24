@@ -81,6 +81,8 @@ export interface ProjectState {
   lastTicker: string;
   // Deduplication: last summary string per agent (prevents repeated activity entries)
   lastAgentSummaries: Record<string, string>;
+  // Time-based throttle: last timestamp an activity was emitted per agent
+  _lastActivityEmitTime: Record<string, number>;
 
   // DAG visualization
   dagGraph: WSEvent['graph'] | null;
@@ -120,6 +122,7 @@ export const initialProjectState: ProjectState = {
   liveAgentStream: {},
   lastTicker: '',
   lastAgentSummaries: {},
+  _lastActivityEmitTime: {},
   dagGraph: null,
   dagTaskStatus: {},
   dagTaskFailureReasons: {},
@@ -407,14 +410,19 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
       const tickerAction = event.summary || event.text?.slice(0, 100) || 'working...';
 
       // Pipe meaningful agent summaries into the activity log so the chat stays alive.
-      // Deduplicate by content (same text seen before = skip).
+      // Deduplicate by content AND throttle by time to prevent flooding during
+      // high-frequency streaming (agents emit stream updates every 2s).
       let newActivities = state.activities;
       let newLastAgentSummaries = state.lastAgentSummaries;
       const summaryText = event.summary || '';
+      const lastEmitTime = state._lastActivityEmitTime?.[updateAgent] ?? 0;
+      const now = Date.now();
+      const MIN_ACTIVITY_INTERVAL_MS = 10_000; // At most 1 activity entry per agent per 10s
       if (
         agentStatus === 'working' &&
         summaryText.length > 25 &&                                          // must be meaningful
-        summaryText !== state.lastAgentSummaries[updateAgent]              // must be NEW
+        summaryText !== state.lastAgentSummaries[updateAgent] &&           // must be NEW
+        now - lastEmitTime >= MIN_ACTIVITY_INTERVAL_MS                     // time throttle
       ) {
         const icon = updateAgent === 'orchestrator' ? '🎯' :
                      updateAgent === 'PM' || updateAgent === 'pm' ? '📋' : '⚙️';
@@ -428,10 +436,16 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         newLastAgentSummaries = { ...state.lastAgentSummaries, [updateAgent]: summaryText };
       }
 
+      // Track emit time when we actually added a new activity
+      const newEmitTimes = newActivities !== state.activities
+        ? { ...state._lastActivityEmitTime, [updateAgent]: now }
+        : state._lastActivityEmitTime;
+
       return {
         ...state,
         activities: newActivities,
         lastAgentSummaries: newLastAgentSummaries,
+        _lastActivityEmitTime: newEmitTimes,
         agentStates: newAgentStates,
         liveAgentStream: newLiveStream,
         lastTicker: `${updateAgent}${remStr}: ${tickerAction}${progressStr}`,
@@ -740,8 +754,14 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
     case 'WS_PROJECT_STATUS': {
       const event = action.event;
 
+      // Always sync project.status immediately so UI reflects the new status
+      // without waiting for the REST /api/projects/:id roundtrip.
+      const updatedProject = state.project && event.status
+        ? { ...state.project, status: event.status as Project['status'] }
+        : state.project;
+
       if (event.status === 'running') {
-        // New task — reset agent cards for clean slate
+        // Reset agent cards for clean slate
         const resetAgentStates: Record<string, AgentStateType> = {};
         for (const [k, v] of Object.entries(state.agentStates)) {
           resetAgentStates[k] = {
@@ -752,13 +772,16 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
             last_result: undefined,
           };
         }
+        // Preserve dagGraph and dagTaskStatus — they are reset when
+        // WS_TASK_GRAPH arrives with a new plan. Wiping here causes
+        // progress loss on WebSocket reconnect / tab-switch because
+        // _syncStateOnReconnect re-dispatches project_status: running
+        // for already-running projects.
         return {
           ...state,
+          project: updatedProject,
           agentStates: resetAgentStates,
-          dagGraph: null,
           healingEvents: [],
-          dagTaskStatus: {},
-          dagTaskFailureReasons: {},
           liveAgentStream: {},
           lastAgentSummaries: {},
           lastSequenceId: trackSequence(state, event),
@@ -781,6 +804,7 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         );
         return {
           ...state,
+          project: updatedProject,
           agentStates: resetAgentStates,
           sdkCalls: closedSdkCalls,
           loopProgress: null,
@@ -790,18 +814,37 @@ export function projectReducer(state: ProjectState, action: ProjectAction): Proj
         };
       }
 
-      return { ...state, lastSequenceId: trackSequence(state, event) };
+      return { ...state, project: updatedProject, lastSequenceId: trackSequence(state, event) };
     }
 
     case 'WS_TASK_GRAPH': {
       const event = action.event;
       if (!event.graph) return state;
 
+      // Preserve statuses for tasks that still exist in the new graph.
+      // This prevents dynamic DAG injection from wiping progress on
+      // already-completed tasks when re-emitting the full graph.
+      const newTaskIds = new Set(
+        (event.graph.tasks ?? []).map((t: { id: string }) => t.id),
+      );
+      const preservedStatuses: Record<string, 'pending' | 'working' | 'completed' | 'failed' | 'cancelled'> = {};
+      for (const [id, status] of Object.entries(state.dagTaskStatus)) {
+        if (newTaskIds.has(id)) {
+          preservedStatuses[id] = status;
+        }
+      }
+      const preservedReasons: Record<string, string> = {};
+      for (const [id, reason] of Object.entries(state.dagTaskFailureReasons)) {
+        if (newTaskIds.has(id)) {
+          preservedReasons[id] = reason;
+        }
+      }
+
       return {
         ...state,
         dagGraph: event.graph,
-        dagTaskStatus: {},
-        dagTaskFailureReasons: {},
+        dagTaskStatus: preservedStatuses,
+        dagTaskFailureReasons: preservedReasons,
         // Auto-switch to Plan tab so user sees execution progress
         desktopTab: 'plan',
         mobileView: 'plan',

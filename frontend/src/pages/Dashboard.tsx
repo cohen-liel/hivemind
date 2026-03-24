@@ -334,6 +334,15 @@ export default function Dashboard(): React.ReactElement {
           label: 'Paused',
           cardClass: '',
         };
+      case 'completed':
+        return {
+          color: 'var(--status-running-text)',
+          bg: 'var(--status-running-bg)',
+          glow: 'var(--glow-green)',
+          pulse: false,
+          label: 'Completed',
+          cardClass: '',
+        };
       case 'stopped':
         return {
           color: 'var(--status-stopped-text)',

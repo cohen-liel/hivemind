@@ -17,6 +17,7 @@ Integration point:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -115,7 +116,7 @@ class DebateEngine:
         """
         import os
 
-        if os.getenv(DEBATE_ENABLED_ENV, "").lower() not in ("1", "true", "yes"):
+        if os.getenv(DEBATE_ENABLED_ENV, "false").lower() not in ("1", "true", "yes"):
             return False
 
         if task.role in self.eligible_roles:
@@ -134,6 +135,7 @@ class DebateEngine:
         project_dir: str,
         sdk=None,
         context: str = "",
+        on_stream: Callable | None = None,
     ) -> DebateResult:
         """Run a structured debate for a task.
 
@@ -192,6 +194,7 @@ class DebateEngine:
                 cwd=project_dir,
                 max_turns=min(get_agent_turns(task.role.value) // 2, 5),
                 max_budget_usd=1.0,
+                on_stream=on_stream,
             )
             proposer_text = proposer_response.text if proposer_response else ""
             total_turns += proposer_response.num_turns if proposer_response else 0
@@ -215,6 +218,7 @@ class DebateEngine:
                 cwd=project_dir,
                 max_turns=min(get_agent_turns(challenger_role.value) // 2, 5),
                 max_budget_usd=1.0,
+                on_stream=on_stream,
             )
             challenger_text = challenger_response.text if challenger_response else ""
             total_turns += challenger_response.num_turns if challenger_response else 0
@@ -253,6 +257,7 @@ class DebateEngine:
             cwd=project_dir,
             max_turns=3,
             max_budget_usd=1.0,
+            on_stream=on_stream,
         )
         judge_text = judge_response.text if judge_response else ""
         total_turns += judge_response.num_turns if judge_response else 0

@@ -404,9 +404,14 @@ class TestSendMessage:
 
     @pytest.mark.asyncio
     async def test_oversized_message_rejected(self):
-        """SEC-01: Messages > 50,000 chars should be rejected."""
+        """SEC-01: Messages > MAX_USER_MESSAGE_LENGTH chars should be rejected."""
+        import state
+        from config import MAX_USER_MESSAGE_LENGTH
+
         app, _, _ = _setup_app()
-        huge_msg = "A" * 50_001
+        mgr = _make_mock_manager(is_running=False)
+        await state.register_manager(0, "test", mgr)
+        huge_msg = "A" * (MAX_USER_MESSAGE_LENGTH + 1)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.post("/api/projects/test/message", json={"message": huge_msg})
             assert resp.status_code in (400, 422)
@@ -434,9 +439,17 @@ class TestTalkAgent:
     @pytest.mark.asyncio
     async def test_talk_oversized_rejected(self):
         """SEC-01: talk_agent also validates message length."""
+        import state
+        from config import MAX_USER_MESSAGE_LENGTH
+
         app, _, _ = _setup_app()
+        mgr = _make_mock_manager(is_running=True)
+        await state.register_manager(0, "x", mgr)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            resp = await c.post("/api/projects/x/talk/dev", json={"message": "B" * 50_001})
+            resp = await c.post(
+                "/api/projects/x/talk/dev",
+                json={"message": "B" * (MAX_USER_MESSAGE_LENGTH + 1)},
+            )
             assert resp.status_code in (400, 422)
 
 

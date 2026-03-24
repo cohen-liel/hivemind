@@ -46,6 +46,8 @@ const FALLBACK_AGENTS: Record<string, AgentMeta> = {
   reviewer:           { emoji: '🔍', label: 'Reviewer',     layer: 'quality',   legacy: false, tw_color: 'purple',  accent: '#a78bfa' },
   researcher:         { emoji: '🔎', label: 'Researcher',   layer: 'quality',   legacy: false, tw_color: 'emerald', accent: '#34d399' },
   ux_critic:          { emoji: '🎭', label: 'UX',           layer: 'quality',   legacy: false, tw_color: 'fuchsia', accent: '#d946ef' },
+  architect:          { emoji: '🏗️', label: 'Architect',    layer: 'brain',     legacy: false, tw_color: 'indigo',  accent: '#6366f1' },
+  debate:             { emoji: '🗣️', label: 'Debate',       layer: 'brain',     legacy: false, tw_color: 'violet',  accent: '#8b5cf6' },
   developer:          { emoji: '💻', label: 'Developer',    layer: 'execution', legacy: true,  tw_color: 'blue',    accent: '#638cff' },
   tester:             { emoji: '🧪', label: 'Tester',       layer: 'quality',   legacy: true,  tw_color: 'amber',   accent: '#f5a623' },
   user:               { emoji: '👤', label: 'User',         layer: 'special',   legacy: false, tw_color: 'gray',    accent: '#8b90a5' },

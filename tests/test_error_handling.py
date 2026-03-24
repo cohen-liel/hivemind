@@ -860,11 +860,11 @@ class TestExcInfoOnErrorLogs:
         assert isinstance(orchestrator.logger, logging.Logger)
 
     def test_dag_executor_logger_attribute_exists(self):
-        """dag_executor.py has a module-level logger."""
-        import dag_executor
+        """dag_executor_langgraph.py has a module-level logger."""
+        import dag_executor_langgraph
 
-        assert hasattr(dag_executor, "logger")
-        assert isinstance(dag_executor.logger, logging.Logger)
+        assert hasattr(dag_executor_langgraph, "logger")
+        assert isinstance(dag_executor_langgraph.logger, logging.Logger)
 
     def test_server_module_uses_configure_logging_when_imported(self):
         """server.py calls configure_logging() (task_003 fix: replaced ad-hoc block)."""

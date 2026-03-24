@@ -595,7 +595,7 @@ async def run_langgraph_benchmark(project_name: str, output_dir: str) -> dict:
 
 async def run_chromadb_benchmark(project_name: str, output_dir: str) -> dict:
     """Run a project with ChromaDB-powered memory injection."""
-    from dag_executor import ExecutionResult, execute_graph
+    from dag_executor_langgraph import ExecutionResult, execute_graph
 
     project_def = PROJECTS[project_name]
     project_dir = os.path.join(output_dir, f"chromadb_{project_name}")

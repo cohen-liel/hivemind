@@ -20,7 +20,7 @@ Completion detection
 returns immediately.  We therefore use an ``asyncio.Future`` that is resolved
 by the ``on_final`` callback — the manager calls it when it emits its last
 message.  ``asyncio.wait_for`` gives us a hard timeout via the
-``AGENT_TIMEOUT_SECONDS`` env var (default 3600 s).
+``SESSION_TIMEOUT_SECONDS`` env var (default 604800 s / 7 days).
 """
 
 from __future__ import annotations
@@ -39,7 +39,10 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-_AGENT_TIMEOUT_SECONDS: float = float(os.getenv("AGENT_TIMEOUT_SECONDS", "3600"))
+# Very generous safety-net timeout — the orchestrator manages its own
+# lifecycle (budget limits, stuck detection, DAG completion) so this
+# wrapper should almost never fire.  Default: 7 days.
+_SESSION_TIMEOUT_SECONDS: float = float(os.getenv("SESSION_TIMEOUT_SECONDS", "604800"))
 
 # ---------------------------------------------------------------------------
 # Per-conversation write locks (race-condition safety for DB persistence)
@@ -154,13 +157,23 @@ def _create_task_manager(
             completion_future.set_result(text)
 
     async def on_event(event: dict[str, Any]) -> None:
-        """Enrich every orchestrator event with project_id and task_id."""
+        """Enrich every orchestrator event with project context.
+
+        IMPORTANT: Do NOT overwrite ``task_id`` if the event already carries
+        one — orchestrator events like ``dag_task_update``, ``agent_started``,
+        and ``agent_finished`` use ``task_id`` for the DAG task ID (e.g.
+        ``task_025``).  Blindly replacing it with the queue's UUID breaks
+        the frontend's PlanView status mapping.
+        """
         enriched = {
             **event,
             "project_id": project_id,
             "project_name": project_name,
-            "task_id": task_id,
+            "queue_task_id": task_id,
         }
+        # Only set task_id if the event doesn't already have one
+        if "task_id" not in event or not event["task_id"]:
+            enriched["task_id"] = task_id
         await event_bus.publish(enriched)
 
     manager = OrchestratorManager(
@@ -227,6 +240,7 @@ async def process_message_task(
     project_id = record.project_id
     message = record.message
 
+    import state
     from dashboard.events import event_bus
     from src.db.database import get_session_factory
     from src.storage.conversation_store import ConversationStore
@@ -317,6 +331,13 @@ async def process_message_task(
         raise RuntimeError(err_msg)
 
     # ------------------------------------------------------------------
+    # 4b. Register the ephemeral manager so the REST poll can find it.
+    #     Without this, GET /api/projects/:id returns is_running=False
+    #     and the frontend never calls /live — breaking real-time progress.
+    # ------------------------------------------------------------------
+    await state.register_manager(user_id, project_id, manager)
+
+    # ------------------------------------------------------------------
     # 5. Run agent — start_session() launches internal asyncio tasks and
     #    returns quickly; we wait for on_final via the completion_future.
     # ------------------------------------------------------------------
@@ -326,11 +347,11 @@ async def process_message_task(
         logger.debug(
             "task_worker[%s]: start_session returned — waiting for on_final (timeout=%ss)",
             task_id,
-            _AGENT_TIMEOUT_SECONDS,
+            _SESSION_TIMEOUT_SECONDS,
         )
         final_text = await asyncio.wait_for(
             asyncio.shield(completion_future),
-            timeout=_AGENT_TIMEOUT_SECONDS,
+            timeout=_SESSION_TIMEOUT_SECONDS,
         )
         logger.info(
             "task_worker[%s]: agent completed — response length=%d chars",
@@ -338,7 +359,7 @@ async def process_message_task(
             len(final_text),
         )
     except TimeoutError:
-        err = f"Agent timed out after {_AGENT_TIMEOUT_SECONDS:.0f}s"
+        err = f"Agent timed out after {_SESSION_TIMEOUT_SECONDS:.0f}s"
         logger.error("task_worker[%s]: %s", task_id, err)
         # Stop the orchestrator — asyncio.shield prevents wait_for from
         # cancelling the future, so we must explicitly stop the manager

@@ -581,15 +581,35 @@ async def isolated_query(
     cf_future = _executor.submit(_run_in_fresh_loop, _query_factory)
     cf_future.add_done_callback(_on_cf_done)
 
+    # Overall timeout: if per_message_timeout is set, use it as the hard
+    # wall-clock limit for the entire isolated query.  Without this, the
+    # executor thread can run forever (the root cause of 18-minute hangs).
+    _overall_timeout = per_message_timeout or 300  # default 5 min
+    _timeout_hit = False
+    _wait_start = time.monotonic()
+
     # BUG-27: Unbounded drain-and-retry loop with 100ms sleep to yield
     # event-loop control. Fully resilient to spurious CancelledErrors.
     _cancel_hits = 0
 
     try:
         while True:
+            # Check wall-clock timeout
+            if time.monotonic() - _wait_start > _overall_timeout:
+                _timeout_hit = True
+                logger.warning(
+                    f"[{request_id}] Isolated query TIMEOUT after {_overall_timeout}s — "
+                    f"cancelling executor"
+                )
+                cf_future.cancel()
+                break
+
             try:
-                await _done_event.wait()
+                await asyncio.wait_for(_done_event.wait(), timeout=5.0)
                 break  # Event fired — executor is done
+            except TimeoutError:
+                # wait_for poll expired — loop back to check wall-clock timeout
+                continue
             except asyncio.CancelledError:
                 _cancel_hits += 1
                 ct = asyncio.current_task()
@@ -636,6 +656,15 @@ async def isolated_query(
                     if ct and hasattr(ct, "uncancel"):
                         while ct.cancelling() > 0:
                             ct.uncancel()
+
+        # ── Timeout hit — return error immediately ──
+        if _timeout_hit:
+            return SDKResponse(
+                text=f"Error: Isolated query timed out after {_overall_timeout}s",
+                is_error=True,
+                error_message=f"Timeout after {_overall_timeout}s",
+                error_category=ErrorCategory.TRANSIENT,
+            )
 
         # ── Executor finished — extract result ──
         if _cancel_hits:

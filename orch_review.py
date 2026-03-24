@@ -127,6 +127,56 @@ async def detect_file_changes(mgr) -> str:
         return "(unable to detect changes)"
 
 
+_ACTUAL_DIFF_CHAR_LIMIT = 12000
+
+
+async def get_actual_diff(mgr) -> str:
+    """Run git diff HEAD and return the real code changes, capped at _ACTUAL_DIFF_CHAR_LIMIT chars.
+
+    This is what allows the orchestrator and reviewer to see *what code changed*,
+    not just which files changed. Without this, DRY violations and cross-file
+    inconsistencies are invisible until a human looks.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "diff",
+            "HEAD",
+            cwd=mgr.project_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=SUBPROCESS_SHORT_TIMEOUT)
+        raw = stdout.decode("utf-8", errors="replace").strip()
+        if not raw:
+            # Nothing committed yet — show staged diff instead
+            proc2 = await asyncio.create_subprocess_exec(
+                "git",
+                "diff",
+                "--cached",
+                cwd=mgr.project_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout2, _ = await asyncio.wait_for(
+                proc2.communicate(), timeout=SUBPROCESS_SHORT_TIMEOUT
+            )
+            raw = stdout2.decode("utf-8", errors="replace").strip()
+        if not raw:
+            return ""
+        if len(raw) <= _ACTUAL_DIFF_CHAR_LIMIT:
+            return raw
+        # Truncate gracefully at a hunk boundary
+        truncated = raw[:_ACTUAL_DIFF_CHAR_LIMIT]
+        last_hunk = truncated.rfind("\n@@")
+        if last_hunk > _ACTUAL_DIFF_CHAR_LIMIT // 2:
+            truncated = truncated[:last_hunk]
+        return truncated + f"\n... [diff truncated — {len(raw)} total chars]"
+    except Exception as exc:
+        logger.debug("get_actual_diff failed (non-fatal): %s", exc)
+        return ""
+
+
 # ── Review prompt builder ─────────────────────────────────────────────
 
 
@@ -387,6 +437,13 @@ async def build_review_prompt(
 
     if has_file_changes:
         parts.append(f"<files_changed>\n{file_changes}\n</files_changed>")
+
+    # Inject actual git diff so the orchestrator can see real code changes,
+    # not just which files changed. This catches DRY violations, dead code,
+    # and cross-file inconsistencies that summaries miss entirely.
+    actual_diff = await get_actual_diff(mgr)
+    if actual_diff:
+        parts.append(f"<code_diff>\n{actual_diff}\n</code_diff>")
 
     critical_findings = [f for f in _findings if f["severity"] in ("CRITICAL", "HIGH")]
     medium_findings = [f for f in _findings if f["severity"] == "MEDIUM"]

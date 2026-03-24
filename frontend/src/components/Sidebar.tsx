@@ -6,10 +6,11 @@ import { useTheme } from '../ThemeContext';
 import type { Project, WSEvent } from '../types';
 
 const STATUS_CONFIG: Record<string, { color: string; label: string; pulse: boolean }> = {
-  running: { color: 'var(--accent-green)', label: 'Running', pulse: true },
-  paused:  { color: 'var(--accent-amber)', label: 'Paused', pulse: false },
-  stopped: { color: 'var(--accent-red)', label: 'Stopped', pulse: false },
-  idle:    { color: 'var(--text-muted)', label: 'Idle', pulse: false },
+  running:   { color: 'var(--accent-green)', label: 'Running', pulse: true },
+  completed: { color: 'var(--accent-green)', label: 'Completed', pulse: false },
+  paused:    { color: 'var(--accent-amber)', label: 'Paused', pulse: false },
+  stopped:   { color: 'var(--accent-red)', label: 'Stopped', pulse: false },
+  idle:      { color: 'var(--text-muted)', label: 'Idle', pulse: false },
 };
 
 interface Props {
