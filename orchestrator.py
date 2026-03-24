@@ -442,6 +442,13 @@ class OrchestratorManager:
         # Count of graph executions currently running under the semaphore
         self._active_graph_count: int = 0
 
+        # ── Deferred inject buffer ────────────────────────────────────────
+        # Messages that arrive while is_running=True but _live_graph is not
+        # yet set (PM/Architect phase).  They are drained and injected as
+        # soon as _live_graph becomes available — never spawning a parallel
+        # DAG on the same project.
+        self._pending_inject_messages: list[str] = []
+
         # ── Project execution queue — sequential per project, parallel across ──
         self._project_queue: ProjectExecutionQueue = ProjectExecutionQueue.instance()
 
@@ -1060,14 +1067,19 @@ class OrchestratorManager:
                 )
                 return
 
-            # Fallback: no live graph (non-DAG mode or graph not yet created).
-            # Route through the parallel ingestion queue.
+            # Graph not yet created (PM/Architect phase).  Buffer the
+            # message so it gets injected once _live_graph is set —
+            # never spawn a parallel DAG on the same project.
+            self._pending_inject_messages.append(user_message)
             logger.info(
-                f"[{self.project_id}] start_session: already running — "
-                f"queuing new task (queue depth will be "
-                f"{self._graph_ingestion_queue.qsize() + 1})"
+                f"[{self.project_id}] start_session: already running, "
+                f"graph not ready — buffered for injection "
+                f"(pending={len(self._pending_inject_messages)})"
             )
-            await self._submit_to_graph_ingestion_queue(user_message)
+            await self._send_result(
+                "📥 **Message queued** — will be added to the plan once "
+                "current planning phase completes."
+            )
             return
 
         use_dag = self.multi_agent and USE_DAG_EXECUTOR
@@ -1375,10 +1387,12 @@ class OrchestratorManager:
 
         graph = self._live_graph
         if graph is None:
+            # Buffer for later injection instead of spawning a parallel DAG
+            self._pending_inject_messages.append(user_message)
             logger.warning(
-                f"[{self.project_id}] _inject_user_tasks: no live graph — falling back to queue"
+                f"[{self.project_id}] _inject_user_tasks: no live graph — "
+                f"buffered for injection (pending={len(self._pending_inject_messages)})"
             )
-            await self._submit_to_graph_ingestion_queue(user_message)
             return
 
         await self._send_result(
@@ -1477,9 +1491,9 @@ class OrchestratorManager:
             )
             await self._send_result(
                 f"⚠️ Could not inject tasks: {str(exc)[:200]}\n"
-                f"_Queuing as separate execution instead._"
+                f"_The message was lost — please resend after the current "
+                f"execution completes._"
             )
-            await self._submit_to_graph_ingestion_queue(user_message)
 
     def _ensure_graph_dispatcher(self) -> None:
         """Start the graph ingestion dispatcher if it is not already running.
@@ -2283,6 +2297,21 @@ class OrchestratorManager:
             self._dag_task_statuses = {}
             # Store live reference so _inject_user_tasks can add tasks mid-execution
             self._live_graph = graph
+
+            # ── Drain deferred inject buffer ──────────────────────────────
+            # Messages that arrived during PM/Architect phase are now
+            # injected into the live graph before execution starts.
+            if self._pending_inject_messages:
+                _deferred = self._pending_inject_messages[:]
+                self._pending_inject_messages.clear()
+                logger.info(
+                    f"[{self.project_id}] Draining {len(_deferred)} deferred "
+                    f"inject message(s) into live graph"
+                )
+                for _def_msg in _deferred:
+                    self._create_background_task(
+                        self._inject_user_tasks(_def_msg),
+                    )
 
             # Session IDs shared across tasks (agent resume)
             session_id_store: dict[str, str] = {}
