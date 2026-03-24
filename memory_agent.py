@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,7 @@ async def update_project_memory(
     graph: TaskGraph,
     outputs: list[TaskOutput],
     use_llm: bool = True,
+    on_stream: Callable | None = None,
 ) -> MemorySnapshot:
     """
     Run the Memory Agent to update project knowledge after a DAG execution.
@@ -110,7 +112,7 @@ async def update_project_memory(
     existing = _load_existing_snapshot(forge_dir, project_id)
 
     if use_llm and _should_use_llm(outputs):
-        snapshot = await _llm_update(project_dir, project_id, graph, outputs, existing)
+        snapshot = await _llm_update(project_dir, project_id, graph, outputs, existing, on_stream)
     else:
         snapshot = _heuristic_update(project_id, graph, outputs, existing)
 
@@ -151,6 +153,7 @@ async def _llm_update(
     graph: TaskGraph,
     outputs: list[TaskOutput],
     existing: MemorySnapshot | None,
+    on_stream: Callable | None = None,
 ) -> MemorySnapshot:
     """Use Claude to generate a rich MemorySnapshot from task outputs."""
     import state
@@ -171,6 +174,7 @@ async def _llm_update(
             max_budget_usd=0.50,  # Memory queries are cheap
             allowed_tools=[],  # No tools — read-only analysis
             agent_role="memory",  # FIX: Pass role for correct timeout (was missing)
+            on_stream=on_stream,
         )
 
         if response.is_error:

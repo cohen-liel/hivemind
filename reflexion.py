@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import config as cfg
@@ -229,6 +230,7 @@ async def run_reflexion(
     system_prompt: str,
     project_dir: str,
     sdk: object,
+    on_stream: Callable | None = None,
 ) -> tuple[TaskOutput, ReflexionVerdict]:
     """Execute the full Reflexion cycle: critique + optional fix.
 
@@ -267,6 +269,7 @@ async def run_reflexion(
             max_budget_usd=REFLEXION_CRITIQUE_BUDGET,
             tools=[],  # No tools — pure reasoning
             max_retries=0,
+            on_stream=on_stream,
         )
     except Exception as exc:
         logger.warning(
@@ -329,6 +332,7 @@ async def run_reflexion(
             max_turns=REFLEXION_MAX_FIX_TURNS,
             max_budget_usd=REFLEXION_CRITIQUE_BUDGET * 2,
             max_retries=0,
+            on_stream=on_stream,
         )
     except Exception as exc:
         logger.warning(
