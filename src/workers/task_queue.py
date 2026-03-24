@@ -157,6 +157,14 @@ class ProjectTaskQueue:
         self._running = False
         self._active_tasks: set[asyncio.Task] = set()  # prevent GC of running tasks
 
+        # Project-level write lock — ensures only one code-writing task runs
+        # at a time within a project.  Multiple DAGs writing to the same
+        # project_dir concurrently causes file conflicts and race conditions
+        # (Google Research 2026: uncontrolled parallelism increases errors 17x).
+        # All tasks acquire this lock since any user message may trigger code
+        # changes via the orchestrator/DAG pipeline.
+        self._project_write_lock = asyncio.Lock()
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -403,46 +411,54 @@ class ProjectTaskQueue:
                 )
 
     async def _run_task(self, record: TaskRecord) -> None:
-        """Execute a task under the concurrency semaphore."""
+        """Execute a task under the concurrency semaphore + project write lock.
+
+        The concurrency semaphore limits how many tasks are actively running,
+        while the project write lock ensures only one task writes to the
+        project directory at a time (preventing file conflicts between
+        concurrent DAG executions).
+        """
         # Acquire semaphore — blocks here if max_concurrent tasks are running
         async with self._semaphore:
-            record.status = TaskStatus.running
-            record.started_at = time.time()
-            logger.info(
-                "ProjectTaskQueue[%s]: starting task_id=%s",
-                self.project_id,
-                record.task_id,
-            )
-            try:
-                await record._worker_fn(record, **record._worker_kwargs)
-                record.status = TaskStatus.done
+            # Acquire project write lock — serialises code-writing within project
+            async with self._project_write_lock:
+                record.status = TaskStatus.running
+                record.started_at = time.time()
                 logger.info(
-                    "ProjectTaskQueue[%s]: task_id=%s completed successfully",
+                    "ProjectTaskQueue[%s]: starting task_id=%s (write_lock acquired)",
                     self.project_id,
                     record.task_id,
                 )
-            except asyncio.CancelledError:
-                record.status = TaskStatus.failed
-                record.error = "Task cancelled during execution"
-                logger.warning(
-                    "ProjectTaskQueue[%s]: task_id=%s cancelled",
-                    self.project_id,
-                    record.task_id,
-                )
-                raise
-            except Exception as exc:
-                record.status = TaskStatus.failed
-                record.error = str(exc)[:500]
-                logger.error(
-                    "ProjectTaskQueue[%s]: task_id=%s failed — %s",
-                    self.project_id,
-                    record.task_id,
-                    exc,
-                    exc_info=True,
-                )
-            finally:
-                record.completed_at = time.time()
-                self._queue.task_done()
+                try:
+                    await record._worker_fn(record, **record._worker_kwargs)
+                    record.status = TaskStatus.done
+                    logger.info(
+                        "ProjectTaskQueue[%s]: task_id=%s completed successfully",
+                        self.project_id,
+                        record.task_id,
+                    )
+                except asyncio.CancelledError:
+                    record.status = TaskStatus.failed
+                    record.error = "Task cancelled during execution"
+                    logger.warning(
+                        "ProjectTaskQueue[%s]: task_id=%s cancelled",
+                        self.project_id,
+                        record.task_id,
+                    )
+                    raise
+                except Exception as exc:
+                    record.status = TaskStatus.failed
+                    record.error = str(exc)[:500]
+                    logger.error(
+                        "ProjectTaskQueue[%s]: task_id=%s failed — %s",
+                        self.project_id,
+                        record.task_id,
+                        exc,
+                        exc_info=True,
+                    )
+                finally:
+                    record.completed_at = time.time()
+                    self._queue.task_done()
 
 
 # ---------------------------------------------------------------------------
