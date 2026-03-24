@@ -2041,13 +2041,36 @@ async def post_batch(state: DAGState) -> dict:
 
 
 async def review_code(state: DAGState) -> dict:
-    """Final quality gate — review and improve code after all tasks complete."""
+    """Final quality gate — read-only critique after all tasks complete.
+
+    The reviewer does NOT modify code (ACC-Collab Critic pattern).  It produces
+    a structured critique.  If it finds issues, they are logged to the
+    blackboard so a future remediation cycle can address them.
+
+    After any code changes are committed, tests are re-run.  If the review
+    step (via ruff or other automated fixers) broke tests, the commit is
+    reverted (Test-After-Review safety net).
+    """
     if state["status"] != "completed":
         return {}
 
     project_dir = state["project_dir"]
     sdk = state["sdk"]
     specialist_prompts = state["specialist_prompts"]
+
+    # ── Record pre-review HEAD so we can revert if tests break ──
+    pre_review_head = None
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+        )
+        if head_result.returncode == 0:
+            pre_review_head = head_result.stdout.strip()
+    except Exception:
+        pass
 
     py_files = []
     for root, dirs, filenames in os.walk(project_dir):
@@ -2074,9 +2097,17 @@ async def review_code(state: DAGState) -> dict:
         files_text += f"\n### {rel}\n```python\n{content}\n```\n"
 
     review_prompt = (
-        "You are a senior code reviewer. Review and improve these Python files.\n"
-        "Focus on: type hints, docstrings, bugs, error handling, consistent style.\n"
-        "CRITICAL: DO NOT change logic/behavior. Only improve quality.\n"
+        "You are a senior code reviewer performing a READ-ONLY critique.\n"
+        "Review these Python files and produce a structured critique.\n"
+        "Focus on: bugs, error handling, type safety, code duplication, style.\n"
+        "DO NOT modify any files. Only READ and ANALYSE.\n\n"
+        "Output your review as:\n"
+        "## ISSUES\n"
+        "- [SEVERITY] file:line — description\n\n"
+        "## SUGGESTIONS\n"
+        "- file — what to improve and why\n\n"
+        "## VERDICT\n"
+        "PASS or NEEDS_FIX\n\n"
         f"Project files:\n{files_text}"
     )
 
@@ -2090,6 +2121,9 @@ async def review_code(state: DAGState) -> dict:
     except Exception:
         pass
 
+    review_notes: list[str] = []
+    review_cost = 0.0
+
     try:
         response = await asyncio.wait_for(
             isolated_query(
@@ -2097,37 +2131,104 @@ async def review_code(state: DAGState) -> dict:
                 prompt=review_prompt,
                 system_prompt=system_prompt,
                 cwd=project_dir,
-                max_turns=15,
+                max_turns=10,
                 max_budget_usd=1.0,
-                allowed_tools=["Read", "Edit", "Bash", "Glob", "Grep"],
+                allowed_tools=["Read", "Glob", "Grep"],
             ),
             timeout=180,
         )
+        review_cost = response.cost_usd
+        review_text = response.text if response else ""
+        review_notes.append(f"[review] Reviewed {len(py_files)} files (read-only critique)")
+        if "NEEDS_FIX" in review_text:
+            review_notes.append("[review] Verdict: NEEDS_FIX — see critique for details")
+            # Extract issues for blackboard
+            for line in review_text.split("\n"):
+                line = line.strip()
+                if line.startswith("- [") and "]" in line:
+                    review_notes.append(f"[review] {line[:200]}")
+    except Exception as e:
+        logger.warning("review_code: critique failed (non-fatal): %s", e)
+        review_notes.append("[review] Critique skipped due to error")
 
-        try:
-            subprocess.run(["git", "add", "-A"], cwd=project_dir, capture_output=True, text=True)
-            result = subprocess.run(
-                ["git", "diff", "--cached", "--stat"],
+    # ── Automated lint/format pass (non-destructive) ──
+    try:
+        subprocess.run(
+            ["ruff", "check", "--fix", "--quiet"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["ruff", "format", "--quiet"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, Exception):
+        pass
+
+    # ── Commit lint/format changes if any ──
+    has_review_commit = False
+    try:
+        subprocess.run(["git", "add", "-A"], cwd=project_dir, capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--stat"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip():
+            subprocess.run(
+                ["git", "commit", "-m", "review: automated lint/format fixes"],
                 cwd=project_dir,
                 capture_output=True,
                 text=True,
             )
-            if result.stdout.strip():
+            has_review_commit = True
+    except Exception:
+        pass
+
+    # ── Test-After-Review: verify lint/format didn't break anything ──
+    if has_review_commit and pre_review_head:
+        try:
+            test_result = subprocess.run(
+                ["python3", "-m", "pytest", "--tb=short", "-q", "--no-header", "--timeout=30"],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if test_result.returncode != 0:
+                logger.warning(
+                    "review_code: tests FAILED after lint/format — reverting to %s",
+                    pre_review_head[:8],
+                )
                 subprocess.run(
-                    ["git", "commit", "-m", "review: code quality improvements"],
+                    ["git", "reset", "--hard", pre_review_head],
                     cwd=project_dir,
                     capture_output=True,
                     text=True,
                 )
-        except Exception:
-            pass
+                review_notes.append(
+                    "[review] Lint/format changes REVERTED — tests failed after review"
+                )
+                has_review_commit = False
+            else:
+                review_notes.append("[review] Post-review tests PASSED")
+        except FileNotFoundError:
+            pass  # pytest not installed — skip test verification
+        except subprocess.TimeoutExpired:
+            logger.warning("review_code: post-review test run timed out")
+        except Exception as e:
+            logger.debug("review_code: post-review test check failed (non-fatal): %s", e)
 
-        return {
-            "total_cost": response.cost_usd,
-            "blackboard_notes": [f"[review] Reviewed {len(py_files)} files"],
-        }
-    except Exception:
-        return {}
+    return {
+        "total_cost": review_cost,
+        "blackboard_notes": review_notes,
+    }
 
 
 # ── Routing ──────────────────────────────────────────────────────────────
