@@ -9,6 +9,7 @@ import type { DirEntry } from '../types';
 
 interface NewProjectFormState {
   name: string;
+  nameManuallyTyped: boolean;
   directory: string;
   baseDir: string;
   agentsCount: number;
@@ -26,6 +27,7 @@ interface NewProjectFormState {
 
 const initialFormState: NewProjectFormState = {
   name: '',
+  nameManuallyTyped: false,
   directory: '',
   baseDir: '',
   agentsCount: 2,
@@ -42,7 +44,7 @@ const initialFormState: NewProjectFormState = {
 };
 
 type FormAction =
-  | { type: 'SET_NAME'; name: string }
+  | { type: 'SET_NAME'; name: string; userTyped?: boolean }
   | { type: 'SET_DIRECTORY'; directory: string }
   | { type: 'SET_BASE_DIR'; baseDir: string }
   | { type: 'SET_AGENTS_COUNT'; count: number }
@@ -58,7 +60,7 @@ type FormAction =
 function formReducer(state: NewProjectFormState, action: FormAction): NewProjectFormState {
   switch (action.type) {
     case 'SET_NAME':
-      return { ...state, name: action.name };
+      return { ...state, name: action.name, nameManuallyTyped: action.userTyped ?? state.nameManuallyTyped };
     case 'SET_DIRECTORY':
       return { ...state, directory: action.directory };
     case 'SET_BASE_DIR':
@@ -88,7 +90,7 @@ function formReducer(state: NewProjectFormState, action: FormAction): NewProject
       return { ...state, dirEntries: [], browseError: action.error };
     case 'SELECT_DIR': {
       const folderName = action.directory.split('/').filter(Boolean).pop() || '';
-      const newName = state.name.trim() ? state.name : folderName;
+      const newName = state.nameManuallyTyped ? state.name : folderName;
       return { ...state, directory: action.directory, name: newName, showBrowser: false };
     }
     default:
@@ -271,7 +273,7 @@ export default function NewProjectDialog(): React.ReactElement {
             <input
               type="text"
               value={name}
-              onChange={e => dispatch({ type: 'SET_NAME', name: e.target.value })}
+              onChange={e => dispatch({ type: 'SET_NAME', name: e.target.value, userTyped: e.target.value.trim().length > 0 })}
               onKeyDown={handleKeyDown}
               placeholder="my-awesome-project"
               className="w-full text-base rounded-xl px-4 py-3 focus:outline-none transition-all duration-200"
@@ -315,7 +317,7 @@ export default function NewProjectDialog(): React.ReactElement {
                   e.currentTarget.style.borderColor = 'var(--border-subtle)';
                   e.currentTarget.style.boxShadow = 'none';
                   // Auto-fill name from last path segment when leaving the field
-                  if (!name.trim() && directory.trim()) {
+                  if (!state.nameManuallyTyped && directory.trim()) {
                     const folderName = directory.trim().replace(/\/+$/, '').split('/').filter(Boolean).pop() || '';
                     if (folderName && folderName !== '~') {
                       dispatch({ type: 'SET_NAME', name: folderName });
@@ -424,8 +426,8 @@ export default function NewProjectDialog(): React.ReactElement {
                           // Single click: navigate into the folder AND auto-select it as the directory
                           dirManuallySetRef.current = true;
                           dispatch({ type: 'SET_DIRECTORY', directory: entry.path });
-                          // Also set name from folder if name is empty
-                          if (!name.trim()) {
+                          // Auto-fill name from folder (unless user manually typed one)
+                          if (!state.nameManuallyTyped) {
                             dispatch({ type: 'SET_NAME', name: entry.name });
                           }
                           navigateTo(entry.path);
