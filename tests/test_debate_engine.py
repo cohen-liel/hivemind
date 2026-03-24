@@ -31,9 +31,18 @@ def _make_task(
 
 class TestShouldDebate:
     def test_disabled_by_default(self):
+        """Debate is opt-in: off unless HIVEMIND_DEBATE_ENABLED=true."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HIVEMIND_DEBATE_ENABLED", None)
+            engine = DebateEngine()
+            task = _make_task(role=AgentRole.DATABASE_EXPERT)
+            assert engine.should_debate(task) is False, "Debate should be off by default"
+
+    @patch.dict(os.environ, {"HIVEMIND_DEBATE_ENABLED": "false"})
+    def test_disabled_when_env_false(self):
         engine = DebateEngine()
         task = _make_task(role=AgentRole.DATABASE_EXPERT)
-        assert engine.should_debate(task) is False, "Debate should be off by default"
+        assert engine.should_debate(task) is False, "Debate should be off when env is false"
 
     @patch.dict(os.environ, {"HIVEMIND_DEBATE_ENABLED": "true"})
     def test_eligible_role_triggers_debate(self):
