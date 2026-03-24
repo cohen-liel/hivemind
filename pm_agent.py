@@ -113,18 +113,17 @@ PM_SYSTEM_PROMPT = (
     "  4. Database tasks MUST have required_artifacts: ['schema', 'file_manifest']\n"
     "</artifact_system>\n\n"
     "<critical_rule>\n"
-    "NEVER create a single-task plan. Every request MUST be decomposed into MANY fine-grained tasks\n"
-    "assigned to DIFFERENT specialist agents. You are managing a TEAM, not a single developer.\n"
-    "Minimum 3 tasks for simple requests, 10+ for medium requests, 20+ for complex requests.\n"
-    "When in doubt, CREATE MORE TASKS with smaller scope rather than fewer tasks with larger scope.\n"
-    "If the user asks for broad improvements (e.g., 'make this better', 'improve quality',\n"
-    "'be the best version'), you MUST create tasks for ALL relevant specialists:\n"
-    "  - backend_developer for Python/API improvements\n"
-    "  - frontend_developer for React/TypeScript/UI improvements\n"
-    "  - test_engineer for writing tests\n"
-    "  - security_auditor for security review\n"
-    "  - reviewer for final code review\n"
-    "These specialists work IN PARALLEL when they don't share files.\n"
+    "Match task count to request complexity — do NOT over-decompose simple requests.\n"
+    "You are managing a TEAM, not a single developer, but the team size should match the job.\n\n"
+    "Scaling rules:\n"
+    "- Simple bug fix or config change: 2-3 tasks (developer + reviewer)\n"
+    "- Add a feature or refactor: 5-10 tasks across relevant specialists\n"
+    "- Build a service or major feature: 10-20 tasks with full team\n"
+    "- Broad improvements ('make this better'): tasks for ALL relevant specialists\n\n"
+    "NEVER create busywork tasks that don't add value. If a task can be done by one\n"
+    "agent in one step, don't split it into three. Quality comes from clear goals,\n"
+    "not from task count.\n"
+    "Specialists work IN PARALLEL when they don't share files.\n"
     "</critical_rule>\n\n"
     "<instructions>\n"
     "Think step-by-step before producing JSON:\n"
@@ -145,13 +144,13 @@ PM_SYSTEM_PROMPT = (
     "   - required_artifacts: artifact types this task MUST produce\n"
     "</instructions>\n\n"
     "<task_granularity>\n"
-    "CRITICAL: Match task count to request complexity. More tasks = better quality.\n"
+    "Match task count to request complexity. Over-decomposition wastes time and tokens.\n"
     "Each task should do ONE focused thing well (1-3 files max).\n\n"
     "Scale guide:\n"
-    "- Simple bug fix / config change → 3-5 tasks\n"
-    "- Add a feature / refactor a module → 8-15 tasks\n"
-    "- Build a service / major feature → 15-30 tasks\n"
-    "- Full app / system-wide improvements → 30-50 tasks\n\n"
+    "- Simple bug fix / config change → 2-3 tasks (developer + reviewer)\n"
+    "- Add a feature / refactor a module → 5-10 tasks\n"
+    "- Build a service / major feature → 10-20 tasks\n"
+    "- Full app / system-wide improvements → 20-40 tasks\n\n"
     "Splitting strategy:\n"
     "- Split by FILE: one task per file or small group of related files\n"
     "- Split by CONCERN: separate API, logic, validation, error handling, types\n"
@@ -519,13 +518,12 @@ def _parse_task_graph(
                 return None, "TaskGraph has no tasks"
 
             # Reject single-task plans for complex requests.
-            # Simple requests (short messages, single-file fixes) can be 1 task.
-            # Complex requests (long messages, broad scope) must be decomposed.
-            if len(graph.tasks) < 2 and len(user_message.split()) > 15:
+            # Simple requests bypass PM entirely (triage), so if PM is running
+            # the request is at least MEDIUM complexity and needs >=2 tasks.
+            if len(graph.tasks) < 2 and len(user_message.split()) > 30:
                 return None, (
-                    "TaskGraph has only 1 task for a complex request. You MUST decompose "
-                    "into MANY fine-grained tasks assigned to DIFFERENT specialist agents. "
-                    "Minimum 3 tasks for simple requests, 10+ for medium, 20+ for complex."
+                    "TaskGraph has only 1 task for a complex request. Decompose into "
+                    "at least 2 tasks (e.g., developer + reviewer) for quality assurance."
                 )
 
             return graph, ""
