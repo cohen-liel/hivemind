@@ -58,6 +58,68 @@ _DELEGATE_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Triage — decide if a task is simple enough to skip PM+Architect
+# ---------------------------------------------------------------------------
+
+# Keywords that indicate a task is NOT simple (needs full planning pipeline)
+_COMPLEX_KEYWORDS = frozenset(
+    {
+        "authentication",
+        "auth system",
+        "database schema",
+        "migration",
+        "refactor",
+        "redesign",
+        "architecture",
+        "microservice",
+        "api design",
+        "full stack",
+        "fullstack",
+        "build an app",
+        "create a system",
+        "integrate",
+        "deployment",
+        "ci/cd",
+        "infrastructure",
+        "test suite",
+        "test framework",
+        "security audit",
+    }
+)
+
+
+def _triage_is_simple(user_message: str) -> bool:
+    """Decide if a user message is simple enough to bypass PM+Architect.
+
+    A task is considered SIMPLE when:
+    1. The message is short (≤ 40 words)
+    2. No complex keywords are present
+    3. It's not asking for broad/vague improvements
+
+    This is intentionally conservative — false negatives (treating a simple
+    task as complex) waste some tokens but still work.  False positives
+    (treating a complex task as simple) would produce poor results.
+    """
+    words = user_message.split()
+    if len(words) > 40:
+        return False
+
+    msg_lower = user_message.lower()
+
+    # Check for complex keywords
+    for kw in _COMPLEX_KEYWORDS:
+        if kw in msg_lower:
+            return False
+
+    # Vague broad requests need PM decomposition
+    vague_patterns = ["make it better", "improve everything", "be the best", "fix all"]
+    if any(vp in msg_lower for vp in vague_patterns):
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Project Execution Queue — sequential per project, parallel across projects
 # ---------------------------------------------------------------------------
 
@@ -1742,9 +1804,44 @@ class OrchestratorManager:
             if context_parts:
                 await self._send_result(f"📚 Loaded: {', '.join(context_parts)}")
 
+            # ── Step 0.4: Triage — skip PM+Architect for simple tasks ──
+            #
+            # Research (SEMAG 2026): applying a complex pipeline to a simple
+            # task *reduces* quality and wastes tokens.  For trivial requests
+            # (bug fixes, config changes, colour tweaks) a single fullstack
+            # agent is faster and more reliable than PM → DAG → 3+ agents.
+            _triage_skip_planning = False
+            if _cached_graph is None:
+                _is_simple = _triage_is_simple(user_message)
+                if _is_simple:
+                    logger.info(
+                        f"[{self.project_id}] Triage: SIMPLE task — "
+                        f"bypassing Architect + PM, using direct 2-task graph"
+                    )
+                    await self._send_result(
+                        "⚡ **Simple task detected** — executing directly "
+                        "without full planning pipeline"
+                    )
+                    graph = fallback_single_task_graph(user_message, self.project_id)
+                    _last_graph = graph
+                    _triage_skip_planning = True
+
+                    # Emit the graph to the frontend
+                    task_lines = []
+                    for i, t in enumerate(graph.tasks, 1):
+                        task_lines.append(f"  {i}. **{t.role.value}** — {t.goal[:80]}")
+                    await self._send_result(
+                        f"📋 **Quick plan:** {graph.vision[:100]}\n\n" + chr(10).join(task_lines)
+                    )
+                    await self._emit_event("task_graph", graph=graph.model_dump())
+
             # ── Step 0.5: Architect Agent (pre-planning review) ──
             architect_brief: ArchitectureBrief | None = None
-            if _cached_graph is None and should_run_architect(user_message, bool(memory_snapshot)):
+            if (
+                not _triage_skip_planning
+                and _cached_graph is None
+                and should_run_architect(user_message, bool(memory_snapshot))
+            ):
                 self.agent_states["orchestrator"] = {
                     "state": "working",
                     "task": "Architect reviewing codebase...",
@@ -1878,10 +1975,14 @@ class OrchestratorManager:
                     f"[{self.project_id}] Cross-project memory failed (non-fatal): {xmem_err}"
                 )
 
-            # ── Step 1: PM creates the plan (skip on retry — reuse cached graph) ──
+            # ── Step 1: PM creates the plan ──
+            #    Skip when: (a) retry with cached graph, or (b) triage bypassed planning
             import time as _pm_time
 
-            if _cached_graph is not None:
+            if _triage_skip_planning:
+                # Triage already created the graph — skip PM entirely
+                pass
+            elif _cached_graph is not None:
                 graph = _cached_graph
                 logger.info(
                     f"[{self.project_id}] DAG retry #{_retry_count}: reusing cached task graph "
