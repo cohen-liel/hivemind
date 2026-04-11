@@ -152,6 +152,25 @@ export default function ConductorBar({
           )}
         </div>
 
+        {/* DAG visualization link */}
+        <Link
+          to={`/projects/${projectId}/dag`}
+          className="flex-shrink-0 p-1.5 rounded-lg transition-all hover:bg-[var(--bg-elevated)]"
+          style={{ color: 'var(--text-muted)' }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent-blue, #638cff)'; }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+          title="View DAG"
+          aria-label="View DAG visualization"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="5" cy="12" r="2"/>
+            <circle cx="12" cy="5" r="2"/>
+            <circle cx="12" cy="19" r="2"/>
+            <circle cx="19" cy="12" r="2"/>
+            <path d="M7 12h4M12 7v4M12 15v4M14 12h3"/>
+          </svg>
+        </Link>
+
         {/* Delete project button */}
         <button
           onClick={() => {

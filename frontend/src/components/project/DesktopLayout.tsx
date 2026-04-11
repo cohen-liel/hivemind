@@ -13,6 +13,7 @@
  */
 
 import React, { useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useProjectContext } from './ProjectContext';
 import { PanelErrorBoundary } from './PanelErrorBoundary';
 import {
@@ -67,6 +68,44 @@ const DesktopLayout = React.memo(function DesktopLayout(): React.ReactElement {
         agentSummary={subAgentStates}
         lastTicker={lastTicker}
       />
+
+      {/* View DAG link — positioned between ConductorBar and PipelinePhases */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          padding: '4px 12px',
+          background: 'var(--bg-panel)',
+          borderBottom: '1px solid var(--border-dim)',
+        }}
+      >
+        <Link
+          to={`/projects/${projectId}/dag`}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '4px 10px',
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 500,
+            color: 'var(--accent-blue)',
+            background: 'rgba(99,140,255,0.08)',
+            border: '1px solid rgba(99,140,255,0.2)',
+            textDecoration: 'none',
+          }}
+          aria-label="View DAG visualization"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="3" cy="8" r="2"/>
+            <circle cx="13" cy="3" r="2"/>
+            <circle cx="13" cy="13" r="2"/>
+            <path d="M5 8h3l2-3M5 8h3l2 3"/>
+          </svg>
+          View DAG
+        </Link>
+      </div>
 
       <PipelinePhases
         orchestrator={orchestratorState}
