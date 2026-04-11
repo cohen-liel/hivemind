@@ -18,8 +18,7 @@
 import { useEffect, useReducer, useState, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  getProject, getMessages, getFiles, getLiveState,
-  getActivity,
+  getProject, getMessages, getFiles, getLiveState, getActivity,
 } from '../api';
 import { useWSSubscribe } from '../WebSocketContext';
 import { useIOSViewport } from '../useIOSViewport';
@@ -36,12 +35,9 @@ import {
   setPersistedDesktopTab,
   setPersistedMobileView,
 } from '../hooks/useUIStatePersistence';
-import type { Project, ProjectMessage, AgentState as AgentStateType } from '../types';
+import type { Project, AgentState as AgentStateType } from '../types';
 import type { ActivityEvent } from '../api';
-import {
-  messagesToActivities, activityEventsToEntries,
-  reconstructSdkCalls, reconstructAgentStates, reconstructDagTaskStatus,
-} from '../utils/activityHelpers';
+import { messagesToActivities } from '../utils/activityHelpers';
 
 // ── Extracted sub-components ──
 import ApprovalModal from '../components/ApprovalModal';
@@ -150,30 +146,23 @@ export default function ProjectView(): React.ReactElement | null {
       dispatch({ type: 'SET_LOAD_ERROR', error: msg });
     });
 
-    Promise.all([
-      getMessages(id, 100).catch(() => ({
-        messages: [] as ProjectMessage[],
-        total: 0,
-      })),
-      getActivity(id, 0, 500).catch(() => ({
-        events: [] as ActivityEvent[],
-        latest_sequence: 0,
-        source: 'none',
-      })),
-    ]).then(([msgData, actData]) => {
-      const msgEntries = messagesToActivities(msgData.messages);
-      const actEntries = activityEventsToEntries(actData.events);
-      const merged = [...msgEntries, ...actEntries].sort(
-        (a, b) => a.timestamp - b.timestamp,
-      );
+    // Fetch latest sequence ID for deduplication but don't load old
+    // messages/activities — start with a clean feed every time.
+    // The live state endpoint (below) provides current agent states,
+    // DAG graph, and task statuses so the UI shows the real-time picture.
+    getActivity(id, 0, 1).catch(() => ({
+      events: [] as ActivityEvent[],
+      latest_sequence: 0,
+      source: 'none',
+    })).then((actData) => {
       dispatch({
         type: 'LOAD_INITIAL_DATA',
-        activities: merged,
-        sdkCalls: reconstructSdkCalls(actData.events),
-        agentStates: reconstructAgentStates(actData.events),
-        dagTaskStatus: reconstructDagTaskStatus(actData.events),
-        hasMoreMessages: msgData.total > 100,
-        messageOffset: 100,
+        activities: [],
+        sdkCalls: [],
+        agentStates: {},
+        dagTaskStatus: {},
+        hasMoreMessages: false,
+        messageOffset: 0,
         lastSequenceId: actData.latest_sequence ?? 0,
       });
     });
