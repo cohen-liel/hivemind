@@ -116,6 +116,18 @@ export default function Sidebar({ onProjectsChange }: Props) {
         </svg>
       ),
     },
+    {
+      path: '/plugins',
+      label: 'Plugins',
+      icon: (
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <rect x="2" y="2" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+          <rect x="9" y="2" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+          <rect x="2" y="9" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+          <path d="M9 11.5h5M11.5 9v5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+        </svg>
+      ),
+    },
   ];
 
   return (
@@ -221,7 +233,7 @@ export default function Sidebar({ onProjectsChange }: Props) {
               {!collapsed && <span>{item.label}</span>}
               {!collapsed && (
                 <kbd className="ml-auto text-[9px] px-1 py-0.5 rounded" style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
-                  {item.path === '/' ? '⌘ 1' : '⌘ 2'}
+                  {item.path === '/' ? '⌘ 1' : item.path === '/schedules' ? '⌘ 2' : '⌘ 3'}
                 </kbd>
               )}
             </button>

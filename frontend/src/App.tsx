@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, useLocation, useNavigate, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation, useNavigate, useParams, Link } from 'react-router-dom';
 import { WebSocketProvider } from './WebSocketContext';
 import { ThemeProvider } from './ThemeContext';
 import { ToastProvider } from './components/Toast';
@@ -20,6 +20,8 @@ import { lazy, Suspense, useEffect, useCallback, useState, useRef } from 'react'
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const SchedulesPage = lazy(() => import('./pages/SchedulesPage'));
+const PluginsPage = lazy(() => import('./pages/PluginsPage'));
+const DagPage = lazy(() => import('./pages/DagPage'));
 
 /**
  * Mounts global WS-to-toast notifications.
@@ -121,6 +123,15 @@ function MobileBottomNav() {
       ),
     },
     {
+      path: '/plugins',
+      label: 'Plugins',
+      icon: (
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+        </svg>
+      ),
+    },
+    {
       path: '/settings',
       label: 'Settings',
       icon: (
@@ -169,6 +180,12 @@ function MobileBottomNav() {
   );
 }
 
+/** Forces full remount of ProjectView when navigating between projects */
+function KeyedProjectView() {
+  const { id } = useParams<{ id: string }>();
+  return <ProjectView key={id} />;
+}
+
 /** Page wrapper with fade-in animation and Suspense for lazy routes */
 function AnimatedRoutes(): JSX.Element {
   const location = useLocation();
@@ -194,10 +211,12 @@ function AnimatedRoutes(): JSX.Element {
       <Suspense fallback={<RouteLoadingFallback />}>
         <Routes location={location}>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/project/:id" element={<ProjectView />} />
+          <Route path="/project/:id" element={<KeyedProjectView />} />
+          <Route path="/projects/:projectId/dag" element={<DagPage />} />
           <Route path="/new" element={<NewProjectDialog />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/schedules" element={<SchedulesPage />} />
+          <Route path="/plugins" element={<PluginsPage />} />
         </Routes>
       </Suspense>
     </div>
