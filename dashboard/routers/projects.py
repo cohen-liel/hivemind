@@ -978,6 +978,17 @@ async def read_file(project_id: str, path: str):
     return {"content": content, "path": path, "size": size}
 
 
+def _sanitize_surrogates(obj):
+    """Recursively replace surrogate characters that break JSON encoding."""
+    if isinstance(obj, str):
+        return obj.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(v) for v in obj]
+    return obj
+
+
 @router.get("/api/projects/{project_id}/activity")
 async def get_activity(project_id: str, since: int = 0, limit: int = 200):
     """Get activity events after a given sequence_id."""
@@ -985,20 +996,24 @@ async def get_activity(project_id: str, since: int = 0, limit: int = 200):
     limit = max(1, min(limit, 1000))
     buffered = event_bus.get_buffered_events(project_id, since_sequence=since)
     if buffered:
-        return {
-            "events": buffered,
-            "latest_sequence": event_bus.get_latest_sequence(project_id),
-            "source": "memory",
-        }
+        return _sanitize_surrogates(
+            {
+                "events": buffered,
+                "latest_sequence": event_bus.get_latest_sequence(project_id),
+                "source": "memory",
+            }
+        )
 
     if state.session_mgr:
         events = await state.session_mgr.get_activity_since(project_id, since, limit)
         full_events = [_db_event_to_dict(e, project_id) for e in events]
-        return {
-            "events": full_events,
-            "latest_sequence": await state.session_mgr.get_latest_sequence(project_id),
-            "source": "database",
-        }
+        return _sanitize_surrogates(
+            {
+                "events": full_events,
+                "latest_sequence": await state.session_mgr.get_latest_sequence(project_id),
+                "source": "database",
+            }
+        )
 
     return {"events": [], "latest_sequence": 0, "source": "none"}
 

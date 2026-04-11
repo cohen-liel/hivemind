@@ -399,9 +399,11 @@ def create_app() -> FastAPI:
     from dashboard.routers.auth import router as auth_router
     from dashboard.routers.execution import router as execution_router
     from dashboard.routers.projects import router as projects_router_local
+    from dashboard.routers.stats import router as stats_router
     from dashboard.routers.system import router as system_router
 
     app.include_router(system_router)
+    app.include_router(stats_router)
     app.include_router(auth_router)
     app.include_router(projects_router_local)
     app.include_router(agents_router)
@@ -412,6 +414,16 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(tasks_router)
     app.include_router(admin_tasks_router)
+
+    # Plugin management
+    from api.plugins import router as plugins_router
+
+    app.include_router(plugins_router)
+
+    # DAG state and history
+    from api.dag import router as dag_router
+
+    app.include_router(dag_router)
 
     # --- Static files (production build) ---
     frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"

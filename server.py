@@ -32,6 +32,7 @@ from config import (
     validate_config,
 )
 from dashboard.api import create_app
+from plugin_registry import registry as plugin_registry
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,13 @@ async def run():
     except ConfigError as e:
         logger.critical("Invalid configuration: %s", e)
         raise SystemExit(1)
+
+    # Discover and hot-reload plugins
+    _loaded_plugins = plugin_registry.discover()
+    logger.info(
+        "Plugin registry: loaded %d plugin(s) at startup: %s", len(_loaded_plugins), _loaded_plugins
+    )
+    plugin_registry.start_hot_reload()
 
     # Connect EventBus to session manager for activity persistence
     from dashboard.events import event_bus
@@ -439,7 +447,10 @@ async def run():
         await server.serve()
     finally:
         # ── Graceful shutdown (order matters!) ──
-        # 0. Stop tunnel
+        # 0. Stop plugin hot-reload watcher
+        plugin_registry.stop_hot_reload()
+
+        # 1. Stop tunnel
         if tunnel_task:
             tunnel_task.cancel()
             try:
@@ -449,7 +460,7 @@ async def run():
         if tunnel_proc and tunnel_proc.returncode is None:
             tunnel_proc.terminate()
 
-        # 1. Cancel background tasks first (they may generate events)
+        # 2. Cancel background tasks first (they may generate events)
         logger.info("Graceful shutdown: stopping background tasks...")
         cleanup_task.cancel()
         scheduler_task.cancel()

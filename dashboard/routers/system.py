@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time as _time
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -18,7 +19,163 @@ from dashboard.routers import UpdateSettingsRequest, _problem
 
 logger = logging.getLogger("dashboard.api")
 
+# Module-level tracker for last error timestamp (updated by any endpoint that catches errors)
+_last_error_timestamp: float | None = None
+
+
+def _record_error() -> None:
+    """Update the module-level last-error timestamp."""
+    global _last_error_timestamp
+    _last_error_timestamp = _time.time()
+
+
 router = APIRouter(tags=["system"])
+
+
+@router.get("/api/health/detailed")
+async def health_detailed():
+    """Detailed health snapshot — uptime, active sessions, task totals, memory, last error."""
+    try:
+        # Uptime
+        server_start = getattr(state, "server_start_time", None)
+        uptime_seconds: float | None = None
+        if server_start is not None:
+            uptime_seconds = round(_time.monotonic() - server_start, 1)
+
+        # Active sessions count
+        try:
+            active_sessions_count = sum(len(v) for v in state.active_sessions.values())
+        except Exception:
+            active_sessions_count = 0
+
+        # Total tasks completed — sum done/error agent states across all managers
+        total_tasks_completed = 0
+        try:
+            for _uid, _pid, manager in state.get_all_managers():
+                for agent_state in dict(manager.agent_states).values():
+                    if agent_state.get("state") in ("done", "error"):
+                        total_tasks_completed += 1
+        except Exception as _agg_err:
+            logger.error(
+                "health/detailed: task count aggregation failed: %s", _agg_err, exc_info=True
+            )
+            _record_error()
+
+        # Memory usage — prefer psutil, fall back to resource module
+        memory_usage_mb: float | None = None
+        try:
+            import psutil as _psutil
+
+            proc = _psutil.Process()
+            memory_usage_mb = round(proc.memory_info().rss / (1024**2), 1)
+        except ImportError:
+            try:
+                import resource as _resource
+
+                usage = _resource.getrusage(_resource.RUSAGE_SELF)
+                # ru_maxrss is in bytes on macOS, kilobytes on Linux
+                import platform as _platform
+
+                rss_raw = usage.ru_maxrss
+                if _platform.system() == "Darwin":
+                    memory_usage_mb = round(rss_raw / (1024**2), 1)
+                else:
+                    memory_usage_mb = round(rss_raw / 1024, 1)
+            except Exception as _res_err:
+                logger.debug("memory via resource module failed: %s", _res_err)
+        except Exception as _psutil_err:
+            logger.debug("memory via psutil failed: %s", _psutil_err)
+
+        return {
+            "uptime_seconds": uptime_seconds,
+            "active_sessions_count": active_sessions_count,
+            "total_tasks_completed": total_tasks_completed,
+            "memory_usage_mb": memory_usage_mb,
+            "last_error_timestamp": _last_error_timestamp,
+        }
+    except Exception as exc:
+        logger.error("health/detailed endpoint error: %s", exc, exc_info=True)
+        _record_error()
+        # Return partial data with 200 rather than letting it bubble to 500
+        return JSONResponse(
+            {
+                "uptime_seconds": None,
+                "active_sessions_count": 0,
+                "total_tasks_completed": 0,
+                "memory_usage_mb": None,
+                "last_error_timestamp": _last_error_timestamp,
+                "error": "partial data — internal error during collection",
+            },
+            status_code=200,
+        )
+
+
+@router.get("/api/metrics")
+async def get_metrics():
+    """Per-agent metrics — tasks run, avg duration, success rate, total cost.
+
+    Aggregates across all active OrchestratorManager instances.
+    Each key in the returned dict is an agent role name.
+    """
+    try:
+        # Accumulate per-role stats from all active managers
+        # Structure: role -> {runs, success, failed, total_duration_s, total_cost_usd}
+        role_stats: dict[str, dict] = {}
+
+        try:
+            for _uid, _pid, manager in state.get_all_managers():
+                for role, agent_state in dict(manager.agent_states).items():
+                    st = agent_state.get("state", "")
+                    if st not in ("done", "error"):
+                        continue  # only count completed tasks
+
+                    if role not in role_stats:
+                        role_stats[role] = {
+                            "runs": 0,
+                            "success": 0,
+                            "failed": 0,
+                            "total_duration_s": 0.0,
+                            "total_cost_usd": 0.0,
+                        }
+
+                    entry = role_stats[role]
+                    entry["runs"] += 1
+                    if st == "done":
+                        entry["success"] += 1
+                    else:
+                        entry["failed"] += 1
+
+                    duration = agent_state.get("duration", 0.0)
+                    if isinstance(duration, int | float):
+                        entry["total_duration_s"] += float(duration)
+
+                    cost = agent_state.get("cost", 0.0)
+                    if isinstance(cost, int | float):
+                        entry["total_cost_usd"] += float(cost)
+
+        except Exception as _iter_err:
+            logger.error("metrics: manager iteration failed: %s", _iter_err, exc_info=True)
+            _record_error()
+
+        # Shape the response
+        result: dict[str, dict] = {}
+        for role, stats in role_stats.items():
+            runs = stats["runs"]
+            avg_duration_ms = round(stats["total_duration_s"] / runs * 1000, 1) if runs > 0 else 0.0
+            success_rate = round(stats["success"] / runs, 4) if runs > 0 else 0.0
+            result[role] = {
+                "total_tasks_run": runs,
+                "avg_duration_ms": avg_duration_ms,
+                "success_rate": success_rate,
+                "total_cost_usd": round(stats["total_cost_usd"], 6),
+            }
+
+        return result
+
+    except Exception as exc:
+        logger.error("metrics endpoint error: %s", exc, exc_info=True)
+        _record_error()
+        return JSONResponse({}, status_code=200)
 
 
 @router.get("/health")
