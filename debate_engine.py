@@ -160,6 +160,21 @@ class DebateEngine:
         from isolated_query import isolated_query
         from prompts import PROMPT_REGISTRY as SPECIALIST_PROMPTS
 
+        def _resolve_system_prompt(role: str) -> str:
+            """Resolve system prompt from built-in prompts or plugin registry."""
+            prompt = SPECIALIST_PROMPTS.get(role)
+            if prompt is not None:
+                return prompt
+            try:
+                from plugin_registry import registry as _pr
+
+                plugin = _pr.get(role)
+                if plugin is not None:
+                    return plugin.build_prompt()
+            except ImportError:
+                pass
+            return "You are an expert software engineer."
+
         _sdk = sdk or state.sdk_client
 
         challenger_role = self.get_challenger_role(task)
@@ -188,11 +203,9 @@ class DebateEngine:
             proposer_response = await isolated_query(
                 _sdk,
                 prompt=proposer_prompt,
-                system_prompt=SPECIALIST_PROMPTS.get(
-                    task.role.value, "You are an expert software engineer."
-                ),
+                system_prompt=_resolve_system_prompt(task.role),
                 cwd=project_dir,
-                max_turns=min(get_agent_turns(task.role.value) // 2, 5),
+                max_turns=min(get_agent_turns(task.role) // 2, 5),
                 max_budget_usd=1.0,
                 on_stream=on_stream,
             )
@@ -236,7 +249,7 @@ class DebateEngine:
         for r in rounds:
             debate_transcript += (
                 f"--- Round {r.round_num} ---\n"
-                f"Proposer ({task.role.value}):\n{r.proposer_argument}\n\n"
+                f"Proposer ({task.role}):\n{r.proposer_argument}\n\n"
                 f"Challenger ({challenger_role.value}):\n{r.challenger_argument}\n\n"
             )
 
@@ -281,7 +294,7 @@ class DebateEngine:
             "[DebateEngine] task %s: verdict=%s (proposer=%s, challenger=%s, turns=%d)",
             task.id,
             verdict.value,
-            task.role.value,
+            task.role,
             challenger_role.value,
             total_turns,
         )

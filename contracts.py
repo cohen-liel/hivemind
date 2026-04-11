@@ -35,13 +35,14 @@ class TaskStatus(str, Enum):
     BLOCKED = "blocked"
     NEEDS_FOLLOWUP = "needs_followup"
     REMEDIATION = "remediation"  # Auto-generated fix task
+    RETRYING = "retrying"  # Task failed but will be retried (DAG re-schedules it)
 
 
 class AgentRole(str, Enum):
     # Layer 1: Brain
     PM = "pm"
     ORCHESTRATOR = "orchestrator"
-    MEMORY = "memory"  # NEW: Memory/Architect agent
+    MEMORY = "memory"
     # Layer 2: Execution
     FRONTEND_DEVELOPER = "frontend_developer"
     BACKEND_DEVELOPER = "backend_developer"
@@ -77,14 +78,8 @@ class ArtifactType(str, Enum):
 
 
 class FailureCategory(str, Enum):
-    """Classification of WHY a task failed — drives remediation strategy.
+    """Classification of WHY a task failed — drives remediation strategy."""
 
-    Top-level categories cover broad failure modes. Subcategories (prefixed
-    with their parent, e.g. BUILD_TYPE_ERROR) provide finer granularity for
-    targeted retry strategies.
-    """
-
-    # --- Top-level categories ---
     DEPENDENCY_MISSING = "dependency_missing"  # Upstream task didn't produce what we need
     API_MISMATCH = "api_mismatch"  # Frontend/backend contract mismatch
     TEST_FAILURE = "test_failure"  # Code written but tests fail
@@ -96,84 +91,12 @@ class FailureCategory(str, Enum):
     EXTERNAL = "external"  # External service / API down
     UNKNOWN = "unknown"  # Unclassified
 
-    # --- Subcategories of BUILD_ERROR ---
-    BUILD_TYPE_ERROR = "build_type_error"  # Type mismatch (TypeScript, mypy, Pydantic)
-    BUILD_IMPORT_ERROR = "build_import_error"  # Import resolution failure
-    BUILD_SYNTAX_ERROR = "build_syntax_error"  # Syntax / parse error
-    BUILD_MISSING_DEP = "build_missing_dep"  # Missing package / dependency
 
-    # --- Subcategories of TEST_FAILURE ---
-    TEST_ASSERTION = "test_assertion"  # Assertion mismatch
-    TEST_RUNTIME_ERROR = "test_runtime_error"  # Uncaught exception during tests
-
-    # --- Subcategory of EXTERNAL ---
-    EXTERNAL_RATE_LIMIT = "external_rate_limit"  # Third-party API rate limit
-
-
-# Mapping: subcategory → parent category (for fallback lookups)
-_SUBCATEGORY_PARENT: dict[FailureCategory, FailureCategory] = {
-    FailureCategory.BUILD_TYPE_ERROR: FailureCategory.BUILD_ERROR,
-    FailureCategory.BUILD_IMPORT_ERROR: FailureCategory.BUILD_ERROR,
-    FailureCategory.BUILD_SYNTAX_ERROR: FailureCategory.BUILD_ERROR,
-    FailureCategory.BUILD_MISSING_DEP: FailureCategory.BUILD_ERROR,
-    FailureCategory.TEST_ASSERTION: FailureCategory.TEST_FAILURE,
-    FailureCategory.TEST_RUNTIME_ERROR: FailureCategory.TEST_FAILURE,
-    FailureCategory.EXTERNAL_RATE_LIMIT: FailureCategory.EXTERNAL,
-}
-
-
-def get_parent_category(category: FailureCategory) -> FailureCategory:
-    """Return the parent category for a subcategory, or the category itself if top-level."""
-    return _SUBCATEGORY_PARENT.get(category, category)
-
-
-def is_subcategory(category: FailureCategory) -> bool:
-    """Return True if this is a subcategory (not a top-level category)."""
-    return category in _SUBCATEGORY_PARENT
-
-
-# Retry configuration per (sub)category:
+# Retry configuration per category:
 #   max_retries: task-level retries before escalating to remediation
 #   backoff_seconds: delay between retries
 #   remediation_allowed: whether to create a remediation task if retries exhausted
 _RETRY_STRATEGY: dict[FailureCategory, dict[str, int | float | bool]] = {
-    # --- Subcategories with targeted strategies ---
-    FailureCategory.BUILD_SYNTAX_ERROR: {
-        "max_retries": 2,
-        "backoff_seconds": 1,
-        "remediation_allowed": True,
-    },
-    FailureCategory.BUILD_TYPE_ERROR: {
-        "max_retries": 1,
-        "backoff_seconds": 2,
-        "remediation_allowed": True,
-    },
-    FailureCategory.BUILD_IMPORT_ERROR: {
-        "max_retries": 2,
-        "backoff_seconds": 1,
-        "remediation_allowed": True,
-    },
-    FailureCategory.BUILD_MISSING_DEP: {
-        "max_retries": 1,
-        "backoff_seconds": 3,
-        "remediation_allowed": True,
-    },
-    FailureCategory.TEST_ASSERTION: {
-        "max_retries": 2,
-        "backoff_seconds": 2,
-        "remediation_allowed": True,
-    },
-    FailureCategory.TEST_RUNTIME_ERROR: {
-        "max_retries": 1,
-        "backoff_seconds": 2,
-        "remediation_allowed": True,
-    },
-    FailureCategory.EXTERNAL_RATE_LIMIT: {
-        "max_retries": 3,
-        "backoff_seconds": 10,
-        "remediation_allowed": False,
-    },
-    # --- Top-level defaults ---
     FailureCategory.BUILD_ERROR: {
         "max_retries": 2,
         "backoff_seconds": 2,
@@ -228,17 +151,11 @@ _DEFAULT_RETRY_STRATEGY: dict[str, int | float | bool] = {
 
 
 def get_retry_strategy(category: FailureCategory) -> dict[str, int | float | bool]:
-    """Get the retry strategy for a failure (sub)category.
+    """Get the retry strategy for a failure category.
 
-    Looks up the specific subcategory first, then falls back to the parent
-    category, then to a conservative default.
+    Simple dict lookup with fallback to a conservative default.
     """
-    if category in _RETRY_STRATEGY:
-        return _RETRY_STRATEGY[category]
-    parent = get_parent_category(category)
-    if parent in _RETRY_STRATEGY:
-        return _RETRY_STRATEGY[parent]
-    return dict(_DEFAULT_RETRY_STRATEGY)
+    return _RETRY_STRATEGY.get(category, dict(_DEFAULT_RETRY_STRATEGY))
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +199,7 @@ class TaskInput(BaseModel):
     """What an agent receives — the contract going IN."""
 
     id: str = Field(..., description="Unique task ID, e.g. 'task_001'")
-    role: AgentRole = Field(..., description="Which specialist handles this task")
+    role: str = Field(..., description="Which specialist handles this task")
     goal: str = Field(..., description="Clear, measurable objective for the agent")
     constraints: list[str] = Field(
         default_factory=list, description="Hard rules the agent must follow"
@@ -331,6 +248,45 @@ class TaskInput(BaseModel):
             raise ValueError(f"Invalid task id '{v}': use letters, digits, _ or - only")
         return v
 
+    @field_validator("role", mode="before")
+    @classmethod
+    def validate_role(cls, v: Any) -> str:
+        """Accept built-in AgentRole names plus any currently enabled plugin role.
+
+        Coerces AgentRole enum instances to their string value so that callers
+        can pass either ``AgentRole.BACKEND_DEVELOPER`` or the plain string
+        ``"backend_developer"`` — both are valid.
+
+        At runtime the validator also checks the PluginRegistry singleton so
+        that plugin-defined role names (e.g. ``"documentation_writer"``) pass
+        validation without hard-coding them into the Enum.
+        """
+        # Coerce AgentRole (or any str-Enum) to its underlying string value
+        if hasattr(v, "value"):
+            v = v.value
+        if not isinstance(v, str):
+            raise ValueError(f"role must be a string, got {type(v).__name__!r}")
+        v = v.strip()
+
+        # Accept any built-in role by value
+        builtin_values: set[str] = {r.value for r in AgentRole}
+        if v in builtin_values:
+            return v
+
+        # Accept enabled plugin roles (lazy import avoids circular dependency)
+        try:
+            from plugin_registry import registry as _plugin_registry
+
+            if any(p.role_name == v for p in _plugin_registry.list_enabled()):
+                return v
+        except ImportError:
+            pass  # plugin_registry not installed — skip plugin validation
+
+        raise ValueError(
+            f"Unknown agent role '{v}'. Must be a built-in role "
+            f"({', '.join(sorted(builtin_values))}) or an enabled plugin role."
+        )
+
     @field_validator("goal")
     @classmethod
     def validate_goal(cls, v: str) -> str:
@@ -376,7 +332,7 @@ class TaskOutput(BaseModel):
     followups: list[str] = Field(
         default_factory=list, max_length=50, description="Recommended follow-up tasks"
     )
-    cost_usd: float = Field(default=0.0, ge=0.0)  # Deprecated — kept for backward compat
+    cost_usd: float = Field(default=0.0, ge=0.0)
     input_tokens: int = Field(default=0, ge=0, description="Input tokens consumed by this task")
     output_tokens: int = Field(default=0, ge=0, description="Output tokens produced by this task")
     total_tokens: int = Field(default=0, ge=0, description="Total tokens (input + output)")
@@ -399,6 +355,12 @@ class TaskOutput(BaseModel):
     )
     failure_details: str = Field(
         default="", description="Detailed explanation of the failure for remediation agent"
+    )
+    # Retry tracking
+    retry_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of times this task has been retried (incremented on each RETRYING transition)",
     )
     # v3: Dynamic DAG — agents can propose new tasks discovered during execution
     discovered_tasks: list[DiscoveredTask] = Field(
@@ -517,12 +479,19 @@ class TaskGraph(BaseModel):
         `completed` can be either:
         - dict[str, TaskOutput]: checks that each dep is successful
         - set[str]: assumes all listed task IDs are successful
+
+        Tasks with status=RETRYING are treated as not-yet-completed and will be
+        re-scheduled when their dependencies are still satisfied.
         """
         is_dict = isinstance(completed, dict)
         result = []
         for task in self.tasks:
             if task.id in completed:
-                continue
+                # RETRYING tasks must be re-scheduled — don't skip them
+                if is_dict and completed[task.id].status == TaskStatus.RETRYING:
+                    pass  # fall through to dependency check below
+                else:
+                    continue
             deps_ok = True
             for dep in task.depends_on:
                 if dep not in completed:
@@ -536,8 +505,13 @@ class TaskGraph(BaseModel):
         return result
 
     def is_complete(self, completed: dict[str, TaskOutput]) -> bool:
-        """Return True if all tasks in the graph have finished."""
-        return all(t.id in completed for t in self.tasks)
+        """Return True if all tasks in the graph have finished (non-RETRYING)."""
+        for t in self.tasks:
+            if t.id not in completed:
+                return False
+            if completed[t.id].status == TaskStatus.RETRYING:
+                return False
+        return True
 
     def has_failed(self, completed: dict[str, TaskOutput]) -> bool:
         """True if a blocked/failed task has no downstream path to completion."""
@@ -682,7 +656,7 @@ def compute_task_complexity(task: TaskInput) -> float:
         constraints=task.constraints,
         files_scope=task.files_scope,
         depends_on=task.depends_on,
-        role=task.role.value if hasattr(task.role, "value") else str(task.role),
+        role=str(task.role),
         is_remediation=getattr(task, "is_remediation", False),
     )
     return result.score
@@ -693,100 +667,6 @@ def compute_task_complexity(task: TaskInput) -> float:
 # ---------------------------------------------------------------------------
 
 _FAILURE_PATTERNS: list[tuple[FailureCategory, list[str]]] = [
-    # --- Subcategories first (more specific patterns win by score) ---
-    (
-        FailureCategory.BUILD_TYPE_ERROR,
-        [
-            "typeerror",
-            "type error",
-            "type mismatch",
-            "incompatible type",
-            "expected type",
-            "cannot assign",
-            "mypy",
-            "type 'nonetype'",
-            "referenceerror",
-            "is not assignable to type",
-            "property does not exist on type",
-            "argument of type",
-        ],
-    ),
-    (
-        FailureCategory.BUILD_IMPORT_ERROR,
-        [
-            "importerror",
-            "import error",
-            "no module named",
-            "cannot find module",
-            "unresolved import",
-            "module not found",
-            "modulenotfounderror",
-            "could not resolve",
-        ],
-    ),
-    (
-        FailureCategory.BUILD_SYNTAX_ERROR,
-        [
-            "syntaxerror",
-            "syntax error",
-            "parse error",
-            "unexpected token",
-            "indentation",
-            "unterminated",
-            "invalid syntax",
-            "unexpected end of input",
-            "unexpected identifier",
-        ],
-    ),
-    (
-        FailureCategory.BUILD_MISSING_DEP,
-        [
-            "not installed",
-            "package not found",
-            "missing module",
-            "pip install",
-            "npm install",
-            "no such package",
-            "dependency not found",
-            "requirements.txt",
-        ],
-    ),
-    (
-        FailureCategory.TEST_ASSERTION,
-        [
-            "assertionerror",
-            "assertion error",
-            "assert false",
-            "expected.*but got",
-            "not equal",
-            "assertEqual",
-            "assert.*==",
-            "mismatch in expected",
-        ],
-    ),
-    (
-        FailureCategory.TEST_RUNTIME_ERROR,
-        [
-            "runtime error during test",
-            "exception in test",
-            "error during test setup",
-            "fixture.*error",
-            "collection error",
-            "test setup failed",
-        ],
-    ),
-    (
-        FailureCategory.EXTERNAL_RATE_LIMIT,
-        [
-            "rate limit",
-            "rate_limit",
-            "429",
-            "too many requests",
-            "throttled",
-            "quota exceeded",
-        ],
-    ),
-    # --- Top-level categories (broader patterns) ---
     (
         FailureCategory.DEPENDENCY_MISSING,
         [
@@ -955,92 +835,6 @@ def classify_failure(output: TaskOutput) -> FailureCategory:
 # ---------------------------------------------------------------------------
 
 _REMEDIATION_STRATEGIES: dict[FailureCategory, dict[str, Any]] = {
-    # --- Subcategory-specific strategies (more targeted) ---
-    FailureCategory.BUILD_TYPE_ERROR: {
-        "role": AgentRole.BACKEND_DEVELOPER,
-        "goal_template": (
-            "Fix type error from task {task_id}: {failure_details}. "
-            "Check the type annotations, Pydantic models, and function signatures. "
-            "Run mypy or tsc to verify type correctness after the fix."
-        ),
-        "constraints": [
-            "Focus only on fixing the type mismatch — do not change logic",
-            "Verify with type checker after fixing",
-        ],
-    },
-    FailureCategory.BUILD_IMPORT_ERROR: {
-        "role": AgentRole.BACKEND_DEVELOPER,
-        "goal_template": (
-            "Fix import error from task {task_id}: {failure_details}. "
-            "Check if the module exists, is spelled correctly, and is in the right location. "
-            "Fix the import path or create the missing module."
-        ),
-        "constraints": [
-            "Only fix the import — do not refactor unrelated code",
-            "Verify by running python -c 'import <module>' or tsc after fixing",
-        ],
-    },
-    FailureCategory.BUILD_SYNTAX_ERROR: {
-        "role": AgentRole.BACKEND_DEVELOPER,
-        "goal_template": (
-            "Fix syntax error from task {task_id}: {failure_details}. "
-            "The error message contains the exact line and position. "
-            "Fix the syntax and verify with python -m py_compile or tsc."
-        ),
-        "constraints": [
-            "Fix only the syntax error — minimal change",
-            "Compile-check the file after fixing",
-        ],
-    },
-    FailureCategory.BUILD_MISSING_DEP: {
-        "role": AgentRole.BACKEND_DEVELOPER,
-        "goal_template": (
-            "Install missing dependency from task {task_id}: {failure_details}. "
-            "Add the package to requirements.txt or package.json and install it. "
-            "Then verify the import works."
-        ),
-        "constraints": [
-            "Add the dependency to the project manifest (requirements.txt / package.json)",
-            "Pin the version with ==",
-        ],
-    },
-    FailureCategory.TEST_ASSERTION: {
-        "role": AgentRole.BACKEND_DEVELOPER,
-        "goal_template": (
-            "Fix assertion failure from task {task_id}: {failure_details}. "
-            "The test expected a specific value but got a different one. "
-            "Fix the implementation (not the test) to produce the expected output."
-        ),
-        "constraints": [
-            "Fix the implementation, not the test assertions",
-            "Run the specific failing test after fixing to verify",
-        ],
-    },
-    FailureCategory.TEST_RUNTIME_ERROR: {
-        "role": AgentRole.BACKEND_DEVELOPER,
-        "goal_template": (
-            "Fix test runtime error from task {task_id}: {failure_details}. "
-            "An exception was raised during test execution. "
-            "Check test fixtures, setup, and the code under test."
-        ),
-        "constraints": [
-            "Check if the error is in test setup/fixtures or the implementation",
-            "Run pytest -x --tb=long on the failing test for full traceback",
-        ],
-    },
-    FailureCategory.EXTERNAL_RATE_LIMIT: {
-        "role": AgentRole.BACKEND_DEVELOPER,
-        "goal_template": (
-            "Handle rate limit from task {task_id}: {failure_details}. "
-            "Add retry with backoff for the rate-limited API call, or "
-            "implement caching to reduce call frequency."
-        ),
-        "constraints": [
-            "Do not remove the API call — add resilience instead",
-            "Use exponential backoff with jitter",
-        ],
-    },
-    # --- Top-level strategies (fallback for unsubcategorized failures) ---
     FailureCategory.DEPENDENCY_MISSING: {
         "role": AgentRole.BACKEND_DEVELOPER,
         "goal_template": (
@@ -1615,7 +1409,7 @@ def task_input_to_prompt(
     # ── Task Assignment ──
     parts.append("<task_assignment>")
     parts.append(f"  <task_id>{task.id}</task_id>")
-    parts.append(f"  <role>{task.role.value}</role>")
+    parts.append(f"  <role>{task.role}</role>")
     parts.append(f"  <goal>{task.goal}</goal>")
 
     if task.is_remediation:
@@ -1653,8 +1447,20 @@ def task_input_to_prompt(
     parts.append("</task_assignment>\n")
 
     # ── Context from upstream tasks — XML-wrapped with safe truncation ──
+    # CRITICAL FIX: Tell agents to READ actual files, not just summaries.
+    # The summary is a "telephone game" — agents need the real code.
+    _CONTRACT_TYPES = {
+        ArtifactType.API_CONTRACT,
+        ArtifactType.SCHEMA,
+        ArtifactType.COMPONENT_MAP,
+    }
+    _CONTRACT_DATA_LIMIT = 6000  # ~1.5k tokens — enough for a full API spec
+    _DEFAULT_DATA_LIMIT = 1200  # other artifacts stay compact
+
     if context_outputs:
         parts.append("<upstream_context>")
+        # Collect all files from upstream agents for a "must read" directive
+        _upstream_files: list[str] = []
         for tid, output in context_outputs.items():
             parts.append(f"  <task_result id='{tid}' status='{output.status.value}'>")
             parts.append(f"    <summary>{output.summary}</summary>")
@@ -1662,16 +1468,20 @@ def task_input_to_prompt(
                 parts.append(
                     f"    <files_changed>{', '.join(output.artifacts[:15])}</files_changed>"
                 )
+                _upstream_files.extend(output.artifacts[:15])
             if output.issues:
                 parts.append("    <issues>")
                 for issue in output.issues[:5]:
                     parts.append(f"      <issue>{issue}</issue>")
                 parts.append("    </issues>")
 
-            # Structured artifacts — XML-wrapped with safe truncation
+            # Structured artifacts — XML-wrapped with safe truncation.
+            # Contract-critical types (api_contract, schema, component_map)
+            # get 5× more space so the full interface spec is preserved.
             if output.structured_artifacts:
                 parts.append("    <artifacts>")
                 for art in output.structured_artifacts:
+                    is_contract = art.type in _CONTRACT_TYPES
                     parts.append(f"      <artifact type='{art.type.value}'>")
                     parts.append(f"        <title>{art.title}</title>")
                     if art.file_path:
@@ -1679,27 +1489,51 @@ def task_input_to_prompt(
                     if art.summary:
                         parts.append(f"        <summary>{art.summary}</summary>")
                     if art.data:
+                        limit = _CONTRACT_DATA_LIMIT if is_contract else _DEFAULT_DATA_LIMIT
                         data_str = json.dumps(art.data, indent=2)
-                        data_str = _truncate_json_safely(data_str, 1200)
+                        data_str = _truncate_json_safely(data_str, limit)
                         parts.append(f"        <data>\n{data_str}\n        </data>")
+                    elif is_contract:
+                        # Contract artifact with no structured data — nudge the
+                        # downstream agent to read the file directly.
+                        if art.file_path:
+                            parts.append(
+                                f"        <note>IMPORTANT: Read {art.file_path} for the "
+                                f"full {art.type.value} before starting work.</note>"
+                            )
                     parts.append("      </artifact>")
                 parts.append("    </artifacts>")
 
             parts.append("  </task_result>")
-        parts.append("</upstream_context>\n")
+        parts.append("</upstream_context>")
 
-    # ── Thinking step (Anthropic best practice: reason before acting) ──
+        # CRITICAL: Tell the agent to READ actual files, not trust summaries
+        if _upstream_files:
+            _unique_files = list(dict.fromkeys(_upstream_files))  # dedupe, preserve order
+            parts.append("\n<must_read_before_coding>")
+            parts.append(
+                "IMPORTANT: The summaries above are just descriptions. Before writing ANY code,"
+            )
+            parts.append(
+                "you MUST read the actual files created by upstream agents to understand the real"
+            )
+            parts.append(
+                "interfaces, types, endpoints, and schemas. Do NOT invent APIs based on summaries."
+            )
+            parts.append("Files to read first:")
+            for fp in _unique_files[:10]:
+                parts.append(f"  - {fp}")
+            parts.append("</must_read_before_coding>\n")
+        else:
+            parts.append("")
+
+    # ── Brief thinking reminder ──
     parts.append(
-        "<thinking_protocol>\n"
-        "Before starting your work, think step-by-step inside <thinking> tags:\n"
-        "1. What exactly is being asked? What does 'done' look like?\n"
-        "2. What files/systems are involved? What do I need to read first?\n"
-        "3. What are the constraints I must respect?\n"
-        "4. What is my plan of action? (ordered steps)\n"
-        "5. What could go wrong? How will I verify success?\n\n"
-        "Only AFTER completing your <thinking> block, begin the actual work.\n"
-        "This reasoning step dramatically improves output quality.\n"
-        "</thinking_protocol>\n"
+        "<instructions>\n"
+        "1. Read all upstream files listed above before writing code.\n"
+        "2. Match your code to the actual interfaces/types in those files.\n"
+        "3. Verify your work compiles and connects to existing code.\n"
+        "</instructions>\n"
     )
 
     # ── Lightweight output request ──
@@ -1709,6 +1543,18 @@ def task_input_to_prompt(
         f"Include your task_id: {task.id}\n"
     )
     return "\n".join(parts)
+
+
+def _dynamic_role_enum() -> list[str]:
+    """Return all valid role names: built-in AgentRole values + enabled plugin roles."""
+    roles = [r.value for r in AgentRole]
+    try:
+        from plugin_registry import registry as _plugin_registry
+
+        roles.extend(_plugin_registry.role_names())
+    except ImportError:
+        pass
+    return sorted(set(roles))
 
 
 def task_graph_schema() -> dict[str, Any]:
@@ -1732,7 +1578,11 @@ def task_graph_schema() -> dict[str, Any]:
                     "required": ["id", "role", "goal"],
                     "properties": {
                         "id": {"type": "string"},
-                        "role": {"type": "string", "enum": [r.value for r in AgentRole]},
+                        "role": {
+                            "type": "string",
+                            "enum": _dynamic_role_enum(),
+                            "description": ("Agent role name — built-in or plugin-defined."),
+                        },
                         "goal": {"type": "string"},
                         "constraints": {"type": "array", "items": {"type": "string"}},
                         "depends_on": {"type": "array", "items": {"type": "string"}},

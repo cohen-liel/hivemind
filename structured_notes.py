@@ -30,6 +30,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from config import MAX_STRUCTURED_NOTES
+
 logger = logging.getLogger(__name__)
 
 
@@ -178,6 +180,9 @@ class StructuredNotes:
             tags=tags or [],
         )
         self.notes.append(note)
+        # Cap notes list to prevent unbounded growth across sessions (FIFO eviction)
+        if len(self.notes) > MAX_STRUCTURED_NOTES:
+            self.notes = self.notes[-MAX_STRUCTURED_NOTES:]
         self._persist()
 
         logger.info(
@@ -254,10 +259,12 @@ class StructuredNotes:
             filtered.sort(key=relevance, reverse=True)
 
         # Always include DECISION and GOTCHA notes (they're universally useful)
+        filtered_ids = {id(n) for n in filtered}
         universal = [
             n
             for n in self.notes
-            if n.category in (NoteCategory.DECISION, NoteCategory.GOTCHA) and n not in filtered
+            if n.category in (NoteCategory.DECISION, NoteCategory.GOTCHA)
+            and id(n) not in filtered_ids
         ]
         filtered = filtered + universal
 

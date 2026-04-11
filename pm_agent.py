@@ -370,7 +370,7 @@ async def create_task_graph(
             # Post-process: ensure artifact wiring is correct
             graph = _enforce_artifact_requirements(graph)
 
-            roles_used = list({t.role.value for t in graph.tasks})
+            roles_used = list({t.role for t in graph.tasks})
             logger.info(
                 f"[PM] ✅ Task graph: {len(graph.tasks)} tasks × {len(roles_used)} roles "
                 f"| vision='{graph.vision[:80]}'"
@@ -378,7 +378,7 @@ async def create_task_graph(
             for t in graph.tasks:
                 deps = t.depends_on or []
                 logger.info(
-                    f"[PM]   {t.id} ({t.role.value}): {t.goal[:70]}{'...' if len(t.goal) > 70 else ''} deps={deps}"
+                    f"[PM]   {t.id} ({t.role}): {t.goal[:70]}{'...' if len(t.goal) > 70 else ''} deps={deps}"
                 )
             logger.info(
                 f"[PM] Created TaskGraph: vision='{graph.vision[:80]}' "
@@ -658,11 +658,9 @@ def fallback_single_task_graph(
 
     # Build vision from the request
     vision = f"Complete the user's request: {user_message[:150]}"
-    epics = list({t.role.value for t in tasks})
+    epics = list({t.role for t in tasks})
 
-    logger.info(
-        f"[PM] Fallback graph created: {len(tasks)} tasks, roles={[t.role.value for t in tasks]}"
-    )
+    logger.info(f"[PM] Fallback graph created: {len(tasks)} tasks, roles={[t.role for t in tasks]}")
 
     return TaskGraph(
         project_id=project_id,
@@ -712,14 +710,14 @@ def validate_graph_quality(graph: TaskGraph) -> list[str]:
         # Every task should have acceptance criteria
         if not task.acceptance_criteria:
             issues.append(
-                f"WARNING: Task {task.id} ({task.role.value}) has no acceptance_criteria — "
+                f"WARNING: Task {task.id} ({task.role}) has no acceptance_criteria — "
                 f"agents won't know what 'done' looks like"
             )
 
         # Every task should have at least one constraint
         if not task.constraints:
             issues.append(
-                f"INFO: Task {task.id} ({task.role.value}) has no constraints — "
+                f"INFO: Task {task.id} ({task.role}) has no constraints — "
                 f"consider adding quality/performance/security constraints"
             )
 
@@ -740,15 +738,15 @@ def validate_graph_quality(graph: TaskGraph) -> list[str]:
             "python_backend",
             "developer",
         }
-        if task.role.value in writer_roles and not task.files_scope:
+        if task.role in writer_roles and not task.files_scope:
             issues.append(
-                f"INFO: Task {task.id} ({task.role.value}) is a writer but has no files_scope — "
+                f"INFO: Task {task.id} ({task.role}) is a writer but has no files_scope — "
                 f"parallel execution conflicts may occur"
             )
 
     # 3. DAG structure checks
     task_ids = {t.id for t in graph.tasks}
-    roles_used = {t.role.value for t in graph.tasks}
+    roles_used = {t.role for t in graph.tasks}
 
     # Check for missing dependencies (frontend without backend, tests without code)
     has_frontend = any(r in roles_used for r in ["frontend_developer", "typescript_architect"])

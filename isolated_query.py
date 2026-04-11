@@ -557,7 +557,7 @@ async def isolated_query(
                 tool_name, tool_info, tool_input = event.payload
                 await on_tool_use(tool_name, tool_info, tool_input)
         except Exception as e:
-            logger.debug(f"[{request_id}] Callback dispatch error: {e}")
+            logger.warning(f"[{request_id}] Callback dispatch error: {e}")
 
     drain_task = asyncio.create_task(_drain_stream_queue())
 
@@ -588,74 +588,34 @@ async def isolated_query(
     _timeout_hit = False
     _wait_start = time.monotonic()
 
-    # BUG-27: Unbounded drain-and-retry loop with 100ms sleep to yield
-    # event-loop control. Fully resilient to spurious CancelledErrors.
-    _cancel_hits = 0
-
     try:
+        # Wait for executor with timeout, limited cancel retries
+        max_cancel_retries = 10
+        cancel_hits = 0
         while True:
-            # Check wall-clock timeout
             if time.monotonic() - _wait_start > _overall_timeout:
                 _timeout_hit = True
-                logger.warning(
-                    f"[{request_id}] Isolated query TIMEOUT after {_overall_timeout}s — "
-                    f"cancelling executor"
-                )
+                logger.warning(f"[{request_id}] Isolated query TIMEOUT after {_overall_timeout}s")
                 cf_future.cancel()
                 break
-
             try:
                 await asyncio.wait_for(_done_event.wait(), timeout=5.0)
-                break  # Event fired — executor is done
+                break
             except TimeoutError:
-                # wait_for poll expired — loop back to check wall-clock timeout
                 continue
             except asyncio.CancelledError:
-                _cancel_hits += 1
-                ct = asyncio.current_task()
-                _drained = 0
-                if ct and hasattr(ct, "uncancel"):
-                    while ct.cancelling() > 0:
-                        ct.uncancel()
-                        _drained += 1
-
-                # Log first 5 hits then every 25th to avoid flooding
-                if _cancel_hits <= 5 or _cancel_hits % 25 == 0:
-                    logger.warning(
-                        f"[{request_id}] CancelledError during executor wait "
-                        f"(hit {_cancel_hits}x, drained {_drained}) — "
-                        f"retrying, executor {'done' if cf_future.done() else 'running'}"
+                cancel_hits += 1
+                if cancel_hits > max_cancel_retries:
+                    logger.error(
+                        f"[{request_id}] Too many CancelledErrors ({cancel_hits}) — giving up"
                     )
-
-                # Exit immediately if event is already set
+                    cf_future.cancel()
+                    _timeout_hit = True
+                    break
                 if _done_event.is_set():
                     break
-
-                # Race condition: cf_future done but callback hasn't fired yet.
-                # Extract result directly from cf_future as fallback.
-                if cf_future.done():
-                    logger.warning(
-                        f"[{request_id}] Executor future done but _done_event not set "
-                        f"— race condition detected, extracting result directly"
-                    )
-                    # Only extract if _on_cf_done hasn't already done it
-                    if not _executor_result and not _executor_error:
-                        try:
-                            _executor_result.append(cf_future.result())
-                        except BaseException as _exc:
-                            _executor_error.append(_exc)
-                    _done_event.set()
-                    break
-
-                # CRITICAL rate-limit: sleep 100ms to yield event-loop control.
-                # Without this, the loop spins at 26 000/s and starves the loop.
-                try:
-                    await asyncio.sleep(0.1)
-                except asyncio.CancelledError:
-                    # Drain the sleep's own cancellation and continue
-                    if ct and hasattr(ct, "uncancel"):
-                        while ct.cancelling() > 0:
-                            ct.uncancel()
+                logger.warning(f"[{request_id}] CancelledError during wait (hit {cancel_hits}x)")
+                await asyncio.sleep(0.1)
 
         # ── Timeout hit — return error immediately ──
         if _timeout_hit:
@@ -667,9 +627,9 @@ async def isolated_query(
             )
 
         # ── Executor finished — extract result ──
-        if _cancel_hits:
+        if cancel_hits:
             logger.info(
-                f"[{request_id}] Executor completed despite {_cancel_hits} "
+                f"[{request_id}] Executor completed despite {cancel_hits} "
                 f"CancelledError interruptions"
             )
 
@@ -711,11 +671,13 @@ async def isolated_query(
         )
     finally:
         # Signal drain task to stop, then wait for it to finish.
-        # Drain any pending cancellations first so our awaits don't fail.
+        # Drain pending cancellations (bounded) so our awaits don't fail.
         ct = asyncio.current_task()
+        _fin_drained = 0
         if ct and hasattr(ct, "uncancel"):
-            while ct.cancelling() > 0:
+            while ct.cancelling() > 0 and _fin_drained < 10:
                 ct.uncancel()
+                _fin_drained += 1
         drain_done.set()
         try:
             await asyncio.wait_for(drain_task, timeout=ASYNC_WAIT_TIMEOUT)

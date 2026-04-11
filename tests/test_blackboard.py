@@ -118,9 +118,11 @@ class TestSmartContext:
                 author_task_id=f"task_{i}",
                 tags=[f"tag_{i}"],
             )
-        ctx = bb.build_smart_context(role="backend_developer", token_budget=500)
-        # Should be within budget (rough estimate)
-        assert _estimate_tokens(ctx) <= 600  # Allow some margin
+        from unittest.mock import patch
+
+        with patch("blackboard.BLACKBOARD_ENABLED", True):
+            ctx = bb.build_smart_context(role="backend_developer", token_budget=500)
+            assert _estimate_tokens(ctx) <= 600  # Allow some margin
 
 
 # ---------------------------------------------------------------------------

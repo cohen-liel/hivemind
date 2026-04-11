@@ -241,6 +241,66 @@ async def unregister_manager(user_id: int, project_id: str) -> None:
             del current_project[user_id]
 
 
+async def cleanup_stale_sessions(max_idle_seconds: float | None = None) -> int:
+    """Remove OrchestratorManager entries that are no longer running.
+
+    Prevents unbounded memory growth from managers that finished but were
+    never explicitly unregistered (e.g. due to disconnects or crashes).
+
+    Args:
+        max_idle_seconds: Max seconds since last activity before a stopped
+            manager is considered stale. Defaults to SESSION_TIMEOUT_SECONDS.
+
+    Returns:
+        Number of stale sessions removed.
+    """
+    from config import SESSION_TIMEOUT_SECONDS
+
+    if max_idle_seconds is None:
+        max_idle_seconds = float(SESSION_TIMEOUT_SECONDS)
+
+    now = time.monotonic()
+    removed = 0
+
+    async with _state_lock:
+        for user_id in list(active_sessions):
+            sessions = active_sessions[user_id]
+            stale_projects = []
+            for project_id, manager in sessions.items():
+                if manager.is_running:
+                    continue
+                # Check if manager has been idle long enough
+                # Use the last known activity or fall back to server start time
+                last_activity = getattr(manager, "_last_orch_call_time", 0.0)
+                if last_activity == 0.0:
+                    last_activity = server_start_time
+                idle = now - last_activity
+                if idle > max_idle_seconds:
+                    stale_projects.append(project_id)
+
+            for project_id in stale_projects:
+                del sessions[project_id]
+                removed += 1
+                logger.info(
+                    "Reaped stale session: user=%d project=%s",
+                    user_id,
+                    project_id,
+                )
+
+            if not sessions:
+                del active_sessions[user_id]
+
+    # Also prune stale user_last_message entries
+    cutoff = time.time() - max_idle_seconds
+    stale_users = [uid for uid, ts in user_last_message.items() if ts < cutoff]
+    for uid in stale_users:
+        del user_last_message[uid]
+
+    if removed:
+        logger.info("Cleanup: removed %d stale session(s)", removed)
+    return removed
+
+
 def is_valid_project_name(name: str) -> bool:
     """Check whether *name* matches PROJECT_NAME_RE.
 

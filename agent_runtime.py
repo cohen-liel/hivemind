@@ -163,24 +163,34 @@ class ClaudeCodeRuntime:
         context_files: list[str] | None = None,
     ) -> RuntimeResponse:
         """Execute via Claude Code SDK (delegates to isolated_query)."""
+        import state
         from isolated_query import isolated_query
+
+        sdk = state.sdk_client
+        if sdk is None:
+            return RuntimeResponse(
+                status=RuntimeStatus.ERROR,
+                error_message="SDK not initialized (state.sdk_client is None)",
+                runtime_name=self.name,
+            )
 
         start = time.monotonic()
         try:
             response = await isolated_query(
+                sdk,
                 prompt=prompt,
-                working_dir=working_dir,
-                role=role,
+                cwd=working_dir,
                 max_turns=max_turns,
-                timeout=timeout,
-                budget_tokens=budget_usd,
+                max_budget_usd=budget_usd,
                 system_prompt=system_prompt,
+                per_message_timeout=timeout,
+                allowed_tools=allowed_tools,
             )
             elapsed = time.monotonic() - start
 
             return RuntimeResponse(
                 status=RuntimeStatus.SUCCESS if not response.is_error else RuntimeStatus.ERROR,
-                result_text=response.result_text,
+                result_text=response.text,
                 cost_usd=response.cost_usd,
                 duration_seconds=elapsed,
                 tokens_in=response.input_tokens,

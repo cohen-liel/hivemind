@@ -234,7 +234,8 @@ def _snapshot_claude_pids() -> set[int]:
             except ValueError:
                 continue
         return pids
-    except Exception:
+    except Exception as e:
+        logger.debug("_snapshot_claude_pids failed: %s", e)
         return set()
 
 
@@ -259,7 +260,8 @@ def _cli_works(path: str) -> bool:
             env={**os.environ, "CLAUDECODE": ""},
         )
         return r.returncode == 0
-    except Exception:
+    except Exception as e:
+        logger.debug("_cli_works(%s) failed: %s", path, e)
         return False
 
 
@@ -1727,6 +1729,9 @@ class ClaudeSDKManager:
             duration_ms=duration_ms,
             num_turns=num_turns,
             is_error=is_err,
+            error_message=f"Stream ended without ResultMessage after {message_count} messages"
+            if is_err
+            else "",
             error_category=ErrorCategory.TRANSIENT,
             human_reason=hr,
             suggested_action=sa,

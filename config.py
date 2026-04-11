@@ -87,12 +87,10 @@ except OSError as e:
     # Already exists (race with another process) — safe to continue
 
 # Agent limits
-MAX_TURNS_PER_CYCLE: int = _get("MAX_TURNS_PER_CYCLE", "500", int)  # High for long autonomous runs
-MAX_BUDGET_USD: float = _get(
-    "MAX_BUDGET_USD", "9999.0", float
-)  # Effectively disabled — Claude Code manages billing
+MAX_TURNS_PER_CYCLE: int = _get("MAX_TURNS_PER_CYCLE", "200", int)
+MAX_BUDGET_USD: float = _get("MAX_BUDGET_USD", "50.0", float)  # Real limit per session
 AGENT_TIMEOUT_SECONDS: int = _get("AGENT_TIMEOUT_SECONDS", "300", int)  # 5 min default
-SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "43200", int)  # 12h default
+SESSION_TIMEOUT_SECONDS: int = _get("SESSION_TIMEOUT_SECONDS", "7200", int)  # 2h default
 
 # ── AGENT REGISTRY — Single Source of Truth ─────────────────────────
 # Every per-role configuration lives here.  All consumers (dag_executor,
@@ -118,7 +116,7 @@ class AgentConfig:
 
     timeout: int = 900  # seconds
     turns: int = 100  # max_turns
-    budget: float = 9999.0  # Effectively unlimited — Claude Code manages billing
+    budget: float = 15.0
     layer: str = "execution"  # brain | execution | quality
     emoji: str = "\U0001f527"  # 🔧
     label: str = ""
@@ -132,28 +130,18 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     # ── Layer 1: Brain ────────────────────────────────────────────
     "pm": AgentConfig(
         timeout=300,
-        turns=3,
-        budget=9999.0,
+        turns=8,
+        budget=5.0,
         layer="brain",
         emoji="\U0001f9e0",
         label="PM",
         tw_color="orange",
         accent="#f97316",
     ),
-    "architect": AgentConfig(
-        timeout=120,
-        turns=8,
-        budget=5.0,
-        layer="brain",
-        emoji="\U0001f3d7\ufe0f",
-        label="Architect",
-        tw_color="indigo",
-        accent="#6366f1",
-    ),
     "orchestrator": AgentConfig(
         timeout=1800,
         turns=25,
-        budget=9999.0,
+        budget=20.0,
         layer="brain",
         emoji="\U0001f3af",
         label="Orchestrator",
@@ -161,9 +149,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#8b90a5",
     ),
     "memory": AgentConfig(
-        timeout=900,
-        turns=30,
-        budget=9999.0,
+        timeout=300,
+        turns=15,
+        budget=5.0,
         layer="brain",
         emoji="\U0001f4da",
         label="Memory",
@@ -172,9 +160,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     ),
     # ── Layer 2: Execution (write code) ──────────────────────────
     "frontend_developer": AgentConfig(
-        timeout=1800,
-        turns=200,
-        budget=9999.0,
+        timeout=900,
+        turns=100,
+        budget=15.0,
         layer="execution",
         emoji="\U0001f3a8",
         label="Frontend",
@@ -182,9 +170,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#ec4899",
     ),
     "backend_developer": AgentConfig(
-        timeout=1800,
-        turns=200,
-        budget=9999.0,
+        timeout=900,
+        turns=100,
+        budget=15.0,
         layer="execution",
         emoji="\u26a1",
         label="Backend",
@@ -192,9 +180,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#eab308",
     ),
     "database_expert": AgentConfig(
-        timeout=900,
-        turns=150,
-        budget=9999.0,
+        timeout=600,
+        turns=75,
+        budget=10.0,
         layer="execution",
         emoji="\U0001f5c4\ufe0f",
         label="Database",
@@ -202,9 +190,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#6366f1",
     ),
     "devops": AgentConfig(
-        timeout=900,
-        turns=150,
-        budget=9999.0,
+        timeout=600,
+        turns=75,
+        budget=10.0,
         layer="execution",
         emoji="\U0001f680",
         label="DevOps",
@@ -213,9 +201,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     ),
     # ── Layer 3: Quality (read/analyse) ──────────────────────────
     "security_auditor": AgentConfig(
-        timeout=600,
-        turns=50,
-        budget=9999.0,
+        timeout=300,
+        turns=30,
+        budget=5.0,
         layer="quality",
         emoji="\U0001f510",
         label="Security",
@@ -223,9 +211,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#ef4444",
     ),
     "test_engineer": AgentConfig(
-        timeout=900,
-        turns=100,
-        budget=9999.0,
+        timeout=600,
+        turns=50,
+        budget=10.0,
         layer="quality",
         emoji="\U0001f9ea",
         label="Tester",
@@ -233,9 +221,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#f5a623",
     ),
     "reviewer": AgentConfig(
-        timeout=600,
-        turns=50,
-        budget=9999.0,
+        timeout=300,
+        turns=25,
+        budget=5.0,
         layer="quality",
         emoji="\U0001f50d",
         label="Reviewer",
@@ -243,9 +231,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#a78bfa",
     ),
     "researcher": AgentConfig(
-        timeout=1200,
-        turns=75,
-        budget=9999.0,
+        timeout=600,
+        turns=40,
+        budget=10.0,
         layer="quality",
         emoji="\U0001f50e",
         label="Researcher",
@@ -253,9 +241,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#34d399",
     ),
     "ux_critic": AgentConfig(
-        timeout=600,
-        turns=40,
-        budget=9999.0,
+        timeout=300,
+        turns=20,
+        budget=5.0,
         layer="quality",
         emoji="\U0001f3ad",
         label="UX",
@@ -264,9 +252,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     ),
     # ── Legacy aliases (backward compat) ─────────────────────────
     "developer": AgentConfig(
-        timeout=1800,
-        turns=200,
-        budget=9999.0,
+        timeout=900,
+        turns=100,
+        budget=15.0,
         layer="execution",
         emoji="\U0001f4bb",
         label="Developer",
@@ -275,9 +263,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         legacy=True,
     ),
     "tester": AgentConfig(
-        timeout=900,
-        turns=100,
-        budget=9999.0,
+        timeout=600,
+        turns=50,
+        budget=10.0,
         layer="quality",
         emoji="\U0001f9ea",
         label="Tester",
@@ -286,9 +274,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         legacy=True,
     ),
     "typescript_architect": AgentConfig(
-        timeout=1800,
-        turns=200,
-        budget=9999.0,
+        timeout=900,
+        turns=100,
+        budget=15.0,
         layer="execution",
         emoji="\U0001f3a8",
         label="TS Architect",
@@ -297,9 +285,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         legacy=True,
     ),
     "python_backend": AgentConfig(
-        timeout=1800,
-        turns=200,
-        budget=9999.0,
+        timeout=900,
+        turns=100,
+        budget=15.0,
         layer="execution",
         emoji="\u26a1",
         label="Py Backend",
@@ -337,8 +325,8 @@ TIMEOUT_ESCALATION_FACTOR: float = _get("TIMEOUT_ESCALATION_FACTOR", "1.5", floa
 SDK_MAX_RETRIES: int = _get("SDK_MAX_RETRIES", "2", int)
 SDK_MAX_TURNS_PER_QUERY: int = _get("SDK_MAX_TURNS_PER_QUERY", "25", int)
 SDK_MAX_BUDGET_PER_QUERY: float = _get(
-    "SDK_MAX_BUDGET_PER_QUERY", "9999.0", float
-)  # Effectively unlimited — Claude Code manages billing
+    "SDK_MAX_BUDGET_PER_QUERY", "15.0", float
+)  # Per-query budget limit
 
 # Session persistence
 SESSION_EXPIRY_HOURS: int = _get("SESSION_EXPIRY_HOURS", "24", int)
@@ -346,7 +334,7 @@ SESSION_EXPIRY_HOURS: int = _get("SESSION_EXPIRY_HOURS", "24", int)
 # Stuck detection
 STUCK_SIMILARITY_THRESHOLD: float = 0.85
 STUCK_WINDOW_SIZE: int = 4
-MAX_ORCHESTRATOR_LOOPS: int = _get("MAX_ORCHESTRATOR_LOOPS", "1000", int)
+MAX_ORCHESTRATOR_LOOPS: int = _get("MAX_ORCHESTRATOR_LOOPS", "100", int)
 RATE_LIMIT_SECONDS: float = _get("RATE_LIMIT_SECONDS", "0.5", float)
 
 # Budget warning threshold (fraction of MAX_BUDGET_USD, e.g. 0.8 = warn at 80%)
@@ -459,7 +447,7 @@ MAX_REMEDIATION_DEPTH: int = _get("MAX_REMEDIATION_DEPTH", "2", int)  # Max fix_
 MAX_TOTAL_REMEDIATIONS: int = _get(
     "MAX_TOTAL_REMEDIATIONS", "5", int
 )  # Total remediations per graph
-MAX_DAG_ROUNDS: int = _get("MAX_DAG_ROUNDS", "500", int)  # High limit for long autonomous runs
+MAX_DAG_ROUNDS: int = _get("MAX_DAG_ROUNDS", "50", int)  # Reasonable limit per execution
 
 # ── Feature flags ────────────────────────────────────────────────────
 # Previously read via os.getenv() inside orchestrator.py (H-3 fix).
@@ -536,11 +524,24 @@ WS_AUTH_TIMEOUT: float = 10.0  # WebSocket auth handshake
 
 # Retry / resilience
 MAX_ANYIO_RETRIES: int = 3  # Retries on spurious CancelledError
-MAX_CANCEL_WAIT_RETRIES: int = 50  # Iterations waiting for agent cancellation
+MAX_CANCEL_WAIT_RETRIES: int = 10  # Iterations waiting for agent cancellation
 SEMAPHORE_ACQUIRE_TIMEOUT: float = 60.0  # SDK pool slot acquisition
 
 # Conversation / logging
 CONVERSATION_LOG_MAXLEN: int = 2000  # Max messages kept in memory deque
+
+# ── Memory management — caps for in-memory data structures ──────────
+# These prevent unbounded growth during long-running sessions that
+# previously caused swap thrashing and kernel panics on macOS.
+MAX_STREAM_BUFFER_CHARS: int = 4000  # Per-agent streaming buffer (keep last N chars)
+MAX_SHARED_CONTEXT_ENTRIES: int = 50  # Absolute cap on shared_context list
+MAX_COMPLETED_ROUNDS: int = 30  # In-memory completed round summaries
+MAX_TASK_SUMMARIES: int = 50  # Short task summary strings across sessions
+MAX_STRUCTURED_NOTES: int = 200  # StructuredNotes.notes list cap (FIFO)
+MAX_TECH_PATTERNS: int = 100  # CrossProjectMemory tech_patterns cap
+MAX_CONVENTIONS: int = 100  # CrossProjectMemory conventions cap
+MAX_VERIFY_FILES: int = 50  # Max files to syntax-check in verify_fixes
+SYMBOL_CACHE_TTL: float = 30.0  # Seconds before _scan_codebase_symbols re-scans
 
 # Sleep intervals (non-configurable operational delays)
 AGENT_RETRY_DELAY: float = 4.0  # Delay before retrying a failed agent
@@ -687,6 +688,35 @@ def validate_config() -> list[str]:
                 "Browsers will reject credentialed cross-origin requests. "
                 "Set CORS_ORIGINS to explicit origins or disable credentials."
             )
+
+    # --- AGENT_REGISTRY invariants ----------------------------------------
+    _emoji_to_roles: dict[str, list[str]] = {}
+    for role, cfg in AGENT_REGISTRY.items():
+        # (1) Positive numeric fields
+        if not isinstance(cfg.timeout, int | float) or cfg.timeout <= 0:
+            errors.append(f"AGENT_REGISTRY['{role}'].timeout must be > 0, got {cfg.timeout!r}")
+        if not isinstance(cfg.turns, int) or cfg.turns <= 0:
+            errors.append(f"AGENT_REGISTRY['{role}'].turns must be > 0, got {cfg.turns!r}")
+        if not isinstance(cfg.budget, int | float) or cfg.budget <= 0:
+            errors.append(f"AGENT_REGISTRY['{role}'].budget must be > 0, got {cfg.budget!r}")
+
+        # (2) Budget > MAX_BUDGET_USD warning
+        if isinstance(cfg.budget, int | float) and cfg.budget > MAX_BUDGET_USD:
+            logger.warning(
+                "AGENT_REGISTRY['%s'].budget (%.2f) exceeds MAX_BUDGET_USD (%.2f)",
+                role,
+                cfg.budget,
+                MAX_BUDGET_USD,
+            )
+
+        # (3) Collect emojis for non-legacy roles (duplicate check below)
+        if not cfg.legacy:
+            _emoji_to_roles.setdefault(cfg.emoji, []).append(role)
+
+    # (3) Raise if any two non-legacy roles share an emoji
+    for emoji, roles_using_it in _emoji_to_roles.items():
+        if len(roles_using_it) > 1:
+            errors.append(f"Duplicate emoji {emoji!r} used by non-legacy roles: {roles_using_it}")
 
     # --- Report ------------------------------------------------------------
     for w in warnings:

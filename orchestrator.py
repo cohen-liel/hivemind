@@ -1443,7 +1443,7 @@ class OrchestratorManager:
             completed_ids = set(self._dag_task_statuses.keys())
             for t in graph.tasks:
                 status = self._dag_task_statuses.get(t.id, "pending")
-                existing_summary.append(f"- {t.id} [{t.role.value}] ({status}): {t.goal[:80]}")
+                existing_summary.append(f"- {t.id} [{t.role}] ({status}): {t.goal[:80]}")
             existing_context = (
                 "\n\n## Current DAG Tasks\n"
                 + "\n".join(existing_summary)
@@ -1516,12 +1516,10 @@ class OrchestratorManager:
                 graph.add_task(task)
                 logger.info(
                     f"[{self.project_id}] INJECTED task: {task.id} "
-                    f"({task.role.value}) goal='{task.goal[:80]}' deps={task.depends_on}"
+                    f"({task.role}) goal='{task.goal[:80]}' deps={task.depends_on}"
                 )
             if new_tasks:
-                task_list = "\n".join(
-                    f"  - `{t.id}` [{t.role.value}]: {t.goal[:100]}" for t in new_tasks
-                )
+                task_list = "\n".join(f"  - `{t.id}` [{t.role}]: {t.goal[:100]}" for t in new_tasks)
                 changes.append(f"➕ Added {len(new_tasks)} task(s):\n{task_list}")
 
             if not changes:
@@ -1901,7 +1899,7 @@ class OrchestratorManager:
                     # Emit the graph to the frontend
                     task_lines = []
                     for i, t in enumerate(graph.tasks, 1):
-                        task_lines.append(f"  {i}. **{t.role.value}** — {t.goal[:80]}")
+                        task_lines.append(f"  {i}. **{t.role}** — {t.goal[:80]}")
                     await self._send_result(
                         f"📋 **Quick plan:** {graph.vision[:100]}\n\n" + chr(10).join(task_lines)
                     )
@@ -2167,7 +2165,7 @@ class OrchestratorManager:
                         deps = (
                             f" (deps: {', '.join(t.depends_on)})" if t.depends_on else " (no deps)"
                         )
-                        logger.info(f"  Task {t.id}: {t.role.value} — {t.goal[:80]}{deps}")
+                        logger.info(f"  Task {t.id}: {t.role} — {t.goal[:80]}{deps}")
                 except Exception as pm_err:
                     _pm_elapsed = _pm_time.time() - _pm_start
                     logger.warning(
@@ -2246,7 +2244,7 @@ class OrchestratorManager:
                 task_lines = []
                 for i, t in enumerate(graph.tasks, 1):
                     deps = f" (after: {', '.join(t.depends_on)})" if t.depends_on else ""
-                    task_lines.append(f"  {i}. **{t.role.value}** — {t.goal[:80]}{deps}")
+                    task_lines.append(f"  {i}. **{t.role}** — {t.goal[:80]}{deps}")
                 plan_detail = chr(10).join(task_lines)
                 await self._send_result(
                     f"📋 **Plan ready:** {graph.vision}\n\n"
@@ -2267,7 +2265,7 @@ class OrchestratorManager:
                 task_lines_confirm = []
                 for i, t in enumerate(graph.tasks, 1):
                     deps = f" (after: {', '.join(t.depends_on)})" if t.depends_on else ""
-                    task_lines_confirm.append(f"  {i}. **{t.role.value}** — {t.goal[:80]}{deps}")
+                    task_lines_confirm.append(f"  {i}. **{t.role}** — {t.goal[:80]}{deps}")
                 plan_summary = chr(10).join(task_lines_confirm)
                 confirm_question = (
                     f"Here is my plan ({len(graph.tasks)} tasks):\n\n"
@@ -2392,7 +2390,7 @@ class OrchestratorManager:
                         _debate_count += 1
                         logger.info(
                             f"[{self.project_id}] Debate {_debate_count}/{_MAX_DEBATES} triggered "
-                            f"for task {task.id} ({task.role.value})"
+                            f"for task {task.id} ({task.role})"
                         )
                         await self._notify(
                             f"🗣️ **Debate Engine** reviewing critical task: {task.goal[:80]}..."
@@ -2412,7 +2410,7 @@ class OrchestratorManager:
                             await self._emit_event(
                                 "agent_update",
                                 agent="debate",
-                                summary=f"Debate on {_task.role.value}: {len(_debate_buf)} chars...",
+                                summary=f"Debate on {_task.role}: {len(_debate_buf)} chars...",
                                 text=preview,
                                 status="working",
                             )
@@ -2874,7 +2872,7 @@ class OrchestratorManager:
 
         task._started_at = _time.time()  # stamp for real duration calculation
         logger.info(
-            f"[{self.project_id}] TASK START: {task.id} ({task.role.value}) "
+            f"[{self.project_id}] TASK START: {task.id} ({task.role}) "
             f"goal='{task.goal[:100]}' deps={task.depends_on or 'none'} "
             f"is_remediation={task.is_remediation}"
         )
@@ -2883,7 +2881,7 @@ class OrchestratorManager:
         if task.required_artifacts:
             art_names = [a.value for a in task.required_artifacts]
             required = f" | Artifacts: {', '.join(art_names)}"
-        self.agent_states[task.role.value] = {
+        self.agent_states[task.role] = {
             "state": "working",
             "task": task.goal[:120],
             "last_activity_at": time.time(),
@@ -2895,20 +2893,20 @@ class OrchestratorManager:
             task_id=task.id,
             status="working",
             task_name=task.goal[:120],
-            agent=task.role.value,
+            agent=task.role,
         )
         # Clear any prior silence alert for this agent (it just started)
-        self._silence_alerted.discard(task.role.value)
+        self._silence_alerted.discard(task.role)
         # activity feed, network trace, elapsed time, and SDK calls correctly.
         await self._emit_event(
             "agent_started",
-            agent=task.role.value,
+            agent=task.role,
             task=task.goal[:300],
             task_id=task.id,
             is_remediation=task.is_remediation,
         )
         await self._send_result(
-            f"🔄 {prefix}**{task.role.value}** — `{task.id}`\n_{task.goal[:120]}..._{required}"
+            f"🔄 {prefix}**{task.role}** — `{task.id}`\n_{task.goal[:120]}..._{required}"
         )
 
     async def _on_dag_task_done(self, task: TaskInput, output: TaskOutput):
@@ -2916,14 +2914,14 @@ class OrchestratorManager:
         import time as _time
 
         # Clear stream buffer for this agent role
-        role_name = task.role.value
+        role_name = task.role
         self._agent_stream_buffers.pop(role_name, None)
         self._agent_stream_last_emit.pop(role_name, None)
 
         is_ok = output.is_successful()
         real_duration = round(_time.time() - getattr(task, "_started_at", _time.time()), 1)
         logger.info(
-            f"[{self.project_id}] TASK DONE: {task.id} ({task.role.value}) "
+            f"[{self.project_id}] TASK DONE: {task.id} ({task.role}) "
             f"status={output.status.value} confidence={output.confidence:.2f} "
             f"turns={output.turns_used} cost=${output.cost_usd:.4f} "
             f"duration={real_duration}s "
@@ -2953,7 +2951,7 @@ class OrchestratorManager:
             failure_reason = " | ".join(parts) if parts else "Unknown error"
 
         # Update internal state
-        self.agent_states[task.role.value] = {
+        self.agent_states[task.role] = {
             "state": "done" if is_ok else "error",
             "task": task.goal[:120],
             "cost": output.cost_usd,
@@ -2969,14 +2967,14 @@ class OrchestratorManager:
             task_id=task.id,
             status="completed" if is_ok else "failed",
             task_name=task.goal[:120],
-            agent=task.role.value,
+            agent=task.role,
             failure_reason=failure_reason if not is_ok else "",
         )
 
         # Emit agent_finished for Trace + Agent cards
         await self._emit_event(
             "agent_finished",
-            agent=task.role.value,
+            agent=task.role,
             cost=output.cost_usd,
             input_tokens=getattr(output, "input_tokens", 0),
             output_tokens=getattr(output, "output_tokens", 0),
@@ -2999,20 +2997,20 @@ class OrchestratorManager:
 
         if is_ok:
             result_text = (
-                f"{icon} {prefix}**{task.role.value}** completed `{task.id}` "
+                f"{icon} {prefix}**{task.role}** completed `{task.id}` "
                 f"({real_duration}s, ${output.cost_usd:.4f})\n"
                 f"{output.summary[:250]}{artifact_info}"
             )
         else:
             result_text = (
-                f"{icon} {prefix}**{task.role.value}** failed `{task.id}` "
+                f"{icon} {prefix}**{task.role}** failed `{task.id}` "
                 f"({real_duration}s, ${output.cost_usd:.4f})\n"
                 f"**Reason:** {failure_reason}{artifact_info}"
             )
 
         await self._emit_event(
             "agent_result",
-            agent=task.role.value,
+            agent=task.role,
             text=result_text,
             task_id=task.id,
         )
@@ -3035,11 +3033,11 @@ class OrchestratorManager:
             failed_task=failed_task.id,
             failure_category=cat_str,
             remediation_task=remediation_task.id,
-            remediation_role=remediation_task.role.value,
+            remediation_role=remediation_task.role,
         )
         await self._notify(
             f"🔧 **Self-healing:** Task {failed_task.id} failed ({cat_str}). "
-            f"Auto-created fix task {remediation_task.id} ({remediation_task.role.value})."
+            f"Auto-created fix task {remediation_task.id} ({remediation_task.role})."
         )
 
         # Re-emit the updated graph so the frontend learns about the new

@@ -78,7 +78,10 @@ class TestShouldReflect:
     def test_successful_task_below_threshold_should_reflect(self):
         task = _make_task()
         output = _make_output(confidence=0.85)
-        assert should_reflect(task, output) is True
+        from unittest.mock import patch
+
+        with patch("reflexion.REFLEXION_ENABLED", True):
+            assert should_reflect(task, output) is True
 
     def test_successful_task_above_threshold_should_not_reflect(self):
         task = _make_task()

@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from config import MAX_CONVENTIONS, MAX_TECH_PATTERNS
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -159,6 +161,11 @@ class CrossProjectMemory:
             "timestamp": time.time(),
             "use_count": patterns.get(pattern_key, {}).get("use_count", 0) + 1,
         }
+        # Cap to MAX_TECH_PATTERNS — evict oldest by timestamp
+        if len(patterns) > MAX_TECH_PATTERNS:
+            oldest = sorted(patterns, key=lambda k: patterns[k].get("timestamp", 0))
+            for k in oldest[: len(patterns) - MAX_TECH_PATTERNS]:
+                del patterns[k]
         self._save()
         logger.info(f"[CrossMemory] Recorded tech pattern: {pattern_key}")
 
@@ -191,6 +198,11 @@ class CrossProjectMemory:
             "project_id": project_id,
             "timestamp": time.time(),
         }
+        # Cap to MAX_CONVENTIONS — evict oldest by timestamp
+        if len(conventions) > MAX_CONVENTIONS:
+            oldest = sorted(conventions, key=lambda k: conventions[k].get("timestamp", 0))
+            for k in oldest[: len(conventions) - MAX_CONVENTIONS]:
+                del conventions[k]
         self._save()
 
     def get_conventions(self) -> dict[str, str]:

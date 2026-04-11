@@ -228,7 +228,7 @@ def _emit_activity_log(
     """Append a structured activity log entry to .hivemind/activity.jsonl."""
     activity_entry = {
         "timestamp": time.time(),
-        "agent": task.role.value,
+        "agent": task.role,
         "task": task.id,
         "status": "completed" if output.is_successful() else "failed",
         "summary": output.summary if output.summary else "",
@@ -1109,9 +1109,7 @@ def _inject_discovered_tasks(
             goal=dt.goal.strip(),
             depends_on=deps,
             context_from=[source_task.id] if dt.depends_on_source else [],
-            constraints=[
-                f"Discovered by {source_task.role.value} during {source_task.id}: {dt.reason}"
-            ],
+            constraints=[f"Discovered by {source_task.role} during {source_task.id}: {dt.reason}"],
             required_artifacts=[ArtifactType.FILE_MANIFEST],
         )
         object.__setattr__(new_task, "_is_dynamic", True)
@@ -1174,7 +1172,7 @@ async def execute_batch(state: DAGState) -> dict:
 
     async def _run_one_task(task: TaskInput) -> TaskOutput:
         """Execute a single task using Two-Phase Architecture."""
-        role_name = task.role.value
+        role_name = task.role
         max_turns = _get_max_turns(role_name)
         task_timeout = _get_task_timeout(role_name, task=task)
 
@@ -1869,7 +1867,7 @@ async def post_batch(state: DAGState) -> dict:
         if commit_approval_callback:
             try:
                 desc = (
-                    f"Task **{task.id}** ({task.role.value}) completed.\n"
+                    f"Task **{task.id}** ({task.role}) completed.\n"
                     f"Summary: {result.summary[:200]}\n"
                     f"Files: {', '.join(result.artifacts[:5]) if result.artifacts else 'none'}"
                 )
@@ -1880,7 +1878,7 @@ async def post_batch(state: DAGState) -> dict:
         if _commit_approved:
             try:
                 _goal = task.goal if task else ""
-                _role = task.role.value if task else ""
+                _role = task.role if task else ""
                 committed = await commit_single_task(
                     project_dir,
                     result,
@@ -1986,7 +1984,7 @@ async def post_batch(state: DAGState) -> dict:
                             "failed_task": task.id,
                             "failure_category": category.value,
                             "remediation_task": remediation.id,
-                            "detail": f"Auto-created {remediation.id} ({remediation.role.value}) to fix {task.id}",
+                            "detail": f"Auto-created {remediation.id} ({remediation.role}) to fix {task.id}",
                         }
                     )
                     if on_remediation:
@@ -2510,7 +2508,7 @@ def build_execution_summary(graph: TaskGraph, result: ExecutionResult) -> str:
             else:
                 icon = "⚠️"
             prefix = "🔧 " if task.is_remediation else ""
-            lines.append(f"{icon} {prefix}[{task.id}] {task.role.value}: {output.summary[:120]}")
+            lines.append(f"{icon} {prefix}[{task.id}] {task.role}: {output.summary[:120]}")
             if output.structured_artifacts:
                 art_names = [a.title for a in output.structured_artifacts[:3]]
                 lines.append(f"   Artifacts: {', '.join(art_names)}")
@@ -2521,7 +2519,7 @@ def build_execution_summary(graph: TaskGraph, result: ExecutionResult) -> str:
             if output.failure_category:
                 lines.append(f"   Failure: {output.failure_category.value}")
         else:
-            lines.append(f"⏭️  [{task.id}] {task.role.value}: Not executed")
+            lines.append(f"⏭️  [{task.id}] {task.role}: Not executed")
 
     if result.healing_history:
         lines.append("\n### Self-Healing Actions")

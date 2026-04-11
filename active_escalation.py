@@ -95,7 +95,9 @@ def decide_escalation(
     strategy = stuck_signal.get("strategy", "")
     current_agent = mgr.current_agent or "unknown"
 
-    # Track escalation attempts
+    # Track escalation attempts (init lazily if orchestrator didn't call init_escalation_tracking)
+    if not hasattr(mgr, "_escalation_counts"):
+        mgr._escalation_counts: dict[str, int] = {}
     escalation_count = mgr._escalation_counts.get(current_agent, 0)
 
     # Critical severity or too many retries → notify user
@@ -179,7 +181,9 @@ async def execute_escalation(
     Returns:
         True if escalation was handled, False if user notification is needed
     """
-    # Track escalation count
+    # Track escalation count (init lazily if orchestrator didn't call init_escalation_tracking)
+    if not hasattr(mgr, "_escalation_counts"):
+        mgr._escalation_counts: dict[str, int] = {}
     count = mgr._escalation_counts.get(action.agent_role, 0) + 1
     mgr._escalation_counts[action.agent_role] = count
 

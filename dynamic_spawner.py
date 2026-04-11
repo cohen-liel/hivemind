@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from contracts import (
-    _SUBCATEGORY_PARENT,
     FailureCategory,
     TaskInput,
     TaskOutput,
@@ -195,13 +194,8 @@ class DynamicSpawner:
 
     @staticmethod
     def _classify_failure(output: TaskOutput) -> FailureCategory:
-        """Classify failure using the canonical contracts.classify_failure.
-
-        Normalizes subcategories (e.g. BUILD_SYNTAX_ERROR → BUILD_ERROR)
-        so the eligibility check works with top-level categories only.
-        """
-        category = classify_failure(output)
-        return _SUBCATEGORY_PARENT.get(category, category)
+        """Classify failure using the canonical contracts.classify_failure."""
+        return classify_failure(output)
 
     @staticmethod
     def _build_reason(output: TaskOutput) -> str:

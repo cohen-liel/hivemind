@@ -44,7 +44,7 @@ from contracts import TaskInput, TaskOutput
 logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────
-REFLEXION_ENABLED: bool = cfg._get("REFLEXION_ENABLED", "true", str).lower() == "true"
+REFLEXION_ENABLED: bool = cfg._get("REFLEXION_ENABLED", "false", str).lower() == "true"
 REFLEXION_CONFIDENCE_THRESHOLD: float = cfg._get("REFLEXION_CONFIDENCE_THRESHOLD", "0.95", float)
 REFLEXION_MAX_FIX_TURNS: int = cfg._get("REFLEXION_MAX_FIX_TURNS", "10", int)
 REFLEXION_CRITIQUE_BUDGET: float = cfg._get("REFLEXION_CRITIQUE_BUDGET", "2.0", float)
@@ -362,7 +362,7 @@ async def run_reflexion(
     fix_output = extract_task_output(
         fix_response.text,
         task.id,
-        task.role.value,
+        task.role,
         tool_uses=fix_response.tool_uses if fix_response else None,
     )
 

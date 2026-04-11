@@ -222,7 +222,7 @@ def _build_memory_prompt(
     parts.append("<task_outputs>")
     for output in outputs:
         task = graph.get_task(output.task_id)
-        role = task.role.value if task else "unknown"
+        role = task.role if task else "unknown"
         parts.append(
             f"  <task_result id='{output.task_id}' role='{role}' status='{output.status.value}'>\n"
             f"    <summary>{output.summary}</summary>\n"
@@ -358,7 +358,7 @@ def _heuristic_update(
 
     # Generate architecture_summary if not set (heuristic mode)
     if not snapshot.architecture_summary and graph.vision:
-        roles_used = list(dict.fromkeys(t.role.value for t in graph.tasks))
+        roles_used = list(dict.fromkeys(t.role for t in graph.tasks))
         snapshot.architecture_summary = (
             f"{graph.vision}. "
             f"Agents involved: {', '.join(roles_used)}. "

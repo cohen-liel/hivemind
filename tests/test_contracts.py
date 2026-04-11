@@ -33,9 +33,7 @@ from contracts import (
     classify_failure,
     create_remediation_task,
     extract_task_output,
-    get_parent_category,
     get_retry_strategy,
-    is_subcategory,
     task_input_to_prompt,
     validate_artifact_contracts,
 )
@@ -411,36 +409,11 @@ class TestArtifact:
 # ===========================================================================
 
 
-class TestFailureCategoryHierarchy:
-    """Failure category hierarchy and retry strategies are correct."""
+class TestFailureCategoryRetryStrategy:
+    """Retry strategies for failure categories are correct."""
 
-    def test_get_parent_category_when_build_type_error_should_return_build_error(self):
-        assert get_parent_category(FailureCategory.BUILD_TYPE_ERROR) == FailureCategory.BUILD_ERROR
-
-    def test_get_parent_category_when_test_assertion_should_return_test_failure(self):
-        assert get_parent_category(FailureCategory.TEST_ASSERTION) == FailureCategory.TEST_FAILURE
-
-    def test_get_parent_category_when_external_rate_limit_should_return_external(self):
-        assert get_parent_category(FailureCategory.EXTERNAL_RATE_LIMIT) == FailureCategory.EXTERNAL
-
-    def test_get_parent_category_when_top_level_should_return_self(self):
-        assert get_parent_category(FailureCategory.BUILD_ERROR) == FailureCategory.BUILD_ERROR
-        assert get_parent_category(FailureCategory.UNKNOWN) == FailureCategory.UNKNOWN
-
-    def test_is_subcategory_when_build_type_error_should_return_true(self):
-        assert is_subcategory(FailureCategory.BUILD_TYPE_ERROR) is True
-
-    def test_is_subcategory_when_test_runtime_error_should_return_true(self):
-        assert is_subcategory(FailureCategory.TEST_RUNTIME_ERROR) is True
-
-    def test_is_subcategory_when_build_error_top_level_should_return_false(self):
-        assert is_subcategory(FailureCategory.BUILD_ERROR) is False
-
-    def test_is_subcategory_when_unknown_should_return_false(self):
-        assert is_subcategory(FailureCategory.UNKNOWN) is False
-
-    def test_get_retry_strategy_when_build_syntax_error_should_allow_2_retries(self):
-        strategy = get_retry_strategy(FailureCategory.BUILD_SYNTAX_ERROR)
+    def test_get_retry_strategy_when_build_error_should_allow_2_retries(self):
+        strategy = get_retry_strategy(FailureCategory.BUILD_ERROR)
         assert strategy["max_retries"] == 2
 
     def test_get_retry_strategy_when_unclear_goal_should_have_zero_retries(self):
@@ -451,10 +424,6 @@ class TestFailureCategoryHierarchy:
         strategy = get_retry_strategy(FailureCategory.PERMISSION)
         assert strategy["remediation_allowed"] is False
 
-    def test_get_retry_strategy_when_rate_limit_should_have_long_backoff(self):
-        strategy = get_retry_strategy(FailureCategory.EXTERNAL_RATE_LIMIT)
-        assert strategy["backoff_seconds"] >= 5
-
     def test_get_retry_strategy_when_unknown_should_return_defaults(self):
         strategy = get_retry_strategy(FailureCategory.UNKNOWN)
         assert "max_retries" in strategy
@@ -462,7 +431,7 @@ class TestFailureCategoryHierarchy:
         assert "remediation_allowed" in strategy
 
     def test_all_categories_have_retry_strategy(self):
-        """Every FailureCategory has a retry strategy (including inherited from parent)."""
+        """Every FailureCategory has a retry strategy (via lookup or default)."""
         for category in FailureCategory:
             strategy = get_retry_strategy(category)
             assert isinstance(strategy["max_retries"], int)
@@ -487,9 +456,9 @@ class TestClassifyFailure:
             issues=["TS2322: Type 'string' is not assignable to type 'number'"],
         )
         category = classify_failure(output)
-        assert category in (FailureCategory.BUILD_TYPE_ERROR, FailureCategory.BUILD_ERROR)
+        assert category == FailureCategory.BUILD_ERROR
 
-    def test_classify_when_syntax_error_should_return_syntax_or_build(self):
+    def test_classify_when_syntax_error_should_return_build_error(self):
         output = TaskOutput(
             task_id="task_001",
             role=AgentRole.BACKEND_DEVELOPER,
@@ -498,9 +467,9 @@ class TestClassifyFailure:
             failure_details="SyntaxError in auth.py line 42",
         )
         category = classify_failure(output)
-        assert category in (FailureCategory.BUILD_SYNTAX_ERROR, FailureCategory.BUILD_ERROR)
+        assert category == FailureCategory.BUILD_ERROR
 
-    def test_classify_when_module_not_found_should_return_import_or_build(self):
+    def test_classify_when_module_not_found_should_return_dependency_missing(self):
         output = TaskOutput(
             task_id="task_001",
             role=AgentRole.BACKEND_DEVELOPER,
@@ -509,8 +478,7 @@ class TestClassifyFailure:
         )
         category = classify_failure(output)
         assert category in (
-            FailureCategory.BUILD_IMPORT_ERROR,
-            FailureCategory.BUILD_MISSING_DEP,
+            FailureCategory.DEPENDENCY_MISSING,
             FailureCategory.BUILD_ERROR,
         )
 
@@ -523,7 +491,7 @@ class TestClassifyFailure:
             issues=["Test assertion failed: status code mismatch"],
         )
         category = classify_failure(output)
-        assert category in (FailureCategory.TEST_ASSERTION, FailureCategory.TEST_FAILURE)
+        assert category == FailureCategory.TEST_FAILURE
 
     def test_classify_when_permission_error_should_return_permission(self):
         output = TaskOutput(
@@ -637,14 +605,10 @@ class TestTaskInputToPrompt:
         )
         assert "Build a complete auth system" in prompt
 
-    def test_prompt_should_include_thinking_protocol_section(self, simple_task):
-        """Guards: thinking_protocol must be present in every generated prompt.
-
-        The thinking_protocol section forces agents to reason step-by-step before
-        committing to actions. This is a key brain upgrade from the improvement plan.
-        """
+    def test_prompt_should_include_instructions_section(self, simple_task):
+        """Guards: instructions must be present in every generated prompt."""
         prompt = task_input_to_prompt(simple_task, context_outputs={})
-        assert "thinking_protocol" in prompt or "thinking" in prompt.lower()
+        assert "instructions" in prompt.lower()
 
     def test_prompt_when_task_has_required_artifacts_should_mention_them(self, task_with_artifacts):
         prompt = task_input_to_prompt(task_with_artifacts, context_outputs={})

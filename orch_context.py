@@ -14,7 +14,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from config import SUBPROCESS_SHORT_TIMEOUT
+from config import MAX_SHARED_CONTEXT_ENTRIES, SUBPROCESS_SHORT_TIMEOUT
 
 if TYPE_CHECKING:
     from sdk_client import SDKResponse
@@ -245,6 +245,10 @@ def trim_context_by_priority(mgr) -> None:
     """
     if not mgr.shared_context:
         return
+
+    # Absolute cap — hard limit regardless of priority to prevent unbounded growth
+    if len(mgr.shared_context) > MAX_SHARED_CONTEXT_ENTRIES:
+        mgr.shared_context = mgr.shared_context[-MAX_SHARED_CONTEXT_ENTRIES:]
 
     total_tokens = sum(estimate_tokens(e) for e in mgr.shared_context)
     if total_tokens <= CONTEXT_TOKEN_BUDGET and len(mgr.shared_context) <= 30:

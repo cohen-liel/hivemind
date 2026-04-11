@@ -47,7 +47,7 @@ from structured_notes import Note, NoteCategory, StructuredNotes
 logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────
-BLACKBOARD_ENABLED: bool = cfg._get("BLACKBOARD_ENABLED", "true", str).lower() == "true"
+BLACKBOARD_ENABLED: bool = cfg._get("BLACKBOARD_ENABLED", "false", str).lower() == "true"
 BLACKBOARD_CONTEXT_BUDGET: int = cfg._get("BLACKBOARD_CONTEXT_BUDGET", "4000", int)
 
 # Time-decay: half-life in seconds (default 30 minutes — notes lose half

@@ -182,6 +182,20 @@ async def _do_commit(
 
     # Build commit message from actual staged files + task context
     staged_files = [f.strip() for f in staged.strip().splitlines() if f.strip()]
+
+    # Pre-commit verification: check Python files compile
+    import py_compile as _pyc
+
+    _syntax_warnings: list[str] = []
+    for sf in staged_files:
+        if sf.endswith(".py"):
+            full_path = str(proj / sf)
+            try:
+                _pyc.compile(full_path, doraise=True)
+            except _pyc.PyCompileError as e:
+                _syntax_warnings.append(f"{sf}: {e}")
+                logger.warning("[git] Syntax error in staged file %s: %s", sf, e)
+
     message = _build_commit_message(
         outputs,
         round_num,
@@ -189,6 +203,7 @@ async def _do_commit(
         staged_files=staged_files,
         task_goal=task_goal,
         task_role=task_role,
+        syntax_warnings=_syntax_warnings,
     )
 
     await _run(["git", "commit", "-m", message], cwd=project_dir)
@@ -382,6 +397,7 @@ def _build_commit_message(
     staged_files: list[str] | None = None,
     task_goal: str = "",
     task_role: str = "",
+    syntax_warnings: list[str] | None = None,
 ) -> str:
     """Build a structured commit message from task outputs and actual staged files."""
     successful = [o for o in outputs if o.status == TaskStatus.COMPLETED]
@@ -409,6 +425,10 @@ def _build_commit_message(
         body_lines.append(
             f"\nTask: {o.task_id} [{task_role}]" if task_role else f"\nTask: {o.task_id}"
         )
+        if syntax_warnings:
+            body_lines.append(f"\n⚠️ SYNTAX WARNINGS ({len(syntax_warnings)}):")
+            for w in syntax_warnings[:5]:
+                body_lines.append(f"  - {w[:120]}")
         return first_line + "\n" + "\n".join(body_lines)
 
     # Multi-task round commit
@@ -434,6 +454,11 @@ def _build_commit_message(
             body_lines.append(f"  - {f}")
         if len(files) > 15:
             body_lines.append(f"  ... and {len(files) - 15} more")
+
+    if syntax_warnings:
+        body_lines.append(f"\n⚠️ SYNTAX WARNINGS ({len(syntax_warnings)}):")
+        for w in syntax_warnings[:5]:
+            body_lines.append(f"  - {w[:120]}")
 
     return first_line + "\n" + "\n".join(body_lines)
 

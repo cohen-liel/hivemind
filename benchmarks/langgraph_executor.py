@@ -242,7 +242,7 @@ async def execute_graph_langgraph(
         tasks_data.append(
             {
                 "id": t.id,
-                "role": t.role.value if hasattr(t.role, "value") else str(t.role),
+                "role": str(t.role),
                 "goal": t.goal,
                 "depends_on": t.depends_on or [],
                 "context_from": getattr(t, "context_from", []) or [],

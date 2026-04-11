@@ -708,7 +708,7 @@ async def run_langchain_benchmark(project_name: str, output_dir: str) -> dict:
                 logger.warning(f"Dependency {dep_id} not found for {task.id}")
 
         # Build prompt
-        role_str = task.role.value if hasattr(task.role, "value") else str(task.role)
+        role_str = str(task.role)
         system_prompt = PROMPT_REGISTRY.get(role_str, "")
         system_prompt += f"\n\nPROJECT BOUNDARY: {project_dir}\nWork ONLY within this directory."
 

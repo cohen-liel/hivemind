@@ -276,8 +276,8 @@ class TestAgentRegistry:
     def test_helper_functions(self):
         """Verify helper functions return correct values."""
         assert config.get_agent_timeout("pm") == 300
-        assert config.get_agent_turns("pm") == 3
-        assert config.get_agent_budget("pm") == 9999.0
+        assert config.get_agent_turns("pm") == 8
+        assert config.get_agent_budget("pm") == 5.0
         assert config.get_agent_emoji("orchestrator") == "🎯"
         assert "orchestrator" in config.get_all_role_names()
         assert "developer" not in config.get_active_role_names()  # legacy

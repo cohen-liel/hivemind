@@ -63,7 +63,7 @@ class TestFallbackSingleTaskGraph:
         graph = fallback_single_task_graph("Build a web app", "test-project")
         valid_roles = {r.value for r in AgentRole}
         for task in graph.tasks:
-            assert task.role.value in valid_roles
+            assert task.role in valid_roles
 
     def test_fallback_when_called_should_have_non_empty_goals(self):
         """All task goals must be non-empty."""
@@ -107,7 +107,7 @@ class TestFallbackSingleTaskGraph:
         graph = fallback_single_task_graph(
             "Build a React dashboard with charts and dark mode", "test-project"
         )
-        roles = {t.role.value for t in graph.tasks}
+        roles = {t.role for t in graph.tasks}
         assert "backend_developer" in roles, f"Expected backend_developer in {roles}"
         assert "reviewer" in roles, f"Expected reviewer in {roles}"
 
@@ -116,7 +116,7 @@ class TestFallbackSingleTaskGraph:
         graph = fallback_single_task_graph(
             "Build a FastAPI REST API with JWT authentication", "test-project"
         )
-        roles = {t.role.value for t in graph.tasks}
+        roles = {t.role for t in graph.tasks}
         backend_roles = {"backend_developer", "python_backend", "developer"}
         assert roles & backend_roles, f"Expected a backend role in {roles} for an API request"
 
@@ -126,7 +126,7 @@ class TestFallbackSingleTaskGraph:
             "Design a PostgreSQL database schema for a multi-tenant SaaS application",
             "test-project",
         )
-        roles = {t.role.value for t in graph.tasks}
+        roles = {t.role for t in graph.tasks}
         db_roles = {"database_expert", "backend_developer", "developer"}
         assert roles & db_roles, f"Expected a database role in {roles} for a database request"
 
@@ -151,7 +151,7 @@ class TestFallbackSingleTaskGraph:
         graph = fallback_single_task_graph(
             "Write comprehensive pytest tests for the authentication module", "test-project"
         )
-        roles = {t.role.value for t in graph.tasks}
+        roles = {t.role for t in graph.tasks}
         assert "backend_developer" in roles, f"Expected backend_developer in {roles}"
         assert len(graph.tasks) >= 2, "Fallback should create at least 2 tasks"
 
