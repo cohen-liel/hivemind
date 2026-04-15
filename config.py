@@ -160,9 +160,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     ),
     # ── Layer 2: Execution (write code) ──────────────────────────
     "frontend_developer": AgentConfig(
-        timeout=900,
-        turns=100,
-        budget=15.0,
+        timeout=600,
+        turns=50,
+        budget=10.0,
         layer="execution",
         emoji="\U0001f3a8",
         label="Frontend",
@@ -170,9 +170,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#ec4899",
     ),
     "backend_developer": AgentConfig(
-        timeout=900,
-        turns=100,
-        budget=15.0,
+        timeout=600,
+        turns=50,
+        budget=10.0,
         layer="execution",
         emoji="\u26a1",
         label="Backend",
@@ -180,9 +180,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#eab308",
     ),
     "database_expert": AgentConfig(
-        timeout=600,
-        turns=75,
-        budget=10.0,
+        timeout=450,
+        turns=40,
+        budget=8.0,
         layer="execution",
         emoji="\U0001f5c4\ufe0f",
         label="Database",
@@ -190,9 +190,9 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#6366f1",
     ),
     "devops": AgentConfig(
-        timeout=600,
-        turns=75,
-        budget=10.0,
+        timeout=450,
+        turns=40,
+        budget=8.0,
         layer="execution",
         emoji="\U0001f680",
         label="DevOps",
@@ -221,7 +221,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         accent="#f5a623",
     ),
     "reviewer": AgentConfig(
-        timeout=300,
+        timeout=600,
         turns=25,
         budget=5.0,
         layer="quality",
@@ -809,6 +809,28 @@ def get_agent_mode_prompt(mode: str) -> str:
     return AGENT_MODE_PROMPTS.get(
         mode, AGENT_MODE_PROMPTS.get(AGENT_MODE_DEFAULT, AGENT_MODE_PROMPTS["autonomous"])
     )
+
+
+def get_tier_adjusted_config(role: str, tier: str) -> AgentConfig:
+    """Return agent config adjusted for complexity tier.
+
+    SMALL_TEAM tier gets tighter budgets to prevent over-engineering.
+    FULL_TEAM uses base config unchanged.
+    """
+    base = get_agent_config(role)
+    if tier == "SMALL_TEAM":
+        return AgentConfig(
+            timeout=min(base.timeout, 600),
+            turns=min(base.turns, 40),
+            budget=min(base.budget, 8.0),
+            layer=base.layer,
+            emoji=base.emoji,
+            label=base.label,
+            legacy=base.legacy,
+            tw_color=base.tw_color,
+            accent=base.accent,
+        )
+    return base
 
 
 # Backward-compatible emoji map (derived from registry)

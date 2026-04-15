@@ -90,7 +90,7 @@ MAX_TASK_RETRIES: int = cfg.MAX_TASK_RETRIES
 MAX_REMEDIATION_DEPTH: int = cfg.MAX_REMEDIATION_DEPTH
 MAX_TOTAL_REMEDIATIONS: int = cfg.MAX_TOTAL_REMEDIATIONS
 MAX_ROUNDS: int = cfg.MAX_DAG_ROUNDS
-MAX_DYNAMIC_TASKS: int = int(os.getenv("MAX_DYNAMIC_TASKS", "10"))
+MAX_DYNAMIC_TASKS: int = int(os.getenv("MAX_DYNAMIC_TASKS", "3"))  # was 10
 
 # Two-Phase Architecture constants
 _SUMMARY_PHASE_TURNS = 5
@@ -1007,10 +1007,10 @@ async def _run_summary_phase(
         '  "discovered_tasks": []\n'
         "}\n"
         "```\n\n"
-        "IMPORTANT about discovered_tasks: If during your work you discovered that\n"
-        "additional tasks are needed that were NOT in the original plan, list them.\n"
-        "Each discovered task needs: goal (what to do), role (which agent), reason (why).\n"
-        "Leave empty [] if no additional tasks are needed.\n\n"
+        "IMPORTANT about discovered_tasks: Only list tasks for HIGH-severity issues that\n"
+        "would cause security vulnerabilities, data loss, or application crashes.\n"
+        "Document MEDIUM/LOW findings in your summary but do NOT create discovered_tasks for them.\n"
+        "Leave discovered_tasks as [] unless there is a critical issue that MUST be fixed.\n\n"
         "IMPORTANT: Output ONLY the JSON block above. No explanations, no tools."
     )
 
@@ -1083,13 +1083,20 @@ def _inject_discovered_tasks(
     dynamic_task_count: int,
     task_counter: int,
     on_event: Any = None,
+    state: dict | None = None,
 ) -> int:
     """Inject agent-discovered tasks into the live graph."""
     if not output.discovered_tasks:
         return 0
     if source_task.is_remediation or getattr(source_task, "_is_dynamic", False):
         return 0
-    remaining = MAX_DYNAMIC_TASKS - dynamic_task_count
+
+    # Tier-aware dynamic task limits
+    tier = state.get("complexity_tier", "FULL_TEAM") if isinstance(state, dict) else "FULL_TEAM"
+    tier_dynamic_limits = {"SOLO": 0, "SMALL_TEAM": 1, "FULL_TEAM": 3}
+    effective_max = tier_dynamic_limits.get(tier, 3)
+
+    remaining = effective_max - dynamic_task_count
     if remaining <= 0:
         return 0
 
@@ -1100,6 +1107,34 @@ def _inject_discovered_tasks(
             continue
         if len(dt.goal.strip()) < 10:
             continue
+
+        # Only spawn dynamic tasks for HIGH-severity findings from quality roles
+        dt_goal_lower = dt.goal.lower()
+        is_high_severity = any(
+            kw in dt_goal_lower
+            for kw in [
+                "critical",
+                "high",
+                "security vulnerability",
+                "data loss",
+                "injection",
+                "authentication bypass",
+                "crash",
+                "breaking",
+            ]
+        )
+        if not is_high_severity and source_task.role in (
+            "security_auditor",
+            "reviewer",
+            "ux_critic",
+        ):
+            logger.info(
+                "[LG-DAG] Skipping non-HIGH dynamic task from %s: '%s'",
+                source_task.role,
+                dt.goal[:60],
+            )
+            continue
+
         task_counter += 1
         task_id = f"dyn_{task_counter:03d}"
         deps = [source_task.id] if dt.depends_on_source else []
@@ -1204,6 +1239,7 @@ async def execute_batch(state: DAGState) -> dict:
             graph_vision=graph.vision,
             graph_epics=graph.epic_breakdown,
             user_message=state.get("user_message", ""),
+            tier=state.get("complexity_tier", "FULL_TEAM"),
         )
 
         # System prompt
@@ -1659,6 +1695,7 @@ async def execute_batch(state: DAGState) -> dict:
                     state.get("dynamic_task_count", 0),
                     state["task_counter"],
                     on_event,
+                    state=state,
                 )
             except Exception:
                 pass
@@ -2336,6 +2373,7 @@ async def execute_graph(
     session_id_store: dict[str, str] | None = None,
     max_concurrent_tasks: int | None = None,
     commit_approval_callback: Callable[[str], Awaitable[bool]] | None = None,
+    complexity_tier: str = "FULL_TEAM",
 ) -> ExecutionResult:
     """Execute a TaskGraph using LangGraph — drop-in replacement.
 
@@ -2409,6 +2447,7 @@ async def execute_graph(
         "on_agent_tool_use": on_agent_tool_use,
         "on_event": on_event,
         "commit_approval_callback": commit_approval_callback,
+        "complexity_tier": complexity_tier,
     }
 
     config = {
