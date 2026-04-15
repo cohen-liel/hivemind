@@ -195,7 +195,9 @@ def get_skills_for_agent(agent_role: str) -> list[str]:
     ]
 
 
-def select_skills_for_task(agent_role: str, task: str, max_skills: int = 2) -> list[str]:
+def select_skills_for_task(
+    agent_role: str, task: str, max_skills: int = 2, tier: str = "FULL_TEAM"
+) -> list[str]:
     """Select the most relevant skills for a task using keyword + description matching.
 
     Instead of injecting ALL skills for a role (e.g. 48 developer skills = ~43K tokens),
@@ -209,7 +211,14 @@ def select_skills_for_task(agent_role: str, task: str, max_skills: int = 2) -> l
         agent_role: The agent role (frontend_developer, backend_developer, etc.)
         task: The task description to match against.
         max_skills: Maximum number of skills to inject (default 2 → ~2-3K tokens).
+        tier: Execution tier — "SOLO", "SMALL_TEAM", or "FULL_TEAM" (default).
     """
+    # Tier-aware skill limits
+    if tier == "SOLO":
+        return []  # SOLO agents don't get skills — keep them focused
+    if tier == "SMALL_TEAM" and agent_role in ("reviewer", "security_auditor", "ux_critic", "researcher"):
+        max_skills = min(max_skills, 1)
+
     if not _skills_cache:
         scan_skills()
 
@@ -263,7 +272,7 @@ def build_skill_prompt(skill_names: list[str]) -> str:
     """Build a skill context string to append to a sub-agent's system prompt.
 
     Uses XML tags for clear separation (per Anthropic's prompt engineering guide).
-    Truncates each skill to 2500 chars to keep total injection under ~5K tokens.
+    Truncates each skill to 1500 chars to keep total injection under ~3K tokens.
     """
     if not _skills_cache:
         scan_skills()
@@ -272,9 +281,9 @@ def build_skill_prompt(skill_names: list[str]) -> str:
     for name in skill_names:
         content = _skills_cache.get(name)
         if content:
-            # Truncate to keep prompt reasonable — 2500 chars per skill
-            truncated = content[:2500]
-            if len(content) > 2500:
+            # Truncate to keep prompt reasonable — 1500 chars per skill
+            truncated = content[:1500]
+            if len(content) > 1500:
                 truncated += "\n... (truncated)"
             parts.append(f'<skill name="{name}">\n{truncated}\n</skill>')
 

@@ -58,99 +58,137 @@ _DELEGATE_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Triage — decide if a task is simple enough to skip PM+Architect
+# Triage — three-tier complexity classification
 # ---------------------------------------------------------------------------
 
-# Keywords that indicate a task is NOT simple (needs full planning pipeline)
-_COMPLEX_KEYWORDS = frozenset(
-    {
-        "authentication",
-        "auth system",
-        "database schema",
-        "migration",
-        "refactor",
-        "redesign",
-        "architecture",
-        "microservice",
-        "api design",
-        "full stack",
-        "fullstack",
-        "build an app",
-        "create a system",
-        "integrate",
-        "deployment",
-        "ci/cd",
-        "infrastructure",
-        "test suite",
-        "test framework",
-        "security audit",
-    }
-)
+from enum import StrEnum
+
+
+class ComplexityTier(StrEnum):
+    SOLO = "SOLO"  # 1 agent, no PM, no architect
+    SMALL_TEAM = "SMALL_TEAM"  # PM with constrained task count (4-8 tasks)
+    FULL_TEAM = "FULL_TEAM"  # Full PM + Architect + unconstrained tasks
+
+
+@dataclass
+class TierClassification:
+    tier: ComplexityTier
+    reason: str
+    suggested_max_tasks: int
+    skip_architect: bool
+
+
+# Keywords that push toward FULL_TEAM (epic-scale work)
+_EPIC_INDICATORS = frozenset({
+    "microservice", "microservices", "from scratch", "saas",
+    "e-commerce", "ecommerce", "entire system", "complete system",
+    "complete platform", "production system", "enterprise",
+})
+
+# Keywords that prevent SOLO (need at least SMALL_TEAM)
+_COMPLEX_KEYWORDS = frozenset({
+    "authentication", "auth system", "database schema", "migration",
+    "refactor", "redesign", "architecture", "api design",
+    "full stack", "fullstack", "build an app", "build a",
+    "create a system", "integrate", "deployment", "ci/cd",
+    "infrastructure", "test suite", "test framework", "security audit",
+})
+
+# Layer detection — how many architectural layers does the request touch?
+_LAYER_KEYWORDS: dict[str, set[str]] = {
+    "frontend": {"frontend", "react", "vue", "angular", "ui", "component", "page", "tailwind", "css", "kanban", "dashboard"},
+    "backend": {"backend", "api", "endpoint", "server", "fastapi", "express", "rest", "crud", "router"},
+    "database": {"database", "db", "schema", "migration", "table", "sql", "sqlite", "postgres", "model"},
+    "infra": {"docker", "deploy", "ci/cd", "kubernetes", "infrastructure", "compose", "dockerfile", "nginx"},
+}
+
+# Hebrew complex indicators
+_HEBREW_COMPLEX = [
+    "ארכיטקטורה", "מיגרציה", "אימות", "אבטחה", "מערכת", "עיצוב",
+    "רפקטור", "אינטגרציה", "תשתית", "פריסה", "בסיס נתונים",
+    "תבין על מה", "תבדוק את",
+]
+
+# Vague broad requests — always need PM
+_VAGUE_PATTERNS = [
+    "make it better", "improve everything", "be the best", "fix all",
+    "תשפר הכל", "תתקן הכל", "הכי טוב", "ברמות הכי גבוהות",
+]
+
+
+def _count_layers(msg_lower: str) -> int:
+    """Count how many architectural layers the message mentions."""
+    return sum(
+        1 for _layer, keywords in _LAYER_KEYWORDS.items()
+        if any(kw in msg_lower for kw in keywords)
+    )
+
+
+def _classify_tier(user_message: str) -> TierClassification:
+    """Classify a user message into SOLO / SMALL_TEAM / FULL_TEAM.
+
+    Three-tier system:
+    - SOLO: short, simple, single-layer tasks → 1 agent, skip PM+Architect
+    - SMALL_TEAM: multi-layer features → PM creates 4-8 tasks, skip Architect
+    - FULL_TEAM: epic/system-wide work → full pipeline, 10-20+ tasks
+    """
+    words = user_message.split()
+    word_count = len(words)
+    char_count = len(user_message)
+    msg_lower = user_message.lower()
+    layers = _count_layers(msg_lower)
+
+    # ── FULL_TEAM: epic indicators or very large requests ──
+    if any(kw in msg_lower for kw in _EPIC_INDICATORS):
+        return TierClassification(
+            tier=ComplexityTier.FULL_TEAM,
+            reason="epic indicator keyword detected",
+            suggested_max_tasks=25,
+            skip_architect=False,
+        )
+
+    if word_count > 200:
+        return TierClassification(
+            tier=ComplexityTier.FULL_TEAM,
+            reason=f"very long request ({word_count} words)",
+            suggested_max_tasks=25,
+            skip_architect=False,
+        )
+
+    if layers >= 3 and word_count > 100:
+        return TierClassification(
+            tier=ComplexityTier.FULL_TEAM,
+            reason=f"{layers} layers + {word_count} words",
+            suggested_max_tasks=20,
+            skip_architect=False,
+        )
+
+    # ── SOLO: short, simple, no complex keywords ──
+    is_short = word_count <= 60 and char_count <= 250
+    has_complex_kw = any(kw in msg_lower for kw in _COMPLEX_KEYWORDS)
+    has_hebrew_complex = any(hk in msg_lower for hk in _HEBREW_COMPLEX)
+    has_vague = any(vp in msg_lower for vp in _VAGUE_PATTERNS)
+
+    if is_short and not has_complex_kw and not has_hebrew_complex and not has_vague and layers <= 1:
+        return TierClassification(
+            tier=ComplexityTier.SOLO,
+            reason="short, single-layer, no complex keywords",
+            suggested_max_tasks=2,
+            skip_architect=True,
+        )
+
+    # ── SMALL_TEAM: everything else (the default) ──
+    return TierClassification(
+        tier=ComplexityTier.SMALL_TEAM,
+        reason=f"{layers} layers, {word_count} words",
+        suggested_max_tasks=8,
+        skip_architect=True,
+    )
 
 
 def _triage_is_simple(user_message: str) -> bool:
-    """Decide if a user message is simple enough to bypass PM+Architect.
-
-    A task is considered SIMPLE when:
-    1. The message is short (≤ 40 words AND ≤ 150 characters)
-    2. No complex keywords are present (English or Hebrew)
-    3. It's not asking for broad/vague improvements
-
-    This is intentionally conservative — false negatives (treating a simple
-    task as complex) waste some tokens but still work.  False positives
-    (treating a complex task as simple) would produce poor results.
-    """
-    words = user_message.split()
-    if len(words) > 40:
-        return False
-
-    # Character-length guard — catches longer non-English messages where
-    # word count is low but the request is actually complex.
-    if len(user_message) > 150:
-        return False
-
-    msg_lower = user_message.lower()
-
-    # Check for complex keywords (English)
-    for kw in _COMPLEX_KEYWORDS:
-        if kw in msg_lower:
-            return False
-
-    # Check for complex indicators (Hebrew)
-    _hebrew_complex = [
-        "ארכיטקטורה",
-        "מיגרציה",
-        "אימות",
-        "אבטחה",
-        "מערכת",
-        "עיצוב",
-        "רפקטור",
-        "אינטגרציה",
-        "תשתית",
-        "פריסה",
-        "בסיס נתונים",
-        "full stack",
-        "תבין על מה",
-        "תבדוק את",
-    ]
-    if any(hk in msg_lower for hk in _hebrew_complex):
-        return False
-
-    # Vague broad requests need PM decomposition
-    vague_patterns = [
-        "make it better",
-        "improve everything",
-        "be the best",
-        "fix all",
-        "תשפר הכל",
-        "תתקן הכל",
-        "הכי טוב",
-        "ברמות הכי גבוהות",
-    ]
-    if any(vp in msg_lower for vp in vague_patterns):
-        return False
-
-    return True
+    """Deprecated: backward-compat wrapper around _classify_tier()."""
+    return _classify_tier(user_message).tier == ComplexityTier.SOLO
 
 
 # ---------------------------------------------------------------------------
@@ -1874,18 +1912,21 @@ class OrchestratorManager:
             if context_parts:
                 await self._send_result(f"📚 Loaded: {', '.join(context_parts)}")
 
-            # ── Step 0.4: Triage — skip PM+Architect for simple tasks ──
+            # ── Step 0.4: Triage — three-tier complexity classification ──
             #
-            # Research (SEMAG 2026): applying a complex pipeline to a simple
-            # task *reduces* quality and wastes tokens.  For trivial requests
-            # (bug fixes, config changes, colour tweaks) a single fullstack
-            # agent is faster and more reliable than PM → DAG → 3+ agents.
+            # SOLO: 1 agent, skip PM+Architect (bug fixes, config changes)
+            # SMALL_TEAM: PM with constrained tasks (4-8), skip Architect
+            # FULL_TEAM: full PM + Architect + unconstrained pipeline
             _triage_skip_planning = False
+            _tier = _classify_tier(user_message)
+            logger.info(
+                f"[{self.project_id}] Triage: {_tier.tier} — {_tier.reason} "
+                f"(suggested_max_tasks={_tier.suggested_max_tasks})"
+            )
             if _cached_graph is None:
-                _is_simple = _triage_is_simple(user_message)
-                if _is_simple:
+                if _tier.tier == ComplexityTier.SOLO:
                     logger.info(
-                        f"[{self.project_id}] Triage: SIMPLE task — "
+                        f"[{self.project_id}] Triage: SOLO task — "
                         f"bypassing Architect + PM, using direct 2-task graph"
                     )
                     await self._send_result(
@@ -1904,12 +1945,17 @@ class OrchestratorManager:
                         f"📋 **Quick plan:** {graph.vision[:100]}\n\n" + chr(10).join(task_lines)
                     )
                     await self._emit_event("task_graph", graph=graph.model_dump())
+                elif _tier.tier == ComplexityTier.SMALL_TEAM:
+                    await self._send_result(
+                        f"🎯 **Focused team** — targeting {_tier.suggested_max_tasks} tasks"
+                    )
 
             # ── Step 0.5: Architect Agent (pre-planning review) ──
             architect_brief: ArchitectureBrief | None = None
             if (
                 not _triage_skip_planning
                 and _cached_graph is None
+                and not _tier.skip_architect
                 and should_run_architect(user_message, bool(memory_snapshot))
             ):
                 self.agent_states["orchestrator"] = {
@@ -2154,6 +2200,7 @@ class OrchestratorManager:
                         file_tree=file_tree,
                         memory_snapshot=memory_snapshot,
                         on_stream=_pm_stream_to_ws,
+                        complexity_tier=_tier,
                     )
                     _pm_elapsed = _pm_time.time() - _pm_start
                     logger.info(
@@ -2459,6 +2506,7 @@ class OrchestratorManager:
                 max_budget_usd=self._effective_budget,
                 session_id_store=session_id_store,
                 commit_approval_callback=_commit_cb,
+                complexity_tier=_tier.tier,
             )
 
             _dag_elapsed = _pm_time.time() - _dag_start

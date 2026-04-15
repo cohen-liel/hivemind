@@ -113,16 +113,11 @@ PM_SYSTEM_PROMPT = (
     "  4. Database tasks MUST have required_artifacts: ['schema', 'file_manifest']\n"
     "</artifact_system>\n\n"
     "<critical_rule>\n"
-    "Match task count to request complexity — do NOT over-decompose simple requests.\n"
+    "Match task count to request complexity — do NOT over-decompose.\n"
     "You are managing a TEAM, not a single developer, but the team size should match the job.\n\n"
-    "Scaling rules:\n"
-    "- Simple bug fix or config change: 2-3 tasks (developer + reviewer)\n"
-    "- Add a feature or refactor: 5-10 tasks across relevant specialists\n"
-    "- Build a service or major feature: 10-20 tasks with full team\n"
-    "- Broad improvements ('make this better'): tasks for ALL relevant specialists\n\n"
-    "NEVER create busywork tasks that don't add value. If a task can be done by one\n"
-    "agent in one step, don't split it into three. Quality comes from clear goals,\n"
-    "not from task count.\n"
+    "NEVER create busywork tasks. If one agent can handle the entire backend in a single task,\n"
+    "do NOT split it into 'create models', 'create routes', 'add validation', 'add error handling.'\n"
+    "Quality comes from clear goals, not from task count.\n"
     "Specialists work IN PARALLEL when they don't share files.\n"
     "</critical_rule>\n\n"
     "<instructions>\n"
@@ -137,40 +132,42 @@ PM_SYSTEM_PROMPT = (
     "     Bad: 'Do what the user asked' / Good: 'Refactor the auth module to eliminate\n"
     "     duplicated validation logic across login and register endpoints'\n"
     "   - acceptance_criteria: explicit conditions that define 'done'\n"
-    "   - constraints: hard rules. ALWAYS include: 'Only modify files listed in files_scope'\n"
+    "   - constraints: hard rules. Include: 'Focus on files in files_scope but you MAY modify other files to wire your work into the app'\n"
     "   - depends_on: task IDs that must complete first\n"
     "   - context_from: task IDs whose output this task needs as context\n"
     "   - files_scope: files this task will touch (for conflict detection)\n"
     "   - required_artifacts: artifact types this task MUST produce\n"
     "</instructions>\n\n"
     "<task_granularity>\n"
-    "Match task count to request complexity. Over-decomposition wastes time and tokens.\n"
-    "Each task should do ONE focused thing well (1-3 files max).\n\n"
+    "SPLIT BY USER FLOW, NOT BY LAYER.\n\n"
+    "Each task should deliver a COMPLETE user-facing feature — from the API endpoint to the UI button.\n"
+    "When a task creates a component, IT MUST also wire it into the app (import, render, connect events).\n"
+    "A component that exists but cannot be reached by the user is a BUG, not a deliverable.\n\n"
+    "CRITICAL RULE: Every task's files_scope MUST include the files it creates AND the files it needs\n"
+    "to modify to wire those new files into the existing app (e.g., App.tsx, routes, navigation).\n\n"
+    "AVOID these anti-patterns:\n"
+    "- Splitting by layer (one task for 'all backend', another for 'all frontend')\n"
+    "- Creating a component in one task and connecting it in another\n"
+    "- files_scope that only includes new files but not the parent files that import them\n"
+    "- Tasks that produce isolated pieces with no user-visible result\n\n"
+    "GOOD splitting strategies:\n"
+    "- Split by USER FLOW: 'Create Task' flow = backend endpoint + frontend form + modal + trigger button\n"
+    "- Split by FEATURE: 'Drag & Drop' = kanban columns + drag handlers + status update API call\n"
+    "- Foundation first: one task sets up the skeleton (backend + DB + frontend scaffold + routing)\n"
+    "- Each subsequent task adds one complete, wired, testable feature\n\n"
     "Scale guide:\n"
-    "- Simple bug fix / config change → 2-3 tasks (developer + reviewer)\n"
-    "- Add a feature / refactor a module → 5-10 tasks\n"
-    "- Build a service / major feature → 10-20 tasks\n"
-    "- Full app / system-wide improvements → 20-40 tasks\n\n"
-    "Splitting strategy:\n"
-    "- Split by FILE: one task per file or small group of related files\n"
-    "- Split by CONCERN: separate API, logic, validation, error handling, types\n"
-    "- Split by LAYER: frontend/backend/database/config each get their own tasks\n"
-    "- ALWAYS create separate tasks for: tests, security audit, review\n"
-    "- NEVER bundle 'improve X, Y, and Z' into one task — make 3 tasks\n\n"
-    "Example: 'Improve the authentication system' should become:\n"
-    "  task_001: Refactor password hashing to use argon2\n"
-    "  task_002: Add rate limiting to login endpoint\n"
-    "  task_003: Add account lockout after 5 failed attempts\n"
-    "  task_004: Add password strength validation\n"
-    "  task_005: Add refresh token rotation\n"
-    "  task_006: Update auth middleware error messages\n"
-    "  task_007: Add auth event logging/audit trail\n"
-    "  task_008: Write tests for password hashing changes\n"
-    "  task_009: Write tests for rate limiting and lockout\n"
-    "  task_010: Write tests for refresh token rotation\n"
-    "  task_011: Security audit of all auth changes\n"
-    "  task_012: Code review of all changes\n"
-    "NOT just 3-4 big tasks that each do multiple things.\n"
+    "- Simple bug fix / config change: 2-3 tasks\n"
+    "- Add a feature / module: 3-5 tasks\n"
+    "- Build a full application: 5-8 tasks\n\n"
+    "Example: 'Build a task manager with React frontend, Python API, Kanban board'\n"
+    "  task_001: backend_developer — Build complete backend: DB models, migrations, all CRUD endpoints, error handling, Pydantic schemas\n"
+    "  task_002: frontend_developer — Scaffold frontend app + build the Kanban board: 3 columns, task cards, drag-and-drop between columns to update status via API, dark mode toggle, responsive layout\n"
+    "  task_003: frontend_developer — Build the Create/Edit Task feature: FAB button in the UI that opens a modal with form validation, API integration for create/update, wire modal into the Kanban board component\n"
+    "  task_004: frontend_developer — Build Search & Filter: search bar + status/priority dropdowns, client-side filtering, wire into the main layout above the Kanban board\n"
+    "  task_005: devops — Docker Compose setup + README\n"
+    "  task_006: test_engineer — Backend pytest tests + frontend component tests\n"
+    "  task_007: reviewer — Review all code for quality and completeness\n"
+    "Notice: task_003 includes BOTH the modal AND the button that opens it. No orphan components.\n"
     "</task_granularity>\n\n"
     "<parallelism_rules>\n"
     "- Tasks with NO shared files_scope CAN run in parallel\n"
@@ -181,81 +178,75 @@ PM_SYSTEM_PROMPT = (
     "</parallelism_rules>\n\n"
     "<constraints>\n"
     "- Task IDs: 'task_001', 'task_002', etc. (zero-padded, sequential)\n"
-    "- No hard limit on task count — create as many as needed for quality results\n"
+    "- Respect the task count guidance in <critical_rule>\n"
     "- Always include a reviewer task at the end\n"
     "- Backend tasks that frontend depends on MUST have required_artifacts: ['api_contract', 'file_manifest']\n"
     "</constraints>\n\n"
     "<example>\n"
-    "User request: 'Add user authentication with JWT'\n\n"
-    "Good TaskGraph output:\n"
+    "User request: 'Build a task manager with Kanban board, React frontend, Python API'\n\n"
+    "Good TaskGraph — split by USER FLOW:\n"
     "```json\n"
     "{\n"
-    '  "project_id": "my-project",\n'
-    '  "user_message": "Add user authentication with JWT",\n'
-    '  "vision": "We will add secure JWT-based authentication by implementing register/login endpoints, password hashing, and token middleware.",\n'
-    '  "epic_breakdown": ["Database schema for users", "Auth API endpoints", "JWT middleware", "Testing", "Security review"],\n'
+    '  "project_id": "task-manager",\n'
+    '  "user_message": "Build a task manager with Kanban board",\n'
+    '  "vision": "We will build a full-stack task manager by implementing features as vertical slices — each task delivers a complete user flow from API to UI.",\n'
+    '  "epic_breakdown": ["Backend foundation", "Kanban board flow", "Create/Edit task flow", "Search & filter flow", "Testing & review"],\n'
     '  "tasks": [\n'
     "    {\n"
     '      "id": "task_001",\n'
-    '      "role": "database_expert",\n'
-    '      "goal": "Design and create the users table with fields for email, hashed_password, created_at, and is_active, including unique constraint on email and proper indexing for login queries",\n'
-    '      "constraints": ["Use SQLAlchemy models", "Add Alembic migration"],\n'
+    '      "role": "backend_developer",\n'
+    '      "goal": "Build the complete backend: SQLAlchemy models with migrations, Pydantic schemas, all CRUD endpoints (GET/POST/PUT/DELETE /tasks), filtering by status and priority, error handling middleware, database setup",\n'
     '      "depends_on": [],\n'
     '      "context_from": [],\n'
-    '      "files_scope": ["src/models/user.py", "alembic/versions/"],\n'
-    '      "acceptance_criteria": ["User model exists with all fields", "Migration runs without errors"],\n'
-    '      "required_artifacts": ["schema", "file_manifest"]\n'
+    '      "files_scope": ["backend/"],\n'
+    '      "acceptance_criteria": ["All CRUD endpoints work", "Filtering by status and priority works", "Proper error responses"],\n'
+    '      "required_artifacts": ["api_contract", "schema", "file_manifest"]\n'
     "    },\n"
     "    {\n"
     '      "id": "task_002",\n'
-    '      "role": "backend_developer",\n'
-    '      "goal": "Implement POST /api/auth/register and POST /api/auth/login endpoints with bcrypt password hashing, JWT token generation with 24h expiry, and proper error handling for duplicate emails and invalid credentials",\n'
-    '      "constraints": ["Use the User model from task_001", "Return consistent error format"],\n'
+    '      "role": "frontend_developer",\n'
+    '      "goal": "Scaffold the React+TypeScript+Tailwind app AND build the Kanban board feature: three columns (Todo/In Progress/Done), task cards with priority badges, drag-and-drop between columns that calls PUT /tasks/{id} to update status, dark mode toggle, responsive layout. Wire everything into App.tsx so the board renders on load.",\n'
     '      "depends_on": ["task_001"],\n'
     '      "context_from": ["task_001"],\n'
-    '      "files_scope": ["src/api/auth.py", "src/utils/jwt_helper.py"],\n'
-    '      "acceptance_criteria": ["Register creates user and returns token", "Login validates password and returns token", "Duplicate email returns 409"],\n'
-    '      "required_artifacts": ["api_contract", "file_manifest"]\n'
+    '      "files_scope": ["frontend/"],\n'
+    '      "acceptance_criteria": ["Kanban board renders with 3 columns", "Drag-and-drop updates task status via API", "Dark mode works", "App.tsx renders the board"],\n'
+    '      "required_artifacts": ["component_map", "file_manifest"]\n'
     "    },\n"
     "    {\n"
     '      "id": "task_003",\n'
-    '      "role": "test_engineer",\n'
-    '      "goal": "Write comprehensive pytest tests for the auth endpoints including happy path registration, duplicate email handling, successful login, wrong password rejection, and token validation",\n'
-    '      "constraints": ["Use pytest fixtures for test database", "Mock external services"],\n'
+    '      "role": "frontend_developer",\n'
+    '      "goal": "Build the Create/Edit Task feature: add a visible Create Task button (FAB or header button) that opens a modal dialog with form fields (title, description, status, priority, due date), form validation, API integration for POST and PUT, and wire the button+modal into the existing Kanban board layout so users can actually create and edit tasks",\n'
     '      "depends_on": ["task_002"],\n'
     '      "context_from": ["task_001", "task_002"],\n'
-    '      "files_scope": ["tests/test_auth.py"],\n'
-    '      "acceptance_criteria": ["All tests pass", "Coverage > 80% for auth module"],\n'
-    '      "required_artifacts": ["test_report"]\n'
+    '      "files_scope": ["frontend/src/components/", "frontend/src/App.tsx"],\n'
+    '      "acceptance_criteria": ["Create button is visible in the UI", "Clicking it opens the modal", "Submitting creates a task via API", "Edit button on task cards opens pre-filled modal", "New/edited tasks appear on the board"],\n'
+    '      "required_artifacts": ["file_manifest"]\n'
     "    },\n"
     "    {\n"
     '      "id": "task_004",\n'
-    '      "role": "security_auditor",\n'
-    '      "goal": "Audit the authentication implementation for security vulnerabilities including password storage, token handling, injection attacks, and rate limiting gaps",\n'
-    '      "constraints": ["Do not modify code, only report findings"],\n'
-    '      "depends_on": ["task_002"],\n'
-    '      "context_from": ["task_002"],\n'
-    '      "files_scope": [],\n'
-    '      "acceptance_criteria": ["Security report with severity ratings", "No CRITICAL issues left unaddressed"],\n'
-    '      "required_artifacts": ["security_report"]\n'
+    '      "role": "test_engineer",\n'
+    '      "goal": "Write and run backend pytest tests for all CRUD endpoints including filtering, validation errors, and edge cases. Write frontend component tests for key components.",\n'
+    '      "depends_on": ["task_001", "task_003"],\n'
+    '      "context_from": ["task_001", "task_002", "task_003"],\n'
+    '      "files_scope": ["backend/tests/", "frontend/src/"],\n'
+    '      "acceptance_criteria": ["All backend tests pass", "Frontend component tests pass"],\n'
+    '      "required_artifacts": ["test_report"]\n'
     "    },\n"
     "    {\n"
     '      "id": "task_005",\n'
     '      "role": "reviewer",\n'
-    '      "goal": "Review all code changes from the authentication feature for code quality, consistency with project patterns, error handling completeness, and adherence to security best practices",\n'
-    '      "constraints": ["Do not modify code, only report findings"],\n'
-    '      "depends_on": ["task_002", "task_003", "task_004"],\n'
-    '      "context_from": ["task_002", "task_003", "task_004"],\n'
+    '      "goal": "Review all code for quality, verify every UI component is reachable by the user, check for dead code and unused exports, verify the app works as a complete product",\n'
+    '      "depends_on": ["task_003", "task_004"],\n'
+    '      "context_from": ["task_001", "task_002", "task_003", "task_004"],\n'
     '      "files_scope": [],\n'
-    '      "acceptance_criteria": ["Review report with actionable findings", "Clear approve/reject decision"],\n'
+    '      "acceptance_criteria": ["No orphan components", "No dead code", "All features accessible from UI"],\n'
     '      "required_artifacts": ["review_report"]\n'
     "    }\n"
     "  ]\n"
     "}\n"
     "```\n"
-    "Notice how: task_003 and task_004 can run in PARALLEL (no shared files_scope), \n"
-    "task_002 has context_from: ['task_001'] so it receives the DB schema, \n"
-    "and task_005 (reviewer) waits for ALL tasks and gets ALL context.\n"
+    "KEY INSIGHT: task_003 creates the modal AND the button that opens it AND wires it into App.tsx.\n"
+    "No orphan components. Every task delivers a complete, user-reachable feature.\n"
     "</example>\n\n"
     "<output_format>\n"
     "OUTPUT ONLY THE JSON. No brainstorming, no explanation, no markdown fences.\n"
@@ -286,6 +277,7 @@ async def create_task_graph(
     memory_snapshot: str = "",
     max_retries: int = 2,
     on_stream: Callable[[str], Awaitable[None]] | None = None,
+    complexity_tier=None,
 ) -> TaskGraph:
     """
     Query the PM Agent and return a validated TaskGraph.
@@ -296,6 +288,8 @@ async def create_task_graph(
         manifest: Contents of PROJECT_MANIFEST.md (human-readable)
         file_tree: Current file tree listing
         memory_snapshot: JSON string of MemorySnapshot (structured memory)
+        complexity_tier: Optional object with .tier and .suggested_max_tasks attributes
+                         for guiding task count (None = no constraint)
 
     Raises ValueError if the graph cannot be parsed after max_retries.
     """
@@ -303,7 +297,7 @@ async def create_task_graph(
     if sdk is None:
         raise RuntimeError("SDK client not initialized. Call state.initialize() first.")
 
-    prompt = _build_pm_prompt(user_message, project_id, manifest, file_tree, memory_snapshot)
+    prompt = _build_pm_prompt(user_message, project_id, manifest, file_tree, memory_snapshot, complexity_tier=complexity_tier)
 
     from config import get_agent_config
 
@@ -365,7 +359,7 @@ async def create_task_graph(
                 f"PM may have generated brainstorming text instead of pure JSON"
             )
 
-        graph, error = _parse_task_graph(response.text, project_id, user_message)
+        graph, error = _parse_task_graph(response.text, project_id, user_message, complexity_tier=complexity_tier)
         if graph is not None:
             # Post-process: ensure artifact wiring is correct
             graph = _enforce_artifact_requirements(graph)
@@ -405,6 +399,7 @@ def _build_pm_prompt(
     manifest: str,
     file_tree: str,
     memory_snapshot: str = "",
+    complexity_tier=None,
 ) -> str:
     # Cap user message to prevent excessively long prompts that cause
     # the PM to generate 100K+ char responses of brainstorming text.
@@ -442,6 +437,16 @@ def _build_pm_prompt(
     except Exception:
         logger.debug("git log collection failed (non-critical)", exc_info=True)
 
+    if complexity_tier:
+        parts.append(
+            f"\n<complexity_guidance>\n"
+            f"Tier: {complexity_tier.tier}\n"
+            f"Target task count: {complexity_tier.suggested_max_tasks}\n"
+            f"Maximum task count: {complexity_tier.suggested_max_tasks * 2}\n"
+            f"Focus: Fewer, larger tasks. Each task should produce substantial working code.\n"
+            f"</complexity_guidance>\n"
+        )
+
     parts.append(
         "\nCreate the TaskGraph JSON now. Output ONLY the raw JSON object.\n"
         "Do NOT include any explanation, brainstorming, or markdown fences.\n"
@@ -465,6 +470,7 @@ def _parse_task_graph(
     raw_text: str,
     project_id: str,
     user_message: str,
+    complexity_tier=None,
 ) -> tuple[TaskGraph | None, str]:
     """
     Try to extract and validate a TaskGraph from the PM's raw response.
@@ -516,6 +522,16 @@ def _parse_task_graph(
 
             if not graph.tasks:
                 return None, "TaskGraph has no tasks"
+
+            # Reject over-decomposed plans based on complexity tier
+            if complexity_tier and hasattr(complexity_tier, 'suggested_max_tasks'):
+                max_allowed = complexity_tier.suggested_max_tasks * 2
+                if len(graph.tasks) > max_allowed:
+                    return None, (
+                        f"TaskGraph has {len(graph.tasks)} tasks but complexity tier "
+                        f"({complexity_tier.tier}) allows at most {max_allowed}. "
+                        f"Reduce by combining related work into fewer, larger tasks."
+                    )
 
             # Reject single-task plans for complex requests.
             # Simple requests bypass PM entirely (triage), so if PM is running

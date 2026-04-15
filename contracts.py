@@ -1371,6 +1371,7 @@ def task_input_to_prompt(
     graph_vision: str = "",
     graph_epics: list[str] | None = None,
     user_message: str = "",
+    tier: str = "FULL_TEAM",
 ) -> str:
     """Serialise a TaskInput into a structured XML prompt for the agent.
 
@@ -1397,7 +1398,12 @@ def task_input_to_prompt(
         if user_message:
             # Truncate very long messages to avoid bloating the prompt,
             # but keep enough to preserve all important details.
-            _max_user_msg = 8000  # ~2k tokens — generous enough for API keys, examples, etc.
+            _max_user_msg_by_tier = {
+                "SOLO": 1500,
+                "SMALL_TEAM": 3000,
+                "FULL_TEAM": 8000,
+            }
+            _max_user_msg = _max_user_msg_by_tier.get(tier, 8000)
             _truncated = user_message[:_max_user_msg]
             if len(user_message) > _max_user_msg:
                 _truncated += "\n... (truncated — see project files for full context)"
@@ -1405,6 +1411,16 @@ def task_input_to_prompt(
             parts.append(f"    {_truncated}")
             parts.append("  </original_user_request>")
         parts.append("</mission>\n")
+
+    if tier == "SMALL_TEAM":
+        parts.append(
+            "<scope_signal>\n"
+            "This is a FOCUSED task in a small team. Write minimal, clean, production-quality code.\n"
+            "Do NOT over-engineer. Do NOT add features beyond what is explicitly requested.\n"
+            "Prefer simplicity: fewer files, less abstraction, straightforward implementations.\n"
+            "A single well-written file is better than an elaborate multi-file architecture.\n"
+            "</scope_signal>\n"
+        )
 
     # ── Task Assignment ──
     parts.append("<task_assignment>")
