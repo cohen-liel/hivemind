@@ -1543,12 +1543,14 @@ def task_input_to_prompt(
         else:
             parts.append("")
 
-    # ── Brief thinking reminder ──
+    # ── Strict execution instructions ──
     parts.append(
         "<instructions>\n"
-        "1. Read all upstream files listed above before writing code.\n"
-        "2. Match your code to the actual interfaces/types in those files.\n"
-        "3. Verify your work compiles and connects to existing code.\n"
+        "MANDATORY STEPS — do these IN ORDER, do NOT skip any:\n"
+        "1. FIRST: Read every file listed in <must_read_before_coding>. Do NOT write any code until you have read them.\n"
+        "2. THEN: Read any existing files in your working directory (ls, find) to understand the current project structure.\n"
+        "3. ONLY THEN: Write your code, matching the actual interfaces/types/endpoints you found in step 1-2.\n"
+        "4. FINALLY: Verify your new files are imported/wired into the app — if you created a component, make sure something renders it.\n"
         "</instructions>\n"
     )
 
