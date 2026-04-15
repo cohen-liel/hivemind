@@ -79,48 +79,131 @@ class TierClassification:
 
 
 # Keywords that push toward FULL_TEAM (epic-scale work)
-_EPIC_INDICATORS = frozenset({
-    "microservice", "microservices", "from scratch", "saas",
-    "e-commerce", "ecommerce", "entire system", "complete system",
-    "complete platform", "production system", "enterprise",
-})
+_EPIC_INDICATORS = frozenset(
+    {
+        "microservice",
+        "microservices",
+        "from scratch",
+        "saas",
+        "e-commerce",
+        "ecommerce",
+        "entire system",
+        "complete system",
+        "complete platform",
+        "production system",
+        "enterprise",
+    }
+)
 
 # Keywords that prevent SOLO (need at least SMALL_TEAM)
-_COMPLEX_KEYWORDS = frozenset({
-    "authentication", "auth system", "database schema", "migration",
-    "refactor", "redesign", "architecture", "api design",
-    "full stack", "fullstack", "build an app", "build a",
-    "create a system", "integrate", "deployment", "ci/cd",
-    "infrastructure", "test suite", "test framework", "security audit",
-})
+_COMPLEX_KEYWORDS = frozenset(
+    {
+        "authentication",
+        "auth system",
+        "database schema",
+        "migration",
+        "refactor",
+        "redesign",
+        "architecture",
+        "api design",
+        "full stack",
+        "fullstack",
+        "build an app",
+        "build a",
+        "create a system",
+        "integrate",
+        "deployment",
+        "ci/cd",
+        "infrastructure",
+        "test suite",
+        "test framework",
+        "security audit",
+    }
+)
 
 # Layer detection — how many architectural layers does the request touch?
 _LAYER_KEYWORDS: dict[str, set[str]] = {
-    "frontend": {"frontend", "react", "vue", "angular", "ui", "component", "page", "tailwind", "css", "kanban", "dashboard"},
-    "backend": {"backend", "api", "endpoint", "server", "fastapi", "express", "rest", "crud", "router"},
-    "database": {"database", "db", "schema", "migration", "table", "sql", "sqlite", "postgres", "model"},
-    "infra": {"docker", "deploy", "ci/cd", "kubernetes", "infrastructure", "compose", "dockerfile", "nginx"},
+    "frontend": {
+        "frontend",
+        "react",
+        "vue",
+        "angular",
+        "ui",
+        "component",
+        "page",
+        "tailwind",
+        "css",
+        "kanban",
+        "dashboard",
+    },
+    "backend": {
+        "backend",
+        "api",
+        "endpoint",
+        "server",
+        "fastapi",
+        "express",
+        "rest",
+        "crud",
+        "router",
+    },
+    "database": {
+        "database",
+        "db",
+        "schema",
+        "migration",
+        "table",
+        "sql",
+        "sqlite",
+        "postgres",
+        "model",
+    },
+    "infra": {
+        "docker",
+        "deploy",
+        "ci/cd",
+        "kubernetes",
+        "infrastructure",
+        "compose",
+        "dockerfile",
+        "nginx",
+    },
 }
 
 # Hebrew complex indicators
 _HEBREW_COMPLEX = [
-    "ארכיטקטורה", "מיגרציה", "אימות", "אבטחה", "מערכת", "עיצוב",
-    "רפקטור", "אינטגרציה", "תשתית", "פריסה", "בסיס נתונים",
-    "תבין על מה", "תבדוק את",
+    "ארכיטקטורה",
+    "מיגרציה",
+    "אימות",
+    "אבטחה",
+    "מערכת",
+    "עיצוב",
+    "רפקטור",
+    "אינטגרציה",
+    "תשתית",
+    "פריסה",
+    "בסיס נתונים",
+    "תבין על מה",
+    "תבדוק את",
 ]
 
 # Vague broad requests — always need PM
 _VAGUE_PATTERNS = [
-    "make it better", "improve everything", "be the best", "fix all",
-    "תשפר הכל", "תתקן הכל", "הכי טוב", "ברמות הכי גבוהות",
+    "make it better",
+    "improve everything",
+    "be the best",
+    "fix all",
+    "תשפר הכל",
+    "תתקן הכל",
+    "הכי טוב",
+    "ברמות הכי גבוהות",
 ]
 
 
 def _count_layers(msg_lower: str) -> int:
     """Count how many architectural layers the message mentions."""
     return sum(
-        1 for _layer, keywords in _LAYER_KEYWORDS.items()
-        if any(kw in msg_lower for kw in keywords)
+        1 for _layer, keywords in _LAYER_KEYWORDS.items() if any(kw in msg_lower for kw in keywords)
     )
 
 

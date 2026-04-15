@@ -1110,14 +1110,28 @@ def _inject_discovered_tasks(
 
         # Only spawn dynamic tasks for HIGH-severity findings from quality roles
         dt_goal_lower = dt.goal.lower()
-        is_high_severity = any(kw in dt_goal_lower for kw in [
-            "critical", "high", "security vulnerability", "data loss",
-            "injection", "authentication bypass", "crash", "breaking",
-        ])
-        if not is_high_severity and source_task.role in ("security_auditor", "reviewer", "ux_critic"):
+        is_high_severity = any(
+            kw in dt_goal_lower
+            for kw in [
+                "critical",
+                "high",
+                "security vulnerability",
+                "data loss",
+                "injection",
+                "authentication bypass",
+                "crash",
+                "breaking",
+            ]
+        )
+        if not is_high_severity and source_task.role in (
+            "security_auditor",
+            "reviewer",
+            "ux_critic",
+        ):
             logger.info(
                 "[LG-DAG] Skipping non-HIGH dynamic task from %s: '%s'",
-                source_task.role, dt.goal[:60],
+                source_task.role,
+                dt.goal[:60],
             )
             continue
 

@@ -216,7 +216,12 @@ def select_skills_for_task(
     # Tier-aware skill limits
     if tier == "SOLO":
         return []  # SOLO agents don't get skills — keep them focused
-    if tier == "SMALL_TEAM" and agent_role in ("reviewer", "security_auditor", "ux_critic", "researcher"):
+    if tier == "SMALL_TEAM" and agent_role in (
+        "reviewer",
+        "security_auditor",
+        "ux_critic",
+        "researcher",
+    ):
         max_skills = min(max_skills, 1)
 
     if not _skills_cache:

@@ -297,7 +297,14 @@ async def create_task_graph(
     if sdk is None:
         raise RuntimeError("SDK client not initialized. Call state.initialize() first.")
 
-    prompt = _build_pm_prompt(user_message, project_id, manifest, file_tree, memory_snapshot, complexity_tier=complexity_tier)
+    prompt = _build_pm_prompt(
+        user_message,
+        project_id,
+        manifest,
+        file_tree,
+        memory_snapshot,
+        complexity_tier=complexity_tier,
+    )
 
     from config import get_agent_config
 
@@ -359,7 +366,9 @@ async def create_task_graph(
                 f"PM may have generated brainstorming text instead of pure JSON"
             )
 
-        graph, error = _parse_task_graph(response.text, project_id, user_message, complexity_tier=complexity_tier)
+        graph, error = _parse_task_graph(
+            response.text, project_id, user_message, complexity_tier=complexity_tier
+        )
         if graph is not None:
             # Post-process: ensure artifact wiring is correct
             graph = _enforce_artifact_requirements(graph)
@@ -524,7 +533,7 @@ def _parse_task_graph(
                 return None, "TaskGraph has no tasks"
 
             # Reject over-decomposed plans based on complexity tier
-            if complexity_tier and hasattr(complexity_tier, 'suggested_max_tasks'):
+            if complexity_tier and hasattr(complexity_tier, "suggested_max_tasks"):
                 max_allowed = complexity_tier.suggested_max_tasks * 2
                 if len(graph.tasks) > max_allowed:
                     return None, (
